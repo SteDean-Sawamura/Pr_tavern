@@ -170,6 +170,8 @@ async def _rollback_generation_state(session, snapshot):
     if active in tree.nodes:
         tree.set_active_node(active)
     session.current_state = snapshot["state"]
+    if hasattr(session, "_hydrate_mechanics_runtime"):
+        session._hydrate_mechanics_runtime(session.current_state)
     if snapshot["turn"] is not None:
         session.turn_number = snapshot["turn"]
     for name, model in snapshot["models"].items():
@@ -1422,7 +1424,7 @@ def _player_state(current_state: dict, script: dict | None = None) -> dict:
     for key in ("_pending_world_events", "npc_offscreen_log", "npc_relationships_global",
                 "cyclic_event_trackers", "random_item_state", "fired_one_time_events",
                 "lorebook_enabled_overrides", "lorebook_entry_overrides", "dynamic_lorebook", "script_variables",
-                "dynamic_story_content", "_npc_autonomy", "_node_context",
+                "dynamic_story_content", "mechanics_overrides", "_npc_autonomy", "_node_context",
                 "pending_consequences", "events", "shelved_pc_data",
                 "information_network"):
         state.pop(key, None)

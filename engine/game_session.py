@@ -117,6 +117,9 @@ class GameSession(
                  stage_models: dict | None = None):
         script = copy.deepcopy(script)
         self.script = script
+        self._initial_mechanics = copy.deepcopy({
+            key: script.get(key, []) for key in ("random_items", "variables", "triggers")
+        })
         self.ai_provider = ai_provider
         self.pipeline_mode = config.PIPELINE_MODE
         self.stage_models = stage_models or {}
@@ -143,7 +146,7 @@ class GameSession(
         self.ledger = Ledger()
         _class_system = _settings.get("class_system")
         self.class_registry = ClassRegistry(_class_system) if _class_system else None
-        _story_tree_def = script.get("story_tree", {})
+        _story_tree_def = script.setdefault("story_tree", {})
         self._merge_legacy_events_into_tree(_story_tree_def, script)
         self.story_tree_engine = StoryTreeEngine(_story_tree_def) if _story_tree_def.get("trees") else None
         self.event_engine = EventEngine(script, shadow_story_nodes=self.story_tree_engine is not None)

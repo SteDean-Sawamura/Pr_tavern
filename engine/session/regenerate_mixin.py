@@ -119,6 +119,7 @@ class RegenerateMixin:
         return candidates
 
     def _hydrate_branch_runtime(self, state: dict):
+        self._hydrate_mechanics_runtime(state)
         trackers = state.get("cyclic_event_trackers", {})
         for event in self.script.get("cyclic_events", []):
             event_id = event.get("id")

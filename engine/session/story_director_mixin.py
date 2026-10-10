@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -804,8 +805,94 @@ class StoryDirectorMixin:
             if lid and new_content:
                 self.prompt_builder.lorebook.update_entry(lid, content=new_content)
 
-    def _apply_random_item_updates(self, updates: dict):
+    def _mechanics_definitions(self):
+        return {
+            "random_items": self.script.get("random_items", []),
+            "variables": list(self.script_variables.definitions.values()),
+            "triggers": self.trigger_engine.triggers,
+        }
+
+    def _persist_mechanics_runtime(self):
+        overrides = {}
+        for section, entries in self._mechanics_definitions().items():
+            initial = {entry["id"]: entry for entry in self._initial_mechanics[section] if entry.get("id")}
+            current = {entry["id"]: entry for entry in entries if entry.get("id")}
+            overrides[section] = {
+                entry_id: copy.deepcopy(current.get(entry_id))
+                for entry_id in dict.fromkeys([*current, *initial])
+                if initial.get(entry_id) != current.get(entry_id)
+            }
+        self.current_state["mechanics_overrides"] = overrides
+
+    def _set_mechanics_definitions(self, definitions):
+        self.script["random_items"] = definitions["random_items"]
+        self._random_item_by_id = {entry["id"]: entry for entry in definitions["random_items"] if entry.get("id")}
+        self.script_variables.definitions = {entry["id"]: entry for entry in definitions["variables"] if entry.get("id")}
+        self.trigger_engine.triggers = definitions["triggers"]
+
+    def _hydrate_mechanics_runtime(self, state):
+        previous_triggers = self.trigger_engine.triggers
+        self._set_mechanics_definitions(copy.deepcopy(self._initial_mechanics))
+        overrides = state.get("mechanics_overrides", {})
+        history = state.get("dynamic_story_content", {})
+        for section, key, apply_updates in (
+            ("random_items", "random_item_updates", self._apply_random_item_updates),
+            ("variables", "variable_updates", self._apply_variable_updates),
+            ("triggers", "trigger_updates", self._apply_trigger_updates),
+        ):
+            if section not in overrides:
+                for record in history.get(key, []):
+                    apply_updates(record.get("updates", {}), persist=False)
+        definitions = self._mechanics_definitions()
+        for section, entries in definitions.items():
+            changes = overrides.get(section, {})
+            existing = {entry.get("id") for entry in entries}
+            definitions[section] = [
+                copy.deepcopy(changes.get(entry.get("id"), entry)) for entry in entries
+                if changes.get(entry.get("id"), entry) is not None
+            ]
+            definitions[section].extend(
+                copy.deepcopy(entry) for entry_id, entry in changes.items()
+                if entry_id not in existing and entry is not None
+            )
+        self._set_mechanics_definitions(definitions)
+        if previous_triggers != self.trigger_engine.triggers:
+            self._sync_mechanics_triggers()
+
+    def _sync_mechanics_triggers(self):
+        from engine.story_tree import StoryTreeEngine
+
+        tree_def = {}
+        self._merge_legacy_events_into_tree(tree_def, {"triggers": self.trigger_engine.triggers})
+        trees = tree_def.get("trees", [])
+        self.script["triggers"] = copy.deepcopy(self.trigger_engine.triggers)
+        if self.story_tree_engine:
+            engine = self.story_tree_engine
+            for node_id, tree_id in list(engine._tree_for_node.items()):
+                if tree_id == "__system_triggers":
+                    engine._tree_for_node.pop(node_id)
+                    engine._nodes.pop(node_id, None)
+            engine.trees[:] = [tree for tree in engine.trees if tree["id"] != "__system_triggers"]
+            engine.trees.extend(trees)
+            for tree in trees:
+                for node in tree["nodes"]:
+                    engine._nodes[node["id"]] = node
+                    engine._tree_for_node[node["id"]] = tree["id"]
+        elif trees:
+            self.story_tree_engine = StoryTreeEngine(tree_def)
+        if self.event_engine:
+            engine = self.event_engine
+            for event_id, tree_id in list(engine._tree_for_event.items()):
+                if tree_id == "__system_triggers":
+                    engine._tree_for_event.pop(event_id)
+                    engine.events.pop(event_id, None)
+            engine._trees[:] = [tree for tree in engine._trees if tree["id"] != "__system_triggers"]
+            engine._load_story_trees({"story_tree": tree_def})
+            engine.shadow_story_nodes = self.story_tree_engine is not None
+
+    def _apply_random_item_updates(self, updates: dict, *, persist=True):
         """应用 random_items 的增删改。"""
+        updates = copy.deepcopy(updates)
         random_items = self.script.setdefault("random_items", [])
         for rid in updates.get("remove", []):
             random_items[:] = [r for r in random_items if r.get("id") != rid]
@@ -822,30 +909,38 @@ class StoryDirectorMixin:
                 if not nid.startswith("_dyn_"):
                     new_item["id"] = f"_dyn_{nid}"
                     nid = new_item["id"]
+                if nid in self._random_item_by_id:
+                    continue
                 random_items.append(new_item)
                 self._random_item_by_id[nid] = new_item
+        if persist:
+            self._persist_mechanics_runtime()
 
-    def _apply_variable_updates(self, updates: dict):
+    def _apply_variable_updates(self, updates: dict, *, persist=True):
         """应用 script_variables 的新增和值更新。"""
         for var_def in updates.get("add", []):
             vid = var_def.get("id")
             if vid and vid not in self.script_variables.definitions:
-                self.script_variables.definitions[vid] = var_def
-                self.script_variables.set(self.current_state, vid, var_def.get("default", 0))
+                self.script_variables.definitions[vid] = copy.deepcopy(var_def)
+                if persist:
+                    self.script_variables.set(self.current_state, vid, var_def.get("default", 0))
         for upd in updates.get("update", []):
             vid = upd.get("id")
-            if vid and "value" in upd:
+            if persist and vid and "value" in upd:
                 self.script_variables.set(self.current_state, vid, upd["value"])
+        if persist:
+            self._persist_mechanics_runtime()
 
-    def _apply_trigger_updates(self, updates: dict):
+    def _apply_trigger_updates(self, updates: dict, *, persist=True):
         """应用 triggers 的增删改。"""
+        updates = copy.deepcopy(updates)
         triggers = self.trigger_engine.triggers
         for tid in updates.get("remove", []):
             triggers[:] = [t for t in triggers if t.get("id") != tid]
         for upd in updates.get("update", []):
             for t in triggers:
                 if t.get("id") == upd.get("id"):
-                    for field in ("condition", "enabled", "description", "actions"):
+                    for field in ("condition", "enabled", "description", "actions", "event", "action", "params"):
                         if field in upd:
                             t[field] = upd[field]
                     break
@@ -854,7 +949,12 @@ class StoryDirectorMixin:
             if nid and not any(t.get("id") == nid for t in triggers):
                 if not nid.startswith("_dyn_"):
                     new_t["id"] = f"_dyn_{nid}"
+                if any(trigger.get("id") == new_t["id"] for trigger in triggers):
+                    continue
                 triggers.append(new_t)
+        if persist:
+            self._persist_mechanics_runtime()
+            self._sync_mechanics_triggers()
 
     def _restore_dynamic_story(self):
         """从 current_state 恢复动态剧情内容（会话恢复时调用）。"""
@@ -869,18 +969,7 @@ class StoryDirectorMixin:
             self._inject_dynamic_event(evt, "cyclic")
         for entry in dsc.get("lorebook", []):
             self.prompt_builder.lorebook.add_entries([entry])
-        for ri_upd in dsc.get("random_item_updates", []):
-            upd = ri_upd.get("updates", {})
-            if upd:
-                self._apply_random_item_updates(upd)
-        for var_upd in dsc.get("variable_updates", []):
-            upd = var_upd.get("updates", {})
-            if upd:
-                self._apply_variable_updates(upd)
-        for trg_upd in dsc.get("trigger_updates", []):
-            upd = trg_upd.get("updates", {})
-            if upd:
-                self._apply_trigger_updates(upd)
+        self._hydrate_mechanics_runtime(self.current_state)
 
     def _extract_name_keywords(self, text: str) -> list[str]:
         """Extract NPC/org/location names from text as lorebook keywords."""

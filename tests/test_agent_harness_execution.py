@@ -49,6 +49,18 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
             script["lorebook"][0].update({"enabled": True, "content": "The shelf label is blank."})
             effect = {"type": "update_lore", **revealed_entry}
         script["one_time_events"][0]["effects"] = [effect]
+    script["one_time_events"][0]["effects"].extend([
+        {"type": "add_variable", "variable": {
+            "id": "test_visit_count", "type": "number", "default": 2, "min": 0, "max": 10,
+        }},
+        {"type": "add_trigger", "trigger": {
+            "id": "test_visit_hook", "event": "test_visit_tick", "action": "set_var",
+            "params": {"var_id": "test_visit_count", "op": "inc", "value": 1},
+        }},
+        {"type": "add_random_item", "item": {
+            "id": "test_visit_roll", "dice": "1d1", "trigger_type": "per_turn",
+        }},
+    ])
     narrative = (
         "You leave the Atrium and reach the Archive after five minutes. "
         "Inside, you inspect the shelf without disturbing its contents. "
@@ -160,6 +172,9 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
                 await asyncio.wait_for(retrieved.wait(), timeout=5)
                 assert session.current_state["player"]["location"] == "test_atrium"
                 assert session.current_state["game_time"] == "2030-01-01T09:00:00"
+                assert "test_visit_count" not in session.script_variables.definitions
+                assert not session.trigger_engine.triggers
+                assert not session.script.get("random_items")
                 async with database.get_db() as db:
                     plan_reply = await (await db.execute(
                         "SELECT reply FROM pending_action_plans WHERE save_id = ?", (session.save_id,),
@@ -187,6 +202,8 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
                 assert final["state"]["game_time"] == "2030-01-01T09:05:00"
                 assert "SYNTHETIC_UNREAD_DETAILS" not in response.text
                 assert "lorebook_entry_overrides" not in response.text
+                assert "mechanics_overrides" not in response.text
+                assert "_dyn_test_visit_hook" not in response.text
                 assert any(event["type"] == "user_inject" and event["message"] == interjection for event in events)
                 assert any({"role": "user", "content": interjection} in messages for messages in requests)
                 assert any("Archive" in message.get("content", "") for message in requests[1] if message["role"] == "user")
@@ -221,6 +238,12 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
         assert restored.world_tree.active_node_id == final["node_id"]
         assert restored.current_state["player"]["location"] == "test_archive"
         assert restored.current_state["game_time"] == "2030-01-01T09:05:00"
+        assert restored.current_state["script_variables"]["test_visit_count"] == 2
+        assert "_dyn_test_visit_roll" in restored._random_item_by_id
+        restored._fire_event_dual("test_visit_tick")
+        assert restored.current_state["script_variables"]["test_visit_count"] == 3
+        restored.script_variables.set(restored.current_state, "test_visit_count", 50)
+        assert restored.current_state["script_variables"]["test_visit_count"] == 10
         node = restored.world_tree.get_node(final["node_id"])
         assert node["ai_response"] == narrative
         trace = node["agent_trace"]
@@ -239,12 +262,19 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
         assert repeated == []
         branch = await restored.branch_to_node(root_id)
         assert branch["node_id"] == root_id
+        assert "test_visit_count" not in restored.script_variables.definitions
+        assert not restored.trigger_engine.triggers
+        assert not restored._random_item_by_id
         previous = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": "test_label"}))
         assert [entry["content"] for entry in previous["entries"]] == (
             ["The shelf label is blank."] if lore_effect == "update_lore" else []
         )
         branch = await restored.branch_to_node(final["node_id"])
         assert branch["node_id"] == final["node_id"]
+        assert restored.current_state["script_variables"]["test_visit_count"] == 2
+        assert "_dyn_test_visit_roll" in restored._random_item_by_id
+        restored._fire_event_dual("test_visit_tick")
+        assert restored.current_state["script_variables"]["test_visit_count"] == 3
         current = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": "test_label"}))
         assert current["entries"] == lore["entries"]
     finally:
