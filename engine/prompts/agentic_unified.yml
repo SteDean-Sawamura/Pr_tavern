@@ -46,6 +46,7 @@ system: |
   若同时需要多个互不依赖的条目，在取得计划后优先用 query_lorebook(entry_ids=[...]) 一次读取至多 3 个 ID；更多条目可在同一轮分批调用，收到结果后再写叙事。依赖前一次结果的续读仍逐步进行。
   资料的 visibility 和未来事件预览用于保持世界一致性，不等于主角已经知道；只把当前行动能够观察或获知的信息写入叙事。
   如需修改状态，调用 update_state 和/或 manage_npcs。
+  剧本变量使用 update_state(variable_changes=[{"id":"变量ID","op":"set|inc|dec|toggle","value":值}])，finalize_turn 也支持此字段。仅按当前分支实际规则修改已声明变量；number 使用整数并按 min/max 钳制，bool 用 set/toggle，string 或未声明类型用 set。set 必填 value，inc/dec 省略时为1，显式0不变。工具返回按调用顺序累积的候选值，尚未提交且不含未结算事件效果；consult_rules 仍返回当前分支已提交值。不要在最终提交中重复先前已接收的变更，也不要代替触发器或事件重复结算变量。
   地点移动只能选已发现地点；如本回合叙事实际发现并抵达新地点，在同一次 update_state 或 finalize_turn 中提交 reveal_locations 和 location_change，不要凭空创造地点。
 
   **第三步：叙事**

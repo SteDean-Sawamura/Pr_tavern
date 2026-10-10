@@ -40,7 +40,7 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
         ],
         "one_time_events": [{
             "id": "test_arrival", "trigger_time": "2030-01-01T09:05:00",
-            "condition": "player.location == test_archive",
+            "condition": "player.location == test_archive AND script_variables.test_capacity == 7",
             "effects": [{"type": "activate_lore", "id": "test_label"}],
         }],
     }
@@ -73,12 +73,20 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
     operations = [
         ("submit_plan", {"plan": "Choose a known room, then inspect its contents.",
                          "questions": [{"question": "Which room?", "options": ["Archive", "Atrium"]}]}),
-        ("update_state", {"location_change": "test_archive", "end_time": "2030-01-01T09:05:00"}),
+        ("consult_rules", {"category": "variables", "query": "test_capacity"}),
+        ("update_state", {"variable_changes": [{"id": "test_capacity", "op": "dec", "value": 1}]}),
+        ("undo_my_last_action", {"reason": "Synthetic correction before settlement."}),
+        ("update_state", {"variable_changes": [{"id": "test_capacity", "op": "inc", "value": 2}]}),
+        ("update_state", {"variable_changes": [{"id": "test_visit_count", "op": "inc", "value": 1}]}),
+        ("undo_my_last_action", {"reason": "Discard the rejected variable request only."}),
+        ("update_state", {"location_change": "test_archive", "end_time": "2030-01-01T09:05:00",
+                          "variable_changes": [{"id": "test_capacity", "op": "inc", "value": 1}]}),
         ("consult_rules", {"category": "variables", "query": "test_capacity"}),
         ("consult_rules", {"category": "variables", "query": "test_visit_count"}),
         ("query_lorebook", {"entry_id": "test_label"}),
         ("write_narrative", {"text": narrative}),
-        ("finalize_turn", {"summary": "Reached the Archive and read the shelf label."}),
+        ("finalize_turn", {"summary": "Reached the Archive and read the shelf label.",
+                           "variable_changes": [{"id": "test_capacity", "op": "inc", "value": 0}]}),
     ]
     requests = []
     waiting = asyncio.Event()
@@ -179,6 +187,7 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
                 await asyncio.wait_for(retrieved.wait(), timeout=5)
                 assert session.current_state["player"]["location"] == "test_atrium"
                 assert session.current_state["game_time"] == "2030-01-01T09:00:00"
+                assert session.current_state["script_variables"]["test_capacity"] == 4
                 assert "test_visit_count" not in session.script_variables.definitions
                 assert not session.trigger_engine.triggers
                 assert not session.script.get("random_items")
@@ -207,6 +216,7 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
                 assert final["node_id"] != root_id
                 assert final["state"]["player"]["location"] == "test_archive"
                 assert final["state"]["game_time"] == "2030-01-01T09:05:00"
+                assert session.current_state["script_variables"]["test_capacity"] == 7
                 assert "SYNTHETIC_UNREAD_DETAILS" not in response.text
                 assert "SYNTHETIC_MECHANICS_PRIVATE" not in response.text
                 assert "lorebook_entry_overrides" not in response.text
@@ -216,6 +226,17 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
                 assert any({"role": "user", "content": interjection} in messages for messages in requests)
                 assert any("Archive" in message.get("content", "") for message in requests[1] if message["role"] == "user")
                 assert "SYNTHETIC_MECHANICS_PRIVATE" not in json.dumps(requests[0])
+                for index, expected in [(2, 3), (4, 6), (7, 7)]:
+                    messages = [message for request in requests for message in request
+                                if message.get("tool_call_id") == f"synthetic-call-{index}"]
+                    assert json.dumps({"test_capacity": expected}) in messages[0]["content"]
+                    assert "未提交" in messages[0]["content"]
+                assert any(message.get("tool_call_id") == "synthetic-call-3"
+                           and message["content"].startswith("已撤销") for request in requests for message in request)
+                assert any(message.get("tool_call_id") == "synthetic-call-6"
+                           and message["content"].startswith("已撤销") for request in requests for message in request)
+                assert any(message.get("tool_call_id") == "synthetic-call-5"
+                           and message["content"].startswith("错误:") for request in requests for message in request)
                 for index, (name, arguments) in enumerate(operations):
                     if name != "consult_rules":
                         continue
@@ -262,6 +283,7 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
         assert restored.world_tree.active_node_id == final["node_id"]
         assert restored.current_state["player"]["location"] == "test_archive"
         assert restored.current_state["game_time"] == "2030-01-01T09:05:00"
+        assert restored.current_state["script_variables"]["test_capacity"] == 7
         assert restored.current_state["script_variables"]["test_visit_count"] == 2
         saved_mechanics = {
             category: json.loads(restored._handle_consult_rules({"category": category, "query": "test_visit"}))["entries"]
@@ -292,6 +314,7 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
         assert repeated == []
         branch = await restored.branch_to_node(root_id)
         assert branch["node_id"] == root_id
+        assert restored.current_state["script_variables"]["test_capacity"] == 4
         assert "test_visit_count" not in restored.script_variables.definitions
         assert not restored.trigger_engine.triggers
         assert not restored._random_item_by_id
@@ -303,6 +326,7 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
         )
         branch = await restored.branch_to_node(final["node_id"])
         assert branch["node_id"] == final["node_id"]
+        assert restored.current_state["script_variables"]["test_capacity"] == 7
         for category, entries in saved_mechanics.items():
             assert json.loads(restored._handle_consult_rules({"category": category, "query": "test_visit"}))["entries"] == entries
         assert restored.current_state["script_variables"]["test_visit_count"] == 2

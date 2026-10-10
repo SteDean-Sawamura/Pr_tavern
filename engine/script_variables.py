@@ -47,9 +47,9 @@ class ScriptVariables:
         if op == "set":
             self.set(state, var_id, value)
         elif op == "inc":
-            self.inc(state, var_id, int(value) if value else 1)
+            self.inc(state, var_id, int(value) if value is not None else 1)
         elif op == "dec":
-            self.dec(state, var_id, int(value) if value else 1)
+            self.dec(state, var_id, int(value) if value is not None else 1)
         elif op == "toggle":
             cur = self.get(state, var_id)
             self.set(state, var_id, not cur)

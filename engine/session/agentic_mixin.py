@@ -1936,10 +1936,50 @@ class AgenticMixin:
 
     # ── update_state: 拆分到原有 _run_state_tool 验证 ──
 
-    _UPDATE_STATE_RES_KEYS = ("state_changes", "inventory_changes", "activate_states", "deactivate_states", "game_over")
+    _UPDATE_STATE_RES_KEYS = ("state_changes", "variable_changes", "inventory_changes", "activate_states", "deactivate_states", "game_over")
     _UPDATE_STATE_SPATIAL_KEYS = ("location_change", "reveal_locations", "npc_location_changes", "room_changes", "npc_contact_changes", "scene_details")
 
+    def _validate_variable_changes(self, args: dict, ctx: dict | None = None) -> str:
+        changes = args.get("variable_changes", [])
+        if not isinstance(changes, list):
+            return "错误: variable_changes 必须是数组"
+        entries = [("state_changes", index, change) for index, change in enumerate(args.get("state_changes", []))
+                   if isinstance(change, dict) and change.get("type") == "variable"]
+        entries.extend(("variable_changes", index, change) for index, change in enumerate(changes))
+        for field, index, change in entries:
+            prefix = f"错误: {field}[{index}]"
+            if not isinstance(change, dict):
+                return f"{prefix} 必须是变量变更对象"
+            variable_id = change.get("id")
+            if not isinstance(variable_id, str) or variable_id not in self.script_variables.definitions:
+                return f"{prefix} id 必须是当前分支已声明的变量；请用 consult_rules 查询，不可凭空创建"
+            definition = self.script_variables.definitions[variable_id]
+            variable_type = definition.get("type")
+            operation = change.get("op", "set" if field == "state_changes" else None)
+            allowed = {"number": ("set", "inc", "dec"), "bool": ("set", "toggle")}.get(variable_type, ("set",))
+            if operation not in allowed:
+                return f"{prefix} op 不支持此变量类型；允许: {', '.join(allowed)}"
+            if operation == "set" and "value" not in change:
+                return f"{prefix} set 必须提供 value"
+            if operation != "toggle":
+                value = change.get("value", 1)
+                expected = {"number": int, "bool": bool, "string": str}.get(variable_type)
+                if expected is not None and type(value) is not expected:
+                    return f"{prefix} value 类型错误；{variable_type} 需要 {expected.__name__}"
+        if entries:
+            projected = self._project_state_tool_updates((ctx or {}).get("_accepted_state_updates", []))
+            for field, index, change in entries:
+                try:
+                    self.script_variables.apply_op(projected, change["id"], change.get("op", "set"), change.get("value"))
+                except (TypeError, ValueError, OverflowError):
+                    return (f"错误: {field}[{index}] 当前变量值或定义不支持此操作；"
+                            "请用 consult_rules 核对定义和现值，修正后重试；本次调用未接收")
+        return ""
+
     def _handle_update_state(self, args: dict, ctx: dict | None = None) -> str:
+        error = self._validate_variable_changes(args, ctx)
+        if error:
+            return error
         results = []
         if "end_time" in args:
             time_result = self._run_state_tool("update_time", args, ctx)
@@ -1967,6 +2007,14 @@ class AgenticMixin:
         result = " | ".join(results) if results else "无状态变更"
         if ctx is not None and ctx.get("old_time"):
             ctx.setdefault("_accepted_state_updates", []).append(args)
+            variable_ids = [change["id"] for change in args.get("state_changes", [])
+                            if change.get("type") == "variable"]
+            variable_ids.extend(change["id"] for change in args.get("variable_changes", []))
+            if variable_ids:
+                projected_state = self._project_state_tool_updates(ctx["_accepted_state_updates"])
+                values = {variable_id: self.script_variables.get(projected_state, variable_id)
+                          for variable_id in variable_ids}
+                result += " | 变量候选值（未提交，不含尚未结算的事件效果）: " + json.dumps(values, ensure_ascii=False)
             if "end_time" in args:
                 projected = self._projected_events(ctx)
                 event_times = ", ".join(
@@ -2102,6 +2150,9 @@ class AgenticMixin:
             calls.append({"name": "update_time", "args": {"end_time": args["end_time"]}})
         _res_keys = ("state_changes", "inventory_changes", "activate_states", "deactivate_states", "game_over")
         res_args = {k: args[k] for k in _res_keys if k in args}
+        if args.get("variable_changes"):
+            res_args["state_changes"] = [*res_args.get("state_changes", []),
+                                         *({**change, "type": "variable"} for change in args["variable_changes"])]
         if res_args:
             calls.append({"name": "update_resources", "args": res_args})
         _sp_keys = ("location_change", "reveal_locations", "npc_location_changes", "room_changes", "npc_contact_changes", "scene_details")
@@ -3420,6 +3471,7 @@ class AgenticMixin:
                         "choices": copy.deepcopy(self._choices_tool_calls),
                         "graph": copy.deepcopy(self.narrative_graph.snapshot()),
                         "conditioned_event_keys": copy.deepcopy(ctx.get("_conditioned_event_keys")),
+                        "accepted_state_updates": copy.deepcopy(ctx.get("_accepted_state_updates")),
                     }
                     if name == "manage_npcs":
                         snapshot["npc_registry"] = (
@@ -3923,8 +3975,12 @@ class AgenticMixin:
                 snapshot = getattr(self, '_last_state_snapshot', None)
                 if undone_name in ("update_state", "manage_npcs", "send_message", "attempt_deduction") and snapshot is not None:
                     self.current_state = snapshot["current_state"]
-                    if undone_name == "update_state" and ctx.get("_accepted_state_updates"):
-                        ctx["_accepted_state_updates"].pop()
+                    if undone_name == "update_state":
+                        previous_updates = snapshot["accepted_state_updates"]
+                        if previous_updates is None:
+                            ctx.pop("_accepted_state_updates", None)
+                        else:
+                            ctx["_accepted_state_updates"] = previous_updates
                         previous_keys = snapshot["conditioned_event_keys"]
                         if previous_keys is None:
                             ctx.pop("_conditioned_event_keys", None)
@@ -4550,6 +4606,9 @@ class AgenticMixin:
 
     def _handle_finalize_turn(self, ctx: dict, args: dict) -> str:
         """Synchronous settlement: narrative + state + choices + summary in one call."""
+        error = self._validate_variable_changes(args, ctx)
+        if error:
+            return error
         if not (args.get("narrative") or ctx.get("_finalize_narrative", "")).strip():
             return json.dumps({"error": "请先调用 write_narrative 提交叙事，再调用 finalize_turn。"}, ensure_ascii=False)
         if self._narrative_reveals_pending_consequence(
@@ -4561,7 +4620,7 @@ class AgenticMixin:
         invalid_choices = self._invalid_choice_references(ctx, args)
         if invalid_choices:
             return json.dumps({"error": f"选项包含玩家尚未知晓的信息: {', '.join(invalid_choices)}；请根据已呈现叙事修正选项后重试。"}, ensure_ascii=False)
-        state_args = {k: args[k] for k in ("end_time", "state_changes", "inventory_changes",
+        state_args = {k: args[k] for k in ("end_time", "state_changes", "variable_changes", "inventory_changes",
                       "activate_states", "location_change", "reveal_locations") if k in args}
         previous_event_keys = ctx.get("_conditioned_event_keys")
         state_result = self._handle_update_state(state_args, ctx) if state_args else ""

@@ -1,5 +1,15 @@
 """Tool schemas shared by session pipeline and agent execution."""
 
+VARIABLE_CHANGES_SCHEMA = {
+    "type": "array",
+    "description": "剧本变量候选变更，按顺序执行，尚未提交。仅使用当前分支已声明的ID；先consult_rules读取规则。number为整数，支持set/inc/dec并按定义min/max钳制；bool支持set/toggle；string及未声明类型仅支持set。set必填value；inc/dec省略value为1，显式0不变。不要重复提交已接收的变更，也不要代替事件或触发器重复结算。",
+    "items": {"type": "object", "properties": {
+        "id": {"type": "string"},
+        "op": {"type": "string", "enum": ["set", "inc", "dec", "toggle"]},
+        "value": {},
+    }, "required": ["id", "op"]},
+}
+
 LOREBOOK_QUERY_PARAMETERS = {"type": "object", "properties": {
     "keyword": {"type": "string", "description": "全文搜索关键词，可用空格分隔；与 entry_id、entry_ids 三选一"},
     "entry_id": {"type": "string", "description": "读取单条设定的 ID；按 next_offset 续读时使用"},
@@ -488,6 +498,7 @@ CONSOLIDATED_SETTLEMENT_TOOLS = [
                     "value": {}, "reason": {"type": "string"},
                 }, "required": ["target", "op", "value"]},
             },
+            "variable_changes": VARIABLE_CHANGES_SCHEMA,
             "inventory_changes": {
                 "type": "array",
                 "description": '物品变更。每项: {"item":"物品名","action":"add|remove","quantity":1}。add限制：只能添加叙事中明确描写获取的物品',
@@ -669,6 +680,7 @@ def _unified_tools() -> list[dict]:
                         "value": {}, "reason": {"type": "string"},
                     }, "required": ["target", "op", "value"]},
                 },
+                "variable_changes": VARIABLE_CHANGES_SCHEMA,
                 "inventory_changes": {
                     "type": "array",
                     "description": '物品变更。每项: {"item":"物品名","action":"add|remove","quantity":1}',
