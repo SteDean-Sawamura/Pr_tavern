@@ -1,4 +1,5 @@
 import asyncio
+import copy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -985,6 +986,128 @@ async def test_terminal_tool_does_not_claim_queued_interjection():
     loop._inject_queue.append("停下")
     assert [event["type"] async for event in events] == ["agent_done"]
     assert loop._inject_queue == ["停下"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_rounds", [1, 3])
+@pytest.mark.parametrize("boundary", ["tool_result", "tool_started", "during_tool"])
+async def test_interjection_during_tool_batch_defers_stale_settlement(monkeypatch, boundary, max_rounds):
+    loop = PlanLoop([])
+    loop._active_agent_stream = True
+    loop._active_agent_stream_id = "batch-interjection"
+    monkeypatch.setitem(game_routes._sessions, "batch-interjection", loop)
+    responses = [
+        {"content": "", "tool_calls": [
+            {"id": "candidate", "name": "update_state", "arguments": {}},
+            {"id": "stale", "name": "finalize_turn", "arguments": {"narrative": "Old decision"}},
+        ]},
+        {"content": "", "tool_calls": [
+            {"id": "fresh", "name": "finalize_turn", "arguments": {"narrative": "Revised decision"}},
+        ]},
+    ]
+    requests = []
+
+    async def respond(messages, **kwargs):
+        requests.append(copy.deepcopy(messages))
+        return responses[len(requests) - 1]
+
+    loop.ai_provider.generate_with_tools = AsyncMock(side_effect=respond)
+    dispatched = []
+
+    async def inject():
+        assert await game_routes.inject_message(
+            "batch-interjection", game_routes.InjectMessageRequest(
+                stream_id="batch-interjection", message="Change the decision before settling.",
+            ),
+        ) == {"queued": True}
+
+    async def dispatch(name, args):
+        dispatched.append((name, args))
+        if boundary == "during_tool" and name == "update_state":
+            await inject()
+        return "Recorded"
+
+    holder = _AgentResult()
+    observed = []
+    async for event in loop._agent_loop(
+        [{"role": "user", "content": "Go"}], "system", [], dispatch,
+        max_rounds=max_rounds, report_tool_start=True, result_holder=holder,
+    ):
+        observed.append(event)
+        if (boundary == "tool_result" and event["type"] == "tool_call"
+                and event["tool_name"] == "update_state"):
+            await inject()
+        if (boundary == "tool_started" and event["type"] == "tool_started"
+                and event["tool_name"] == "finalize_turn"
+                and loop.ai_provider.generate_with_tools.await_count == 1):
+            await inject()
+
+    assert dispatched == [
+        ("update_state", {}), ("finalize_turn", {"narrative": "Revised decision"}),
+    ]
+    assert loop.ai_provider.generate_with_tools.await_count == 2
+    assert loop._inject_queue == []
+    assert [event["type"] for event in observed].count("user_inject") == 1
+    assert holder.records[1]["deferred"] is True
+    messages = requests[1]
+    assert {"role": "user", "content": "Change the decision before settling."} in messages
+    assert [message["tool_call_id"] for message in messages if message["role"] == "tool"] == ["candidate", "stale"]
+
+
+@pytest.mark.asyncio
+async def test_repeated_tool_batch_interjections_exhaust_budget_without_stale_settlement():
+    loop = PlanLoop([])
+    loop.ai_provider.generate_with_tools = AsyncMock(return_value={
+        "content": "", "tool_calls": [
+            {"id": "candidate", "name": "update_state", "arguments": {}},
+            {"id": "stale", "name": "finalize_turn", "arguments": {}},
+        ],
+    })
+    dispatched = []
+
+    async def dispatch(name, args):
+        dispatched.append(name)
+        return "Recorded"
+
+    holder = _AgentResult()
+    observed = []
+    async for event in loop._agent_loop(
+        [{"role": "user", "content": "Go"}], "system", [], dispatch,
+        max_rounds=1, result_holder=holder,
+    ):
+        observed.append(event)
+        if event["type"] == "tool_call" and event["tool_name"] == "update_state":
+            loop._inject_queue.append(f"Revision {len(dispatched)}")
+
+    assert dispatched == ["update_state"] * 4
+    assert loop.ai_provider.generate_with_tools.await_count == 4
+    assert loop._inject_queue == ["Revision 4"]
+    assert [event["type"] for event in observed].count("user_inject") == 3
+    assert observed[-1]["type"] == "agent_max_rounds"
+    assert sum(record.get("deferred", False) for record in holder.records) == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["update_state", "finalize_turn"])
+async def test_stop_at_tool_start_boundary_prevents_dispatch(monkeypatch, tool_name):
+    loop = PlanLoop([])
+    loop._active_agent_stream = True
+    loop._active_agent_stream_id = "start-boundary"
+    monkeypatch.setitem(game_routes._sessions, "start-boundary", loop)
+    loop.ai_provider.generate_with_tools = AsyncMock(return_value={
+        "content": "", "tool_calls": [{"id": "stale", "name": tool_name, "arguments": {}}],
+    })
+    dispatch = AsyncMock(return_value="Recorded")
+    events = loop._agent_loop(
+        [{"role": "user", "content": "Go"}], "system", [], dispatch,
+        max_rounds=1, report_tool_start=True,
+    )
+    assert (await anext(events))["type"] == "tool_started"
+    assert await game_routes.abort_generation(
+        "start-boundary", game_routes.StreamControlRequest(stream_id="start-boundary"),
+    ) == {"requested": True}
+    assert [event["type"] async for event in events] == ["aborted"]
+    dispatch.assert_not_awaited()
 
 
 @pytest.mark.asyncio

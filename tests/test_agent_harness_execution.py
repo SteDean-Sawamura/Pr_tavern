@@ -22,7 +22,10 @@ def _stream_events(text):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lore_effect", ["activate_lore", "add_lore", "update_lore"])
 @pytest.mark.parametrize("compact_history", [False, True])
-async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lore_effect, compact_history):
+@pytest.mark.parametrize("interjection_phase", ["model", "tool"])
+async def test_retrieval_settlement_stream_and_reload(
+    tmp_path, monkeypatch, lore_effect, compact_history, interjection_phase,
+):
     script = {
         "script_id": "synthetic-harness", "name": "Synthetic harness", "settings": {},
         "locations": [
@@ -103,13 +106,21 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
         assert index < len(operations), json.dumps(messages[-4:], ensure_ascii=False)
         name, arguments = operations[index]
         assert name in [tool["function"]["name"] for tool in kwargs["tools"]]
-        if name == "write_narrative":
+        if name == "write_narrative" and interjection_phase == "model":
             retrieved.set()
             await release_narrative.wait()
         content = "Synthetic prior context. " * 1600 if compact_history and index in (2, 5, 8) else ""
-        return {"content": content, "tool_calls": [{
+        tool_calls = [{
             "id": f"synthetic-call-{index}", "name": name, "arguments": arguments,
-        }]}
+        }]
+        if name == "write_narrative" and interjection_phase == "tool":
+            tool_calls.append({
+                "id": "stale-decision", "name": "finalize_turn",
+                "arguments": {"summary": "Outdated decision", "variable_changes": [
+                    {"id": "test_capacity", "op": "inc", "value": 1},
+                ]},
+            })
+        return {"content": content, "tool_calls": tool_calls}
 
     provider = SimpleNamespace(
         generate_with_tools=AsyncMock(side_effect=generate_with_tools),
@@ -122,6 +133,17 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
         })),
     )
     session = GameSession(script, provider, save_id="synthetic-harness-save")
+    dispatched = []
+    dispatch = session._dispatch_unified_tool
+
+    async def dispatch_with_interjection(ctx, name, args):
+        dispatched.append((name, copy.deepcopy(args)))
+        if name == "write_narrative" and interjection_phase == "tool":
+            retrieved.set()
+            await release_narrative.wait()
+        return await dispatch(ctx, name, args)
+
+    monkeypatch.setattr(session, "_dispatch_unified_tool", dispatch_with_interjection)
     session.current_state = {
         "_pipeline_mode": "agentic_unified", "game_time": "2030-01-01T09:00:00",
         "player": {"name": "Visitor", "location": "test_atrium"},
@@ -165,7 +187,10 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
             await db.execute("INSERT INTO saves (id, script_id) VALUES (?, ?)",
                              (session.save_id, script["script_id"]))
             await db.commit()
-        await game_routes._save_node(session, {"node_id": root_id, "state": session.current_state})
+        await game_routes._save_node(session, {
+            "node_id": root_id, "state": session.current_state,
+            "narrative": session.world_tree.get_node(root_id)["ai_response"],
+        })
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test",
         ) as client:
@@ -220,6 +245,11 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
                 assert final["state"]["player"]["location"] == "test_archive"
                 assert final["state"]["game_time"] == "2030-01-01T09:05:00"
                 assert session.current_state["script_variables"]["test_capacity"] == 7
+                assert all(args.get("summary") != "Outdated decision" for name, args in dispatched)
+                if interjection_phase == "tool":
+                    deferred_results = [message["content"] for messages in requests for message in messages
+                                        if message.get("tool_call_id") == "stale-decision"]
+                    assert deferred_results and all(json.loads(result).get("error") for result in deferred_results)
                 assert "SYNTHETIC_UNREAD_DETAILS" not in response.text
                 assert "SYNTHETIC_MECHANICS_PRIVATE" not in response.text
                 assert "lorebook_entry_overrides" not in response.text
@@ -311,7 +341,10 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
         assert node["ai_response"] == narrative
         trace = node["agent_trace"]
         assert "SYNTHETIC_MECHANICS_PRIVATE" not in json.dumps(trace)
-        assert [round_record["tool"] for round_record in trace["rounds"]] == [name for name, _ in operations]
+        expected_tools = [name for name, _ in operations]
+        if interjection_phase == "tool":
+            expected_tools.insert(-1, "finalize_turn")
+        assert [round_record["tool"] for round_record in trace["rounds"]] == expected_tools
         assert trace["plan_waits"] == 1
         assert trace["lore_queries"] == trace["lore_hits"] == trace["lore_entry_reads"] == 1
         assert trace["semantic_review_status"] == "passed"
@@ -326,6 +359,7 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
         assert repeated == []
         branch = await restored.branch_to_node(root_id)
         assert branch["node_id"] == root_id
+        assert restored.world_tree.get_node(root_id)["ai_response"] == "You are in the Atrium. The Archive is accessible."
         assert restored.current_state["script_variables"]["test_capacity"] == 4
         assert "test_visit_count" not in restored.script_variables.definitions
         assert not restored.trigger_engine.triggers

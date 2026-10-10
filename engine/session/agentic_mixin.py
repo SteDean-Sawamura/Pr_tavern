@@ -708,6 +708,7 @@ class AgenticMixin:
 
             if needs_replay:
                 continue
+            queued_after_response = len(getattr(self, '_inject_queue', ()) or ())
             tc_list = resp.get("tool_calls") or []
             if suppress_plan_questions:
                 tc_list = [
@@ -827,11 +828,24 @@ class AgenticMixin:
                                               and (has_plan_questions or name not in _PRE_PLAN_READ_TOOLS))))
                 deferred_for_read = (same_batch_read and name in (
                     "write_narrative", "finalize_turn", "delegate_settlement"))
+                deferred_for_injection = len(getattr(self, '_inject_queue', ()) or ()) > queued_after_response
                 deferred = (defer_for_questions and tc is not active_plan_call
                             and (not plan_before_tools or plan_seen
-                                 or name not in _PRE_PLAN_READ_TOOLS)) or deferred_for_plan or deferred_for_read
+                                 or name not in _PRE_PLAN_READ_TOOLS)) or deferred_for_plan or deferred_for_read or deferred_for_injection
+                if not deferred and report_tool_start:
+                    yield {"type": "tool_started", "label": label,
+                           "round": round_num + 1, "tool_name": name}
+                    if getattr(self, '_abort_flag', False):
+                        holder.text = _narrative_text
+                        holder.records = records
+                        yield {"type": "aborted", "round": round_num + 1, "label": label}
+                        return
+                    deferred_for_injection = len(getattr(self, '_inject_queue', ()) or ()) > queued_after_response
+                    deferred = deferred_for_injection
                 if deferred:
-                    if defer_for_questions and (plan_seen or not deferred_for_plan):
+                    if deferred_for_injection:
+                        reason = "玩家补充了新指令，此调用未执行；请先读取插话，再根据已完成工具结果重新推演"
+                    elif defer_for_questions and (plan_seen or not deferred_for_plan):
                         reason = "计划等待玩家选择；收到玩家回复后重新调用此工具"
                     elif deferred_for_plan and plan_seen:
                         reason = "请等待下一轮完整推演上下文后重新调用此工具"
@@ -841,9 +855,6 @@ class AgenticMixin:
                         reason = "请先调用 submit_plan 提交本轮计划，再重新调用此工具"
                     result = json.dumps({"error": reason}, ensure_ascii=False)
                 else:
-                    if report_tool_start:
-                        yield {"type": "tool_started", "label": label,
-                               "round": round_num + 1, "tool_name": name}
                     tool_started = time.monotonic()
                     try:
                         result = dispatch(name, args)
@@ -952,6 +963,9 @@ class AgenticMixin:
 
             # --- inject check: let the user inject a message between rounds ---
             inject_queue = getattr(self, '_inject_queue', None)
+            if (len(inject_queue or ()) > queued_after_response and round_num == max_rounds - 1
+                    and max_rounds < initial_max_rounds + 3):
+                max_rounds += 1
             if plan_id and inject_queue is not None and round_num < max_rounds - 1:
                 control_event = getattr(self, '_agent_control_event', None)
                 heartbeat_counter = 0
