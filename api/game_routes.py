@@ -1229,6 +1229,23 @@ async def inject_message(save_id: str, req: InjectMessageRequest):
                 if cursor.rowcount != 1:
                     raise HTTPException(status_code=409, detail="计划已失效，请等待当前计划")
                 await db.commit()
+            if (_sessions.get(save_id) is not session
+                    or not session._active_agent_stream
+                    or not session._agent_inject_enabled
+                    or getattr(session, "_abort_flag", False)
+                    or req.stream_id != session._active_agent_stream_id
+                    or action_id != session._active_agent_action_id
+                    or action_id != session._pending_agent_action_id
+                    or req.plan_id != session._pending_agent_plan_id
+                    or session._inject_queue):
+                async with get_db() as db:
+                    await db.execute(
+                        """UPDATE pending_action_plans SET reply = NULL
+                           WHERE save_id = ? AND action_id = ? AND plan_id = ? AND reply = ?""",
+                        (save_id, action_id, req.plan_id, req.message),
+                    )
+                    await db.commit()
+                raise HTTPException(status_code=409, detail="计划已失效，请等待当前计划")
         session._pending_agent_plan_id = None
         session._queued_agent_plan_reply_id = req.plan_id
     else:
