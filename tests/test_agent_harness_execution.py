@@ -32,6 +32,11 @@ async def test_retrieval_settlement_stream_and_reload(
             {"id": "test_atrium", "name": "Atrium"},
             {"id": "test_archive", "name": "Archive", "travel_time": "PT5M"},
         ],
+        "npcs": [{"id": "test_librarian", "name": "Librarian", "default_location": "test_atrium"}],
+        "persistent_states": [
+            {"id": "test_departure", "name": "Before arrival"},
+            {"id": "test_arrived", "name": "After arrival"},
+        ],
         "variables": [{
             "id": "test_capacity", "type": "number", "default": 4, "min": 0, "max": 9,
             "description": "SYNTHETIC_MECHANICS_PRIVATE",
@@ -41,6 +46,8 @@ async def test_retrieval_settlement_stream_and_reload(
              "visibility": "world", "content": "The shelf label reads LANTERN."},
             {"id": "test_future", "keys": ["later"], "enabled": False,
              "visibility": "secret", "content": "SYNTHETIC_UNREAD_DETAILS"},
+            {"id": "test_callback", "keys": ["callback"], "enabled": False,
+             "visibility": "secret", "content": "SYNTHETIC_LIFECYCLE_DETAILS"},
         ],
         "one_time_events": [{
             "id": "test_arrival", "trigger_time": "2030-01-01T09:05:00",
@@ -69,6 +76,32 @@ async def test_retrieval_settlement_stream_and_reload(
             "id": "test_visit_roll", "dice": "1d1", "trigger_type": "per_turn",
         }},
     ])
+    schedule_params = {
+        "npc_id": "test_librarian", "time_range": "09:00-10:00", "location": "test_archive",
+        "activity": "Inspect the shelves.", "priority": 80, "expires": "2030-01-02T00:00:00",
+    }
+    for action_name, params in [
+        ("reveal_lore", {"entry_id": "test_callback"}),
+        ("schedule_override", schedule_params),
+        ("activate_persistent_state", {"target": "test_arrived"}),
+        ("deactivate_persistent_state", {"target": "test_departure"}),
+    ]:
+        script["one_time_events"][0]["effects"].append({"type": "add_trigger", "trigger": {
+            "id": f"test_after_{action_name}", "event": "after_ai", "action": action_name, "params": params,
+        }})
+
+    def assert_lifecycle_state(current, *, settled):
+        state = current.current_state
+        assert state.get("active_persistent_states") == ["test_arrived" if settled else "test_departure"]
+        overrides = {"test_librarian": [{key: value for key, value in schedule_params.items() if key != "npc_id"}]}
+        assert state.get("npc_schedule_overrides", {}) == (overrides if settled else {})
+        assert current.prompt_builder._resolve_npc_location("test_librarian", state, state["game_time"]) == (
+            "test_archive" if settled else "test_atrium"
+        )
+        entry = next(entry for entry in current.prompt_builder.lorebook.entries if entry.id == "test_callback")
+        assert entry.enabled is settled
+        assert "test_callback" not in state.get("pc_discovered_lore", [])
+
     narrative = (
         "You leave the Atrium and reach the Archive after five minutes. "
         "Inside, you inspect the shelf without disturbing its contents. "
@@ -149,6 +182,7 @@ async def test_retrieval_settlement_stream_and_reload(
         "player": {"name": "Visitor", "location": "test_atrium"},
         "visible_locations": ["test_atrium", "test_archive"],
         "display_names": {"test_atrium": "Atrium", "test_archive": "Archive"},
+        "active_persistent_states": ["test_departure"],
     }
     session.script_variables.init_state(session.current_state)
     root_id = session.world_tree.add_node(
@@ -219,6 +253,7 @@ async def test_retrieval_settlement_stream_and_reload(
                 assert "test_visit_count" not in session.script_variables.definitions
                 assert not session.trigger_engine.triggers
                 assert not session.script.get("random_items")
+                assert_lifecycle_state(session, settled=False)
                 async with database.get_db() as db:
                     plan_reply = await (await db.execute(
                         "SELECT reply FROM pending_action_plans WHERE save_id = ?", (session.save_id,),
@@ -245,6 +280,9 @@ async def test_retrieval_settlement_stream_and_reload(
                 assert final["state"]["player"]["location"] == "test_archive"
                 assert final["state"]["game_time"] == "2030-01-01T09:05:00"
                 assert session.current_state["script_variables"]["test_capacity"] == 7
+                assert_lifecycle_state(session, settled=True)
+                assert final["state"]["active_persistent_states"] == ["test_arrived"]
+                assert final["state"]["npc_schedule_overrides"] == session.current_state["npc_schedule_overrides"]
                 assert all(args.get("summary") != "Outdated decision" for name, args in dispatched)
                 if interjection_phase == "tool":
                     deferred_results = [message["content"] for messages in requests for message in messages
@@ -252,6 +290,8 @@ async def test_retrieval_settlement_stream_and_reload(
                     assert deferred_results and all(json.loads(result).get("error") for result in deferred_results)
                 assert "SYNTHETIC_UNREAD_DETAILS" not in response.text
                 assert "SYNTHETIC_MECHANICS_PRIVATE" not in response.text
+                assert "SYNTHETIC_LIFECYCLE_DETAILS" not in response.text
+                assert "test_callback" not in final["state"].get("pc_discovered_lore", [])
                 assert "lorebook_entry_overrides" not in response.text
                 assert "mechanics_overrides" not in response.text
                 assert "_dyn_test_visit_hook" not in response.text
@@ -307,6 +347,7 @@ async def test_retrieval_settlement_stream_and_reload(
                 assert replay.status_code == 200
                 assert _stream_events(replay.text) == events
                 assert provider.generate_with_tools.await_count == calls_before_replay
+                assert_lifecycle_state(session, settled=True)
             finally:
                 release_narrative.set()
                 if pending is not None and not pending.done():
@@ -327,6 +368,7 @@ async def test_retrieval_settlement_stream_and_reload(
         assert restored.current_state["game_time"] == "2030-01-01T09:05:00"
         assert restored.current_state["script_variables"]["test_capacity"] == 7
         assert restored.current_state["script_variables"]["test_visit_count"] == 2
+        assert_lifecycle_state(restored, settled=True)
         saved_mechanics = {
             category: json.loads(restored._handle_consult_rules({"category": category, "query": "test_visit"}))["entries"]
             for category in ("variables", "triggers", "random_items")
@@ -341,6 +383,7 @@ async def test_retrieval_settlement_stream_and_reload(
         assert node["ai_response"] == narrative
         trace = node["agent_trace"]
         assert "SYNTHETIC_MECHANICS_PRIVATE" not in json.dumps(trace)
+        assert "SYNTHETIC_LIFECYCLE_DETAILS" not in json.dumps(trace)
         expected_tools = [name for name, _ in operations]
         if interjection_phase == "tool":
             expected_tools.insert(-1, "finalize_turn")
@@ -364,6 +407,7 @@ async def test_retrieval_settlement_stream_and_reload(
         assert "test_visit_count" not in restored.script_variables.definitions
         assert not restored.trigger_engine.triggers
         assert not restored._random_item_by_id
+        assert_lifecycle_state(restored, settled=False)
         for category in saved_mechanics:
             assert json.loads(restored._handle_consult_rules({"category": category, "query": "test_visit"}))["entries"] == []
         previous = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": "test_label"}))
@@ -372,6 +416,7 @@ async def test_retrieval_settlement_stream_and_reload(
         )
         branch = await restored.branch_to_node(final["node_id"])
         assert branch["node_id"] == final["node_id"]
+        assert_lifecycle_state(restored, settled=True)
         assert restored.current_state["script_variables"]["test_capacity"] == 7
         for category, entries in saved_mechanics.items():
             assert json.loads(restored._handle_consult_rules({"category": category, "query": "test_visit"}))["entries"] == entries

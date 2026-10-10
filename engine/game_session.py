@@ -3385,10 +3385,16 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
                     effects["set_var"] = [params]
                 elif action == "inject_prompt":
                     effects["inject_prompt"] = params.get("text", "")
-                elif action == "activate_lore":
+                elif action in ("activate_lore", "reveal_lore"):
                     effects["activate_lore"] = [params.get("entry_id", "")]
                 elif action == "deactivate_lore":
                     effects["deactivate_lore"] = [params.get("entry_id", "")]
+                elif action == "schedule_override":
+                    effects["schedule_override"] = [{"action": action, "params": params}]
+                elif action == "activate_persistent_state" and params.get("target"):
+                    effects["activate_state"] = [params["target"]]
+                elif action == "deactivate_persistent_state" and params.get("target"):
+                    effects["deactivate_state"] = [params["target"]]
                 elif action == "notify":
                     effects["notify"] = params.get("message", "")
                 sys_tree["nodes"].append({

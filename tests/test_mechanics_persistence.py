@@ -45,6 +45,81 @@ def definitions(session):
     })
 
 
+@pytest.mark.parametrize("dynamic", [False, True])
+@pytest.mark.parametrize("dispatch", ["_fire_event_dual", "_fire_lifecycle_event"])
+@pytest.mark.parametrize("action, params", [
+    ("reveal_lore", {"entry_id": "test_hook_lore"}),
+    ("schedule_override", {
+        "npc_id": "test_hook_npc", "time_range": "09:00-10:00", "location": "test_hook_room",
+        "activity": "Inspect the shelves.", "priority": 80, "expires": "2030-01-02T00:00:00",
+    }),
+    ("activate_persistent_state", {"target": "test_hook_state"}),
+    ("deactivate_persistent_state", {"target": "test_hook_state"}),
+    ("activate_persistent_state", {}),
+    ("deactivate_persistent_state", {}),
+])
+def test_lifecycle_action_declarations_preserve_legacy_effects(dynamic, dispatch, action, params):
+    trigger = {"id": "test_hook", "event": "test_signal", "action": action, "params": params}
+    script = {
+        "script_id": "synthetic-hook-actions", "name": "Synthetic hook actions", "settings": {},
+        "triggers": [] if dynamic else [trigger],
+        "lorebook": [{"id": "test_hook_lore", "keys": ["test hook"], "enabled": False,
+                      "visibility": "secret", "content": "Synthetic hidden trigger lore."}],
+    }
+
+    def create():
+        current = GameSession(copy.deepcopy(script), None)
+        current.current_state = {
+            "game_time": "2030-01-01T09:00:00", "player": {},
+            "active_persistent_states": ["test_hook_state"] if action == "deactivate_persistent_state" else [],
+        }
+        if dynamic:
+            current._apply_trigger_updates({"add": [copy.deepcopy(trigger)]})
+        return current
+
+    def effects(current):
+        entry = next(entry for entry in current.prompt_builder.lorebook.entries if entry.id == "test_hook_lore")
+        return {
+            "active_states": copy.deepcopy(current.current_state.get("active_persistent_states", [])),
+            "schedules": copy.deepcopy(current.current_state.get("npc_schedule_overrides", {})),
+            "enabled": entry.enabled,
+            "discovered": copy.deepcopy(current.current_state.get("pc_discovered_lore", [])),
+        }
+
+    session, legacy = create(), create()
+    initial = copy.deepcopy(session.current_state)
+    initial_effects = effects(session)
+    legacy_actions = legacy.trigger_engine.fire("test_signal", legacy.current_state)
+    legacy._apply_trigger_effects(legacy.trigger_engine.execute_actions(legacy_actions, legacy.current_state))
+    expected = effects(legacy)
+    if params:
+        assert expected != initial_effects
+    else:
+        assert expected == initial_effects
+    assert expected["discovered"] == []
+    getattr(session, dispatch)("test_signal")
+    assert effects(session) == expected
+
+    restored = create()
+    restored.current_state = json.loads(json.dumps(session.current_state))
+    restored._hydrate_branch_runtime(restored.current_state)
+    assert effects(restored) == expected
+    session.current_state = copy.deepcopy(initial)
+    session._hydrate_branch_runtime(session.current_state)
+    assert effects(session) == initial_effects
+    getattr(session, dispatch)("test_signal")
+    assert effects(session) == expected
+
+    trigger_id = "_dyn_test_hook" if dynamic else "test_hook"
+    session._apply_trigger_updates({"update": [{"id": trigger_id, "enabled": False}]})
+    getattr(session, dispatch)("test_signal")
+    assert effects(session) == expected
+    session._apply_trigger_updates({"update": [{"id": trigger_id, "enabled": True}]})
+    legacy._apply_trigger_effects(legacy.trigger_engine.execute_actions(legacy_actions, legacy.current_state))
+    getattr(session, dispatch)("test_signal")
+    assert effects(session) == effects(legacy)
+
+
 def test_restore_preserves_latest_variable_value_and_bounds():
     session, script = make_session()
     session._apply_mechanics_results(dynamic_updates())
