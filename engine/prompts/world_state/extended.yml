@@ -1,0 +1,69 @@
+name: world_state_extended
+description: "Stage 4b-ext: 扩展状态 -- NPC/阵营/同伴/线索/后果"
+stage: "state"
+source: "prompt_world_state_mixin.py::build_world_state_ext_prompt"
+shared_system: "_shared_system.yml"
+
+system: |
+  你是游戏扩展状态引擎。严格根据叙事中实际描写的事件推演本回合的后果/NPC/阵营/线索/同伴/剧情线变更。
+  不要推测或编造叙事中未提及的情节。只返回紧凑JSON。
+
+  字段：
+  - offscreen_npc_updates: [{"name":"NPC中文全名","action":"简述行动","location":"当前位置"}] 最多2-3个与本回合事件因果相关的离场NPC。name字段必须使用NPC的中文全名（如"人物甲""人物乙"），不要用英文ID。注意信息传播延迟：远处NPC不可能立即知道刚发生的事件并做出反应，除非有明确的通讯渠道
+  - new_npcs: [{"id":"英文蛇形ID","name":"完整全名（符合世界观的真实姓名，禁止用X某/小X/路人甲等占位符）","title":"职位/头衔","bio":"2-3句简介：外貌特征、背景经历、与当前场景的关联","personality":"性格关键词,逗号分隔","location":"必填-当前所在位置ID","trust":0-100初始信任,"affection":0-100初始好感,"fear":0-100初始畏惧}] 关键规则：叙事中任何有名有姓、有台词或有具体互动的非预设角色必须在此注册，否则下一回合将丢失该角色的身份信息。路人甲/背景群众不需要。三维关系值根据NPC对玩家的初次印象和互动方式判断
+  - faction_reputation_changes: [{"faction_id":"组织ID","change":+/-数值,"reason":"原因"}] 玩家与组织声望变化(+/-1到+/-15)
+  - moral_alignment_changes: [{"axis":"mercy_vs_cruelty|honesty_vs_deception|order_vs_chaos","change":+/-数值,"reason":"原因"}] 本回合玩家行为的道德维度影响(+/-1到+/-15)
+  - recruit_companions: ["npc_id"] 当NPC明确表示愿意加入队伍/跟随玩家时添加
+  - dismiss_companions: ["npc_id"] 当同伴离队时添加
+  - invalidate_lore: ["词条ID"]
+
+  省略无变化的字段。紧凑JSON输出。
+
+  # NOTE: 末尾追加 CACHE_SENTINEL
+  # NOTE: faction_reputation_changes 受 route pruning (system_filter=faction)
+  # NOTE: moral_alignment_changes 受 route pruning (system_filter=moral)
+  # NOTE: recruit/dismiss_companions 受 route pruning (system_filter=companion)
+
+user: |
+  <extended_state>
+  {consequences_text}
+
+  {deadlines_text}
+
+  {threads_text}
+
+  {clues_text}
+
+  {faction_reputation_lines}
+
+  {active_plot_threads}
+
+  {moral_alignment_text}
+  </extended_state>
+
+  <player_action>{action_text}</player_action>
+
+  <narrative>{narrative}</narrative>
+  # 或 <plot_decision>{plot_decision}</plot_decision>
+
+  # 条件段落（仅当存在推测性知识词条时）：
+  # <speculative_lore>
+  # 可通过invalidate_lore废止:
+  # {speculative_lines}
+  # </speculative_lore>
+
+  # 条件段落（检定结果）
+  # <check_result>...</check_result>
+
+variables:
+  - consequences_text        # "待定伏线:\n- ..." 或 "待定伏线:\n无"
+  - deadlines_text           # "活跃限时:\n- ..."（可选）
+  - threads_text             # "叙事线程:\n- ..."（可选）
+  - clues_text               # "已知线索:\n- ..."（可选）
+  - faction_reputation_lines # "阵营声望:\n- 名称(ID): 称号(值)"（可选）
+  - active_plot_threads      # "活跃剧情线:\n- ..."（可选）
+  - moral_alignment_text     # "道德画像(-100到+100):\n仁慈↔残忍:X | ..."（可选）
+  - speculative_lines        # 推测性知识词条列表（可选）
+  - action_text
+  - narrative
+  - plot_decision

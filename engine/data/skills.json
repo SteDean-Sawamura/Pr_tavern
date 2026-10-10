@@ -1,0 +1,444 @@
+{
+  "skills": [
+    {
+      "id": "athletics",
+      "name": "运动",
+      "name_en": "Athletics",
+      "parent_attribute": "STR",
+      "system": ["dnd5e"],
+      "keywords": ["攀爬", "游泳", "跳跃", "举重", "搬", "推", "拉", "摔跤"],
+      "default_value": 0,
+      "description": "涵盖攀爬、游泳、跳跃等体能活动"
+    },
+    {
+      "id": "acrobatics",
+      "name": "杂技",
+      "name_en": "Acrobatics",
+      "parent_attribute": "DEX",
+      "system": ["dnd5e"],
+      "keywords": ["翻滚", "平衡", "翻跟斗", "走钢丝", "杂技", "闪转腾挪"],
+      "default_value": 0,
+      "description": "涵盖翻滚、平衡、特技动作等灵巧活动"
+    },
+    {
+      "id": "sleight_of_hand",
+      "name": "巧手",
+      "name_en": "Sleight of Hand",
+      "parent_attribute": "DEX",
+      "system": ["dnd5e"],
+      "keywords": ["偷窃", "扒窃", "藏物", "戏法", "手法", "顺手牵羊"],
+      "default_value": 0,
+      "description": "涵盖扒窃、藏匿物品、手上戏法等精细操作"
+    },
+    {
+      "id": "stealth",
+      "name": "潜行",
+      "name_en": "Stealth",
+      "parent_attribute": "DEX",
+      "system": ["dnd5e", "coc"],
+      "keywords": ["潜行", "隐藏", "偷偷", "悄悄", "潜入", "暗中", "躲藏", "隐匿"],
+      "default_value": 0,
+      "description": "涵盖隐蔽行动、躲藏、悄无声息地移动"
+    },
+    {
+      "id": "arcana",
+      "name": "奥术",
+      "name_en": "Arcana",
+      "parent_attribute": "INT",
+      "system": ["dnd5e"],
+      "keywords": ["奥术", "魔法知识", "法术", "辨识魔法", "魔法鉴定", "法阵"],
+      "default_value": 0,
+      "description": "涵盖魔法知识、法术辨识、魔法物品鉴定"
+    },
+    {
+      "id": "history",
+      "name": "历史",
+      "name_en": "History",
+      "parent_attribute": "INT",
+      "system": ["dnd5e"],
+      "keywords": ["历史", "回忆", "典故", "考古", "年代", "古迹"],
+      "default_value": 0,
+      "description": "涵盖历史事件、传说、古代文明等知识"
+    },
+    {
+      "id": "investigation",
+      "name": "调查",
+      "name_en": "Investigation",
+      "parent_attribute": "INT",
+      "system": ["dnd5e"],
+      "keywords": ["调查", "推理", "分析", "搜寻线索", "检查", "研究"],
+      "default_value": 0,
+      "description": "涵盖推理分析、搜寻线索、解读密文等智力活动"
+    },
+    {
+      "id": "nature",
+      "name": "自然",
+      "name_en": "Nature",
+      "parent_attribute": "INT",
+      "system": ["dnd5e"],
+      "keywords": ["自然", "动植物", "天气", "地形", "辨别植物", "识别动物"],
+      "default_value": 0,
+      "description": "涵盖动植物、天气、地形等自然知识"
+    },
+    {
+      "id": "religion",
+      "name": "宗教",
+      "name_en": "Religion",
+      "parent_attribute": "INT",
+      "system": ["dnd5e"],
+      "keywords": ["宗教", "神祇", "教义", "祈祷", "神学", "圣物"],
+      "default_value": 0,
+      "description": "涵盖神祇、教义、宗教仪式等知识"
+    },
+    {
+      "id": "animal_handling",
+      "name": "驯兽",
+      "name_en": "Animal Handling",
+      "parent_attribute": "WIS",
+      "system": ["dnd5e"],
+      "keywords": ["驯兽", "安抚动物", "驾驭", "训练动物", "骑乘", "喂养"],
+      "default_value": 0,
+      "description": "涵盖安抚、驾驭、训练动物等互动"
+    },
+    {
+      "id": "insight",
+      "name": "洞察",
+      "name_en": "Insight",
+      "parent_attribute": "WIS",
+      "system": ["dnd5e"],
+      "keywords": ["洞察", "看穿", "识破", "判断真伪", "直觉", "揣摩"],
+      "default_value": 0,
+      "description": "涵盖判断他人意图、识破谎言、读懂情绪"
+    },
+    {
+      "id": "medicine",
+      "name": "医术",
+      "name_en": "Medicine",
+      "parent_attribute": "WIS",
+      "system": ["dnd5e"],
+      "keywords": ["医术", "治疗", "诊断", "急救", "包扎", "稳定伤势"],
+      "default_value": 0,
+      "description": "涵盖诊断病情、稳定伤势、辨识毒素等医疗行为"
+    },
+    {
+      "id": "perception",
+      "name": "感知",
+      "name_en": "Perception",
+      "parent_attribute": "WIS",
+      "system": ["dnd5e"],
+      "keywords": ["察觉", "聆听", "观察", "注意", "搜索", "警觉", "嗅", "看"],
+      "default_value": 0,
+      "description": "涵盖视觉、听觉、嗅觉等感官觉察能力"
+    },
+    {
+      "id": "survival",
+      "name": "求生",
+      "name_en": "Survival",
+      "parent_attribute": "WIS",
+      "system": ["dnd5e"],
+      "keywords": ["求生", "追踪", "觅食", "辨路", "扎营", "野外生存"],
+      "default_value": 0,
+      "description": "涵盖追踪、觅食、辨识方向等野外生存技能"
+    },
+    {
+      "id": "deception",
+      "name": "欺骗",
+      "name_en": "Deception",
+      "parent_attribute": "CHA",
+      "system": ["dnd5e"],
+      "keywords": ["欺骗", "说谎", "伪装", "蒙骗", "隐瞒", "忽悠"],
+      "default_value": 0,
+      "description": "涵盖说谎、伪装身份、误导他人等欺诈行为"
+    },
+    {
+      "id": "intimidation",
+      "name": "威吓",
+      "name_en": "Intimidation",
+      "parent_attribute": "CHA",
+      "system": ["dnd5e"],
+      "keywords": ["威吓", "恐吓", "威胁", "震慑", "逼问", "施压"],
+      "default_value": 0,
+      "description": "涵盖威胁、恐吓、施压等行为"
+    },
+    {
+      "id": "performance",
+      "name": "表演",
+      "name_en": "Performance",
+      "parent_attribute": "CHA",
+      "system": ["dnd5e"],
+      "keywords": ["表演", "唱歌", "演奏", "跳舞", "讲故事", "戏剧"],
+      "default_value": 0,
+      "description": "涵盖音乐、舞蹈、戏剧、说书等表演活动"
+    },
+    {
+      "id": "persuasion",
+      "name": "说服",
+      "name_en": "Persuasion",
+      "parent_attribute": "CHA",
+      "system": ["dnd5e", "coc"],
+      "keywords": ["说服", "劝说", "交涉", "请求", "谈判", "游说", "恳求"],
+      "default_value": 0,
+      "description": "涵盖劝说、谈判、交涉等社交互动"
+    },
+    {
+      "id": "spot_hidden",
+      "name": "侦查",
+      "name_en": "Spot Hidden",
+      "parent_attribute": "INT",
+      "system": ["coc"],
+      "keywords": ["侦查", "搜查", "寻找", "发现", "查看", "搜索"],
+      "default_value": 25,
+      "description": "发现隐藏的物品、暗门、隐秘线索的能力"
+    },
+    {
+      "id": "listen",
+      "name": "聆听",
+      "name_en": "Listen",
+      "parent_attribute": "WIS",
+      "system": ["coc"],
+      "keywords": ["倾听", "偷听", "监听", "聆听", "听声辨位"],
+      "default_value": 20,
+      "description": "通过听觉获取信息、偷听对话的能力"
+    },
+    {
+      "id": "library_use",
+      "name": "图书馆使用",
+      "name_en": "Library Use",
+      "parent_attribute": "INT",
+      "system": ["coc"],
+      "keywords": ["查阅", "翻阅", "查找资料", "文献", "档案", "查档"],
+      "default_value": 20,
+      "description": "在图书馆、档案馆中查找特定信息的能力"
+    },
+    {
+      "id": "occult",
+      "name": "神秘学",
+      "name_en": "Occult",
+      "parent_attribute": "INT",
+      "system": ["coc"],
+      "keywords": ["神秘", "咒语", "仪式", "魔法阵", "符文", "秘术"],
+      "default_value": 5,
+      "description": "关于神秘主义、秘法、超自然传说等知识"
+    },
+    {
+      "id": "psychoanalysis",
+      "name": "精神分析",
+      "name_en": "Psychoanalysis",
+      "parent_attribute": "INT",
+      "system": ["coc"],
+      "keywords": ["精神分析", "心理治疗", "催眠", "疏导", "治疗疯狂"],
+      "default_value": 1,
+      "description": "通过精神分析治疗精神疾病和疯狂状态"
+    },
+    {
+      "id": "psychology",
+      "name": "心理学",
+      "name_en": "Psychology",
+      "parent_attribute": "INT",
+      "system": ["coc"],
+      "keywords": ["心理", "察言观色", "读心", "判断意图", "揣测"],
+      "default_value": 10,
+      "description": "判断他人情绪、意图和心理状态的能力"
+    },
+    {
+      "id": "first_aid",
+      "name": "急救",
+      "name_en": "First Aid",
+      "parent_attribute": "INT",
+      "system": ["coc"],
+      "keywords": ["急救", "包扎", "止血", "救治", "应急处理"],
+      "default_value": 30,
+      "description": "对伤员进行紧急医疗处置的能力"
+    },
+    {
+      "id": "locksmith",
+      "name": "锁匠",
+      "name_en": "Locksmith",
+      "parent_attribute": "DEX",
+      "system": ["coc"],
+      "keywords": ["开锁", "撬锁", "锁匠", "解锁", "配钥匙"],
+      "default_value": 1,
+      "description": "开锁、撬锁、修锁等与锁具相关的技能"
+    },
+    {
+      "id": "disguise",
+      "name": "乔装",
+      "name_en": "Disguise",
+      "parent_attribute": "CHA",
+      "system": ["coc"],
+      "keywords": ["乔装", "化妆", "变装", "假扮", "伪装身份"],
+      "default_value": 5,
+      "description": "通过化妆和装扮改变外貌、冒充他人"
+    },
+    {
+      "id": "art_craft",
+      "name": "艺术/手工",
+      "name_en": "Art/Craft",
+      "parent_attribute": "INT",
+      "system": ["coc"],
+      "keywords": ["绘画", "雕刻", "书法", "制作", "手工", "工艺"],
+      "default_value": 5,
+      "description": "进行艺术创作或手工制作的能力"
+    },
+    {
+      "id": "accounting",
+      "name": "会计学",
+      "name_en": "Accounting",
+      "parent_attribute": "INT",
+      "system": ["coc"],
+      "keywords": ["会计", "账目", "审计", "财务", "查账"],
+      "default_value": 5,
+      "description": "审查财务记录、发现账目异常的能力"
+    },
+    {
+      "id": "climb",
+      "name": "攀爬",
+      "name_en": "Climb",
+      "parent_attribute": "STR",
+      "system": ["coc"],
+      "keywords": ["攀爬", "攀登", "爬", "翻墙", "爬树"],
+      "default_value": 20,
+      "description": "攀爬墙壁、树木、悬崖等的能力"
+    },
+    {
+      "id": "dodge",
+      "name": "闪避",
+      "name_en": "Dodge",
+      "parent_attribute": "DEX",
+      "system": ["coc"],
+      "keywords": ["闪避", "躲闪", "闪开", "回避", "规避"],
+      "default_value": 0,
+      "description": "躲避攻击、闪避危险的能力，基础值为DEX/2"
+    },
+    {
+      "id": "drive_auto",
+      "name": "驾驶",
+      "name_en": "Drive Auto",
+      "parent_attribute": "DEX",
+      "system": ["coc"],
+      "keywords": ["驾驶", "开车", "飙车", "驾车", "行车"],
+      "default_value": 20,
+      "description": "驾驶汽车等陆地交通工具的能力"
+    },
+    {
+      "id": "electrical_repair",
+      "name": "电气维修",
+      "name_en": "Electrical Repair",
+      "parent_attribute": "INT",
+      "system": ["coc"],
+      "keywords": ["电气", "电路", "维修电器", "接线", "电工"],
+      "default_value": 10,
+      "description": "修理电气设备、排除电路故障的能力"
+    },
+    {
+      "id": "fast_talk",
+      "name": "花言巧语",
+      "name_en": "Fast Talk",
+      "parent_attribute": "CHA",
+      "system": ["coc"],
+      "keywords": ["花言巧语", "忽悠", "诓骗", "巧舌", "胡扯", "蒙混"],
+      "default_value": 5,
+      "description": "通过快速的花言巧语蒙骗或迷惑他人"
+    },
+    {
+      "id": "fighting",
+      "name": "格斗",
+      "name_en": "Fighting",
+      "parent_attribute": "STR",
+      "system": ["coc"],
+      "keywords": ["格斗", "肉搏", "拳击", "近身搏斗", "打", "揍"],
+      "default_value": 25,
+      "description": "徒手或使用近战武器进行战斗的能力"
+    },
+    {
+      "id": "firearms",
+      "name": "枪械",
+      "name_en": "Firearms",
+      "parent_attribute": "DEX",
+      "system": ["coc"],
+      "keywords": ["射击", "开枪", "瞄准", "枪法", "手枪", "步枪"],
+      "default_value": 20,
+      "description": "使用各类枪械进行射击的能力"
+    },
+    {
+      "id": "mechanical_repair",
+      "name": "机械维修",
+      "name_en": "Mechanical Repair",
+      "parent_attribute": "INT",
+      "system": ["coc"],
+      "keywords": ["机械修理", "修理", "拆装", "维修机械", "修复"],
+      "default_value": 10,
+      "description": "修理机械装置、排除机械故障的能力"
+    },
+    {
+      "id": "navigate",
+      "name": "导航",
+      "name_en": "Navigate",
+      "parent_attribute": "INT",
+      "system": ["coc"],
+      "keywords": ["导航", "辨别方向", "寻路", "定位", "看地图"],
+      "default_value": 10,
+      "description": "在陌生环境中辨别方向、规划路线的能力"
+    },
+    {
+      "id": "pilot",
+      "name": "驾驶载具",
+      "name_en": "Pilot",
+      "parent_attribute": "DEX",
+      "system": ["coc"],
+      "keywords": ["驾船", "驾驶飞机", "操控载具", "航行", "飞行"],
+      "default_value": 1,
+      "description": "驾驶船只、飞机等特殊载具的能力"
+    },
+    {
+      "id": "ride",
+      "name": "骑术",
+      "name_en": "Ride",
+      "parent_attribute": "DEX",
+      "system": ["coc"],
+      "keywords": ["骑马", "骑术", "驭马", "骑乘", "骑"],
+      "default_value": 5,
+      "description": "骑乘马匹或其他坐骑的能力"
+    },
+    {
+      "id": "throw",
+      "name": "投掷",
+      "name_en": "Throw",
+      "parent_attribute": "DEX",
+      "system": ["coc"],
+      "keywords": ["投掷", "扔", "掷", "抛", "丢"],
+      "default_value": 20,
+      "description": "精准投掷物品或武器的能力"
+    },
+    {
+      "id": "track",
+      "name": "追踪",
+      "name_en": "Track",
+      "parent_attribute": "INT",
+      "system": ["coc"],
+      "keywords": ["追踪", "跟踪", "寻迹", "跟踪目标", "循迹"],
+      "default_value": 10,
+      "description": "通过痕迹追踪目标的能力"
+    },
+    {
+      "id": "cthulhu_mythos",
+      "name": "克苏鲁神话",
+      "name_en": "Cthulhu Mythos",
+      "parent_attribute": "special",
+      "system": ["coc"],
+      "keywords": ["克苏鲁", "旧日支配者", "外神", "黄衣之王", "神话知识"],
+      "default_value": 0,
+      "description": "关于克苏鲁神话体系中恐怖真相的禁忌知识，无法通过常规途径提升"
+    },
+    {
+      "id": "language_own",
+      "name": "母语",
+      "name_en": "Language (Own)",
+      "parent_attribute": "INT",
+      "system": ["coc"],
+      "keywords": ["母语", "读写", "阅读", "语言"],
+      "default_value": 20,
+      "description": "使用母语进行读写和沟通的能力，基础值等于EDU"
+    }
+  ]
+}

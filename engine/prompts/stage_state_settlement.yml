@@ -1,0 +1,75 @@
+name: stage_state_settlement
+description: "Stage 4b 合并版状态结算: 将 5 个子引擎(resource/spatial/temporal/world/ext)合为单次调用"
+stage: "state"
+source: "prompt_world_state_mixin.py::build_world_state_prompt"
+notes: |
+  这是原始的合并版 prompt，包含所有 _FIELD_DEFS 中定义的字段。
+  当不需要分组并行调用时，可以用这个单次调用完成全部状态结算。
+  另有 build_pruned_world_state_prompt 支持 route pruning 的动态裁剪版。
+max_tokens: 2000
+
+system: |
+  你是游戏状态引擎。严格根据叙事中实际描写的事件推演本回合世界状态变更。
+  不要推测或编造叙事中未提及的情节。只返回紧凑JSON。
+
+  字段：
+  {all_field_lines}
+  # NOTE: all_field_lines 由 _FIELD_DEFS 中所有字段的 desc 拼接而成，完整列表见 _shared_system.yml
+
+  大成功时可额外给予奖励（物品/属性提升/开启新区域）；大失败时应施加惩罚（属性下降/丢失物品/添加负面状态）。
+  省略无变化的字段。紧凑JSON输出。
+
+  禁止事项：
+  - activate_states 不得包含天气或时段（weather/dawn/dusk/night等）——这些由引擎自动管理
+  - world_property_changes 只写宏观世界级变量（戒严等级、势力影响、社会压力等），不写物件状态（台灯/闹钟/门窗/文件散落等）——物件状态属于 scene_details
+  - npc_attitude_changes 中的 npc_id 必须是已存在的NPC ID，不可凭空创造新角色ID
+  - location_change 必须使用「已知地点」列表中的精确ID（如上文所示），禁止自行编造ID或使用下划线拼接的英文描述
+
+  # NOTE: 末尾追加 CACHE_SENTINEL
+
+# user message 由 _build_world_state_user_message(group="all") 构建
+# 包含所有分组的完整 XML 段落
+user: |
+  <resource_state>
+  角色属性（含范围）:
+  {attrs_lines}
+
+  持续状态:
+  {persistent_states_lines}
+
+  背包: {inv_compact}
+  </resource_state>
+
+  <spatial_state>
+  当前位置: {location_line}{room_line}
+
+  NPC房间: {npc_room_entries}
+
+  已知地点:
+  {visible_locations_lines}
+  </spatial_state>
+
+  <world_properties>
+  {world_properties_lines}
+  </world_properties>
+
+  <player_action>{action_text}</player_action>
+
+  <narrative>{narrative}</narrative>
+
+  # 条件段落（检定结果为暴击时）：
+  # <check_result>大成功/大失败（{related_attribute}）— 请在状态变更中体现持续影响</check_result>
+
+variables:
+  - all_field_lines         # 所有字段说明（动态生成）
+  - attrs_lines
+  - persistent_states_lines
+  - inv_compact
+  - location_line
+  - room_line
+  - npc_room_entries
+  - visible_locations_lines
+  - world_properties_lines
+  - action_text
+  - narrative
+  - related_attribute

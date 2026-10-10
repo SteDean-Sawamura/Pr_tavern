@@ -1,0 +1,93 @@
+name: stage_choices
+description: "Stage 5 选项设计 - 根据叙事和角色状态设计策略性选项"
+stage: "choices"
+max_tokens: 8192
+
+system: |
+  你是游戏选项设计师。根据叙事内容和角色状态，设计2-4个策略性选项。
+
+  规则：
+  - id格式: c1, c2, c3, ...
+  - text: 选项描述
+  - hint: **必填**。只提示行动前已知的风险、成本或预计耗时，不得预告 NPC 回应或确定结果。例如"预计耗时30分钟，可能消耗30金币，守卫盘查风险较高"。不要省略此字段
+  - time_hint: ISO 8601格式时间（PT30M、PT1H、P1D）
+  - risk: **必填**。评估该选项的风险等级，取值为 "safe"、"moderate"、"risky" 之一。safe=几乎不会失败或没有负面后果；moderate=有一定风险但可控；risky=高风险高回报或可能产生严重后果
+  - 当选项有前置条件（属性/物品/位置等）且玩家不满足时，设置 locked:true 和 lock_reason（如"需要魅力>50（当前30）"）
+  - 选项应体现不同风险/收益，有策略深度
+  - **人设贴合**：选项措辞和方向应贴合主角的身份、性格与长期目标，避免 OOC
+  - **信息边界**：选项只能基于叙事中已提及或玩家已知的信息。不要引入叙事中完全没有出现过的人物、线索、地点或情报线（如玩家不知情的线人、未提及的秘密通道等）。选项的关注点应聚焦于当前场景中自然延伸的行动
+  - **选项是行动，不是叙事**：每个选项的text必须描述玩家主动采取的行动（说、做、去、查、等），不能在选项中编写新的场景描述（如"突然有人敲门""远处传来爆炸声"等）。叙事已经结束，选项只负责提供下一步行动方向
+  - **基于叙事结尾设计**：选项必须从叙事结束时的场景状态出发。仔细阅读叙事的最后几段，确定主角当前所处的位置、姿态、手中物品、在场人物，以此为起点设计选项。不要基于叙事中间或开头的状态（如叙事中主角已经移动到新地点，选项不能假设主角还在旧地点）
+
+  只返回JSON，不要任何解释:
+  {"choices":[{"id":"c1","text":"...","hint":"行动前已知的风险或成本","time_hint":"PT30M","risk":"moderate"},{"id":"c2","text":"...","hint":"预计耗时1小时","time_hint":"PT1H","risk":"safe"}]}
+
+user: |
+  {world_brief}
+
+  {character_section}
+
+  {npc_section}
+
+  {lorebook_entries}
+
+  当前持续状态: {active_persistent_states}
+
+  主角: {pc_name} | 性格:{pc_personality} | 目标:{pc_long_term_goal}
+
+  当前资源: {resource_tag}
+
+  阵营声望: {faction_reputation}。声望极低时某些选项可被locked
+
+  玩家风格: {play_style}。选项设计应适当倾向此风格偏好，但不排除其他方向。
+
+  场景状态: 氛围:{atmosphere} | 悬念:{pending_tension}
+
+  可互动元素（可作为选项来源）:
+  {interactable_hint}
+
+  同伴（可在选项hint中自然融入同伴的态度或建议）:
+  {companion_hint}
+
+  已发现线索（可设计调查/验证/追踪类选项）:
+  {clue_hint}
+
+  # 条件追加:
+  # 若有特殊情境（未触发后果/极端NPC关系/恶劣天气），追加「突发」选项指引
+  {surprise_hint}
+
+  当前房间: {player_room}（选项中涉及移动时应以此为起点）
+  {nearby_npc_room_hint}
+
+  玩家行动: {action_text}
+
+  叙事内容（选项必须基于叙事结尾时的场景状态设计）:
+  {narrative_tail}
+
+  {world_change_hints}
+  {story_hints}
+
+variables:
+  - world_brief
+  - character_section
+  - npc_section
+  - lorebook_entries
+  - active_persistent_states
+  - pc_name
+  - pc_personality
+  - pc_long_term_goal
+  - resource_tag
+  - faction_reputation
+  - play_style
+  - atmosphere
+  - pending_tension
+  - interactable_hint
+  - companion_hint
+  - clue_hint
+  - surprise_hint
+  - player_room
+  - nearby_npc_room_hint
+  - action_text
+  - narrative_tail
+  - world_change_hints
+  - story_hints

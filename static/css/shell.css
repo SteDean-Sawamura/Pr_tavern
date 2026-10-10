@@ -1,0 +1,176 @@
+:root {
+  /* 迁移到 design-tokens.css，这里做别名兼容 */
+  --brand-active: var(--brand-active, rgba(166, 107, 53, 0.22));
+
+  --bg-base: var(--bg-0);
+  --bg-surface: var(--bg-1);
+  --bg-elevated: var(--bg-2);
+
+  --text-primary: var(--text-0);
+  --text-secondary: var(--text-1);
+  --text-muted: var(--text-2);
+
+  --error: var(--danger);
+
+  --header-h: 40px;
+  --sidebar-w: 56px;
+  --status-h: 24px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 品牌条 */
+.shell-header {
+  height: var(--header-h);
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+}
+
+.shell-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.brand-icon { font-size: 18px; }
+.brand-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--brand);
+  letter-spacing: 2px;
+}
+
+.shell-header-right {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* 主体 */
+.shell-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* 侧栏 */
+.shell-sidebar {
+  width: var(--sidebar-w);
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 8px 6px;
+}
+
+.sidebar-top, .sidebar-bottom {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nav-btn {
+  width: 44px;
+  height: 44px;
+  border: none;
+  background: transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  transition: background var(--ease);
+  position: relative;
+}
+
+.nav-icon { font-size: 17px; line-height: 1; }
+.nav-text { font-size: 9px; color: var(--text-muted); transition: color var(--ease); }
+
+.nav-btn:hover { background: var(--brand-dim); }
+.nav-btn:hover .nav-text { color: var(--text-secondary); }
+
+.nav-btn.active { background: var(--brand-dim); }
+.nav-btn.active .nav-text { color: var(--brand); font-weight: 500; }
+.nav-btn.active::after {
+  content: '';
+  position: absolute;
+  left: -6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 18px;
+  background: var(--brand);
+  border-radius: 0 2px 2px 0;
+}
+
+.nav-divider {
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--border);
+}
+
+/* 内容区 */
+.shell-content {
+  flex: 1;
+  position: relative;
+  background: var(--bg-base);
+}
+
+.shell-content iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+/* 状态栏 */
+.shell-status {
+  height: var(--status-h);
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.status-left, .status-right { display: flex; align-items: center; gap: 6px; }
+.status-center { color: var(--text-secondary); }
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+}
+
+.status-dot.loading {
+  background: var(--warning);
+  animation: dot-pulse 1s infinite alternate;
+}
+
+.status-dot.error { background: var(--error); }
+
+@keyframes dot-pulse { from { opacity: .4; } to { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 0s !important; animation-duration: 0s !important; }
+}

@@ -1,0 +1,777 @@
+{
+  "system": "coc",
+  "check_rule": "brp",
+  "classes": [
+    {
+      "id": "private_eye",
+      "name": "私家侦探",
+      "name_en": "Private Eye",
+      "description": "游走在法律灰色地带的调查专家，擅长追踪线索和揭露隐藏的真相。多年的街头经验让他们熟知城市的每一个阴暗角落，无论是跟踪目标还是撬开锁头，都是他们的拿手好戏。",
+      "occupation_skills": ["spot_hidden", "psychology", "stealth", "disguise", "firearms", "fast_talk", "locksmith", "track"],
+      "credit_rating": {"min": 9, "max": 30},
+      "attribute_bonuses": {"INT": 5, "WIS": 5},
+      "narrative_tags": ["调查经验", "街头知识", "隐蔽跟踪"],
+      "initial_inventory": [
+        {"item": "左轮手枪", "quantity": 1},
+        {"item": "放大镜", "quantity": 1},
+        {"item": "笔记本", "quantity": 1},
+        {"item": "伪装道具包", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "pe_1",
+          "name": "老练侦探",
+          "level": 1,
+          "requires": [],
+          "description": "多年调查经验赋予敏锐的观察力，能迅速发现常人忽略的细节。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "spot_hidden", "bonus": 10},
+              {"skill": "psychology", "bonus": 10}
+            ],
+            "narrative_tags": ["察言观色"]
+          }
+        },
+        {
+          "id": "pe_2",
+          "name": "暗中跟踪",
+          "level": 2,
+          "requires": ["pe_1"],
+          "description": "精通尾随与反侦察技术，能在目标毫无察觉的情况下持续追踪。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "stealth", "bonus": 15},
+              {"skill": "track", "bonus": 10}
+            ],
+            "narrative_tags": ["无声尾随"]
+          }
+        },
+        {
+          "id": "pe_3",
+          "name": "线索直觉",
+          "level": 3,
+          "requires": ["pe_2"],
+          "description": "凭借直觉将碎片化的线索串联成完整的推理链条，常常在关键时刻灵光一现。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "spot_hidden", "bonus": 15},
+              {"skill": "locksmith", "bonus": 10}
+            ],
+            "narrative_tags": ["推理直觉"],
+            "abilities": ["clue_intuition"]
+          }
+        },
+        {
+          "id": "pe_4",
+          "name": "审讯大师",
+          "level": 4,
+          "requires": ["pe_3"],
+          "description": "深谙人性弱点，能通过软硬兼施的手段从最顽固的对象口中套出真话。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "fast_talk", "bonus": 20},
+              {"skill": "psychology", "bonus": 15}
+            ],
+            "narrative_tags": ["心理施压", "套话高手"],
+            "abilities": ["master_interrogation"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "professor",
+      "name": "教授",
+      "name_en": "Professor",
+      "description": "大学里受人尊敬的学者，毕生致力于某一领域的深入研究。渊博的知识让他们能够解读古老的文献和神秘的符文，但象牙塔外的世界往往比学术论文更加危险。",
+      "occupation_skills": ["library_use", "history", "occult", "arcana", "psychology", "persuasion", "accounting", "art_craft"],
+      "credit_rating": {"min": 20, "max": 70},
+      "attribute_bonuses": {"INT": 15, "WIS": 5},
+      "narrative_tags": ["学术权威", "古籍研究", "多语言能力"],
+      "initial_inventory": [
+        {"item": "公文包", "quantity": 1},
+        {"item": "学术著作", "quantity": 1},
+        {"item": "放大镜", "quantity": 1},
+        {"item": "翻译词典", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "prof_1",
+          "name": "学术基础",
+          "level": 1,
+          "requires": [],
+          "description": "扎实的学术训练使其能够高效利用图书馆和档案馆的资源进行研究。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "library_use", "bonus": 15},
+              {"skill": "history", "bonus": 10}
+            ],
+            "narrative_tags": ["学术素养"]
+          }
+        },
+        {
+          "id": "prof_2",
+          "name": "古籍破译",
+          "level": 2,
+          "requires": ["prof_1"],
+          "description": "掌握多种古代语言和密码学知识，能够破译晦涩难懂的古老文献。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "occult", "bonus": 15},
+              {"skill": "arcana", "bonus": 10}
+            ],
+            "narrative_tags": ["古文解读"],
+            "abilities": ["decipher_ancient_text"]
+          }
+        },
+        {
+          "id": "prof_3",
+          "name": "跨学科研究",
+          "level": 3,
+          "requires": ["prof_2"],
+          "description": "将不同学科的知识融会贯通，从多个角度分析复杂的神秘现象。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "history", "bonus": 15},
+              {"skill": "psychology", "bonus": 10}
+            ],
+            "narrative_tags": ["博学多识"],
+            "abilities": ["cross_reference"]
+          }
+        },
+        {
+          "id": "prof_4",
+          "name": "神秘学洞见",
+          "level": 4,
+          "requires": ["prof_3"],
+          "description": "对神秘学的深刻理解使其能够洞悉超自然现象的本质，但这也意味着窥探了不该知道的秘密。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "occult", "bonus": 20},
+              {"skill": "arcana", "bonus": 15}
+            ],
+            "narrative_tags": ["禁忌知识", "真相洞察"],
+            "abilities": ["eldritch_insight"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "journalist",
+      "name": "新闻记者",
+      "name_en": "Journalist",
+      "description": "追逐真相的新闻工作者，善于通过交际手腕和敏锐的观察获取独家信息。广泛的人脉网络是他们最强大的武器，无论是高层政客还是街头混混都可能成为他们的线人。",
+      "occupation_skills": ["fast_talk", "persuasion", "psychology", "spot_hidden", "photography", "history", "library_use", "stealth"],
+      "credit_rating": {"min": 9, "max": 30},
+      "attribute_bonuses": {"CHA": 10, "INT": 5},
+      "narrative_tags": ["社交广泛", "情报网络", "口才出众"],
+      "initial_inventory": [
+        {"item": "相机", "quantity": 1},
+        {"item": "笔记本", "quantity": 1},
+        {"item": "记者证", "quantity": 1},
+        {"item": "钢笔", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "jn_1",
+          "name": "新闻嗅觉",
+          "level": 1,
+          "requires": [],
+          "description": "对不寻常事件有着天生的敏感度，能从日常琐事中嗅出不对劲的气息。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "spot_hidden", "bonus": 10},
+              {"skill": "psychology", "bonus": 10}
+            ],
+            "narrative_tags": ["直觉敏锐"]
+          }
+        },
+        {
+          "id": "jn_2",
+          "name": "人脉网络",
+          "level": 2,
+          "requires": ["jn_1"],
+          "description": "多年积累的人脉遍布社会各阶层，总能找到知情人提供关键信息。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "fast_talk", "bonus": 15},
+              {"skill": "persuasion", "bonus": 10}
+            ],
+            "narrative_tags": ["广泛线人"],
+            "abilities": ["contact_network"]
+          }
+        },
+        {
+          "id": "jn_3",
+          "name": "深度调查",
+          "level": 3,
+          "requires": ["jn_2"],
+          "description": "具备深度调查报道的能力，擅长挖掘被掩盖的真相和跟踪资金流向。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "library_use", "bonus": 15},
+              {"skill": "spot_hidden", "bonus": 10}
+            ],
+            "narrative_tags": ["深度挖掘"],
+            "abilities": ["investigative_reporting"]
+          }
+        },
+        {
+          "id": "jn_4",
+          "name": "舆论操控",
+          "level": 4,
+          "requires": ["jn_3"],
+          "description": "深谙舆论运作之道，能够通过精心策划的报道引导公众舆论甚至施压权贵。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "persuasion", "bonus": 20},
+              {"skill": "fast_talk", "bonus": 15}
+            ],
+            "narrative_tags": ["舆论武器", "媒体力量"],
+            "abilities": ["public_pressure"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "doctor",
+      "name": "医生",
+      "name_en": "Doctor",
+      "description": "受过严格医学训练的专业人士，擅长治疗伤病和分析病理。冷静理性的头脑使他们在混乱的局面中依然能做出准确的判断，但面对超自然的恐怖时，科学知识有时反而成为负担。",
+      "occupation_skills": ["first_aid", "medicine", "psychology", "biology", "pharmacy", "persuasion", "library_use", "science"],
+      "credit_rating": {"min": 30, "max": 80},
+      "attribute_bonuses": {"INT": 10, "WIS": 5, "HP": 5},
+      "narrative_tags": ["医疗专长", "法医知识", "冷静分析"],
+      "initial_inventory": [
+        {"item": "医疗箱", "quantity": 1},
+        {"item": "手术刀", "quantity": 1},
+        {"item": "听诊器", "quantity": 1},
+        {"item": "急救包", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "doc_1",
+          "name": "急救专精",
+          "level": 1,
+          "requires": [],
+          "description": "熟练的急救技术能够在危急时刻稳定伤者的状况，争取宝贵的救治时间。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "first_aid", "bonus": 15},
+              {"skill": "medicine", "bonus": 10}
+            ],
+            "narrative_tags": ["紧急救治"]
+          }
+        },
+        {
+          "id": "doc_2",
+          "name": "外科手术",
+          "level": 2,
+          "requires": ["doc_1"],
+          "description": "精湛的外科技术使其能够在简陋条件下进行复杂手术，挽救濒死的同伴。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "medicine", "bonus": 15},
+              {"skill": "biology", "bonus": 10}
+            ],
+            "narrative_tags": ["手术精通"],
+            "abilities": ["field_surgery"]
+          }
+        },
+        {
+          "id": "doc_3",
+          "name": "法医鉴定",
+          "level": 3,
+          "requires": ["doc_2"],
+          "description": "具备法医学知识，能够通过检验尸体和痕迹还原事件的真相。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "science", "bonus": 15},
+              {"skill": "spot_hidden", "bonus": 10}
+            ],
+            "narrative_tags": ["法医分析"],
+            "abilities": ["forensic_analysis"]
+          }
+        },
+        {
+          "id": "doc_4",
+          "name": "精神治疗",
+          "level": 4,
+          "requires": ["doc_3"],
+          "description": "深入研究精神病理学，能够帮助同伴从疯狂的边缘恢复理智，对抗恐惧侵蚀。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "psychology", "bonus": 20},
+              {"skill": "medicine", "bonus": 10}
+            ],
+            "narrative_tags": ["心理疗愈", "对抗疯狂"],
+            "abilities": ["psychiatric_treatment"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "antiquarian",
+      "name": "古董商",
+      "name_en": "Antiquarian",
+      "description": "沉迷于古老文物与神秘藏品的鉴赏家，在古董市场和黑市中都有广泛的关系网。他们对历史文物的鉴定能力无人能及，但有时候，某些不该被找到的东西恰恰会被他们翻出来。",
+      "occupation_skills": ["arcana", "history", "library_use", "spot_hidden", "art_craft", "accounting", "occult", "persuasion"],
+      "credit_rating": {"min": 30, "max": 70},
+      "attribute_bonuses": {"INT": 10, "CHA": 5},
+      "narrative_tags": ["文物鉴定", "黑市人脉", "古代知识"],
+      "initial_inventory": [
+        {"item": "鉴定工具", "quantity": 1},
+        {"item": "古董目录", "quantity": 1},
+        {"item": "放大镜", "quantity": 1},
+        {"item": "手套", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "aq_1",
+          "name": "古物鉴定",
+          "level": 1,
+          "requires": [],
+          "description": "对古代文物有着敏锐的鉴别眼光，能够分辨真品与赝品的细微差异。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "art_craft", "bonus": 15},
+              {"skill": "spot_hidden", "bonus": 10}
+            ],
+            "narrative_tags": ["鉴宝之眼"]
+          }
+        },
+        {
+          "id": "aq_2",
+          "name": "秘密收藏",
+          "level": 2,
+          "requires": ["aq_1"],
+          "description": "与地下收藏圈建立了深厚的联系，能够获取市面上难以寻觅的稀有物品。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "accounting", "bonus": 10},
+              {"skill": "persuasion", "bonus": 15}
+            ],
+            "narrative_tags": ["黑市渠道"],
+            "abilities": ["black_market_access"]
+          }
+        },
+        {
+          "id": "aq_3",
+          "name": "禁忌文献",
+          "level": 3,
+          "requires": ["aq_2"],
+          "description": "接触过诸多被禁止流通的古籍和手抄本，对那些不可名状之物有了初步认识。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "occult", "bonus": 15},
+              {"skill": "history", "bonus": 10}
+            ],
+            "narrative_tags": ["禁书收藏"],
+            "abilities": ["forbidden_knowledge"]
+          }
+        },
+        {
+          "id": "aq_4",
+          "name": "古代仪式知识",
+          "level": 4,
+          "requires": ["aq_3"],
+          "description": "从无数古代文献中拼凑出被遗忘的仪式知识，能够辨识甚至理解远古时代的神秘仪式。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "arcana", "bonus": 20},
+              {"skill": "occult", "bonus": 15}
+            ],
+            "narrative_tags": ["仪式专家", "远古秘闻"],
+            "abilities": ["ritual_knowledge"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "dilettante",
+      "name": "纨绔子弟",
+      "name_en": "Dilettante",
+      "description": "出身富裕家庭的上流社会人士，拥有挥之不尽的财富和广泛的社交圈。虽然缺乏专业技能，但金钱和人脉往往能打开其他人打不开的大门，只是优渥的生活并未让他们做好面对真正恐怖的准备。",
+      "occupation_skills": ["persuasion", "deception", "firearms", "ride", "art_craft", "fast_talk", "performance", "spot_hidden"],
+      "credit_rating": {"min": 50, "max": 99},
+      "attribute_bonuses": {"CHA": 10, "gold": 30},
+      "narrative_tags": ["名流社交", "资金充裕", "见多识广"],
+      "initial_inventory": [
+        {"item": "定制西装", "quantity": 1},
+        {"item": "银质烟盒", "quantity": 1},
+        {"item": "名片", "quantity": 1},
+        {"item": "手杖", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "dl_1",
+          "name": "名流光环",
+          "level": 1,
+          "requires": [],
+          "description": "显赫的家世和优雅的举止让他们在社交场合中自带光环，轻易赢得他人的好感与信任。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "persuasion", "bonus": 10},
+              {"skill": "performance", "bonus": 10}
+            ],
+            "narrative_tags": ["上流气质"]
+          }
+        },
+        {
+          "id": "dl_2",
+          "name": "慷慨资助",
+          "level": 2,
+          "requires": ["dl_1"],
+          "description": "雄厚的财力使其能够为调查团队提供资金支持，购买昂贵的装备或打通关节。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "fast_talk", "bonus": 10}
+            ],
+            "narrative_tags": ["财力支援"],
+            "abilities": ["generous_funding"],
+            "attribute_bonuses": {"gold": 20}
+          }
+        },
+        {
+          "id": "dl_3",
+          "name": "社交操控",
+          "level": 3,
+          "requires": ["dl_2"],
+          "description": "在名利场摸爬滚打多年，深谙操控人心的技巧，能利用人性弱点达成目的。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "deception", "bonus": 15},
+              {"skill": "persuasion", "bonus": 15}
+            ],
+            "narrative_tags": ["人心操控"],
+            "abilities": ["social_manipulation"]
+          }
+        },
+        {
+          "id": "dl_4",
+          "name": "上流社会密网",
+          "level": 4,
+          "requires": ["dl_3"],
+          "description": "与政界、商界和秘密社团的核心人物都有直接联系，能够动用常人无法企及的资源和情报。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "persuasion", "bonus": 20},
+              {"skill": "spot_hidden", "bonus": 10}
+            ],
+            "narrative_tags": ["权贵人脉", "密室交易"],
+            "abilities": ["elite_connections"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "author",
+      "name": "作家",
+      "name_en": "Author",
+      "description": "以笔为剑的文学创作者，丰富的想象力让他们对人性和世界有着独特的洞察。然而，过于敏感的心灵也使他们更容易被黑暗所侵蚀，在疯狂与天才之间往往只有一线之隔。",
+      "occupation_skills": ["art_craft", "history", "library_use", "occult", "psychology", "persuasion", "spot_hidden", "fast_talk"],
+      "credit_rating": {"min": 9, "max": 30},
+      "attribute_bonuses": {"INT": 10, "CHA": 5},
+      "narrative_tags": ["文学才华", "想象力丰富", "直觉敏锐"],
+      "initial_inventory": [
+        {"item": "打字机", "quantity": 1},
+        {"item": "手稿", "quantity": 1},
+        {"item": "钢笔", "quantity": 1},
+        {"item": "参考书", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "au_1",
+          "name": "文学直觉",
+          "level": 1,
+          "requires": [],
+          "description": "作家的敏感天性使其对人物的情绪和环境的氛围有着超乎常人的感知力。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "psychology", "bonus": 10},
+              {"skill": "spot_hidden", "bonus": 10}
+            ],
+            "narrative_tags": ["感知敏锐"]
+          }
+        },
+        {
+          "id": "au_2",
+          "name": "深度共情",
+          "level": 2,
+          "requires": ["au_1"],
+          "description": "能够深入理解他人的内心世界，像书写角色一样剖析真实人物的动机和恐惧。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "psychology", "bonus": 15},
+              {"skill": "persuasion", "bonus": 10}
+            ],
+            "narrative_tags": ["人心洞察"],
+            "abilities": ["deep_empathy"]
+          }
+        },
+        {
+          "id": "au_3",
+          "name": "疯狂边缘",
+          "level": 3,
+          "requires": ["au_2"],
+          "description": "在创作与现实的边界越来越模糊中，反而获得了对超自然事物的某种亲和力。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "occult", "bonus": 15},
+              {"skill": "art_craft", "bonus": 10}
+            ],
+            "narrative_tags": ["灵感涌现"],
+            "abilities": ["inspired_madness"]
+          }
+        },
+        {
+          "id": "au_4",
+          "name": "笔锋如刀",
+          "level": 4,
+          "requires": ["au_3"],
+          "description": "文字已经成为最锐利的武器，能够用言辞击碎谎言、动摇信念，甚至影响他人的理智。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "fast_talk", "bonus": 20},
+              {"skill": "persuasion", "bonus": 15}
+            ],
+            "narrative_tags": ["言辞如刃", "文字之力"],
+            "abilities": ["power_of_words"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "parapsychologist",
+      "name": "超心理学家",
+      "name_en": "Parapsychologist",
+      "description": "致力于研究超自然现象的学者，在灵异事件的调查中积累了丰富的经验。他们的研究领域游离于正统科学之外，但这也让他们比任何人都更了解那些潜伏在黑暗中的未知存在。",
+      "occupation_skills": ["occult", "psychology", "psychoanalysis", "library_use", "history", "spot_hidden", "persuasion", "arcana"],
+      "credit_rating": {"min": 9, "max": 30},
+      "attribute_bonuses": {"WIS": 15, "INT": 5},
+      "narrative_tags": ["超自然感知", "降灵术", "精神防御"],
+      "initial_inventory": [
+        {"item": "灵媒工具", "quantity": 1},
+        {"item": "录音设备", "quantity": 1},
+        {"item": "电磁探测器", "quantity": 1},
+        {"item": "笔记本", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "pp_1",
+          "name": "超感知觉",
+          "level": 1,
+          "requires": [],
+          "description": "长期接触超自然现象使其发展出了某种第六感，能感知到常人无法察觉的异常存在。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "occult", "bonus": 10},
+              {"skill": "spot_hidden", "bonus": 10}
+            ],
+            "narrative_tags": ["第六感"]
+          }
+        },
+        {
+          "id": "pp_2",
+          "name": "灵媒通讯",
+          "level": 2,
+          "requires": ["pp_1"],
+          "description": "掌握与灵体沟通的技巧，能够在降灵会中获取来自彼岸的信息。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "occult", "bonus": 15},
+              {"skill": "psychoanalysis", "bonus": 10}
+            ],
+            "narrative_tags": ["灵界沟通"],
+            "abilities": ["spirit_communication"]
+          }
+        },
+        {
+          "id": "pp_3",
+          "name": "精神屏障",
+          "level": 3,
+          "requires": ["pp_2"],
+          "description": "通过冥想和精神训练构筑起抵御超自然侵蚀的心理防线，保护自身免受疯狂的侵蚀。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "psychology", "bonus": 15},
+              {"skill": "psychoanalysis", "bonus": 10}
+            ],
+            "narrative_tags": ["精神防御"],
+            "abilities": ["mental_barrier"]
+          }
+        },
+        {
+          "id": "pp_4",
+          "name": "异界窥视",
+          "level": 4,
+          "requires": ["pp_3"],
+          "description": "能够短暂地感知到常人不可见的维度裂隙，窥探超越凡人理解的异界真相，代价是承受巨大的精神压力。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "arcana", "bonus": 20},
+              {"skill": "occult", "bonus": 15}
+            ],
+            "narrative_tags": ["维度感知", "异界之眼"],
+            "abilities": ["dimensional_sight"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "police_detective",
+      "name": "警探",
+      "name_en": "Police Detective",
+      "description": "经验丰富的执法人员，在打击犯罪的第一线摸爬滚打多年。他们熟悉犯罪现场的调查程序和嫌疑人的心理弱点，警徽赋予他们合法的调查权力，但面对超自然事件时，法律往往鞭长莫及。",
+      "occupation_skills": ["firearms", "spot_hidden", "psychology", "fast_talk", "intimidation", "track", "fighting", "law"],
+      "credit_rating": {"min": 20, "max": 50},
+      "attribute_bonuses": {"STR": 5, "WIS": 5, "INT": 5},
+      "narrative_tags": ["执法经验", "审讯技巧", "犯罪心理学"],
+      "initial_inventory": [
+        {"item": "警徽", "quantity": 1},
+        {"item": "手枪", "quantity": 1},
+        {"item": "手铐", "quantity": 1},
+        {"item": "笔记本", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "pd_1",
+          "name": "犯罪现场",
+          "level": 1,
+          "requires": [],
+          "description": "丰富的办案经验使其能够有条不紊地勘查犯罪现场，不放过任何可疑的蛛丝马迹。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "spot_hidden", "bonus": 15},
+              {"skill": "track", "bonus": 10}
+            ],
+            "narrative_tags": ["现场勘查"]
+          }
+        },
+        {
+          "id": "pd_2",
+          "name": "审讯压迫",
+          "level": 2,
+          "requires": ["pd_1"],
+          "description": "精通审讯技巧，善于利用心理压力和法律威胁迫使嫌疑人开口。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "intimidation", "bonus": 15},
+              {"skill": "psychology", "bonus": 10}
+            ],
+            "narrative_tags": ["强力审讯"],
+            "abilities": ["police_interrogation"]
+          }
+        },
+        {
+          "id": "pd_3",
+          "name": "直觉判断",
+          "level": 3,
+          "requires": ["pd_2"],
+          "description": "多年的办案经验磨练出可靠的直觉，往往能在证据不足时做出正确的判断。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "psychology", "bonus": 15},
+              {"skill": "fast_talk", "bonus": 10}
+            ],
+            "narrative_tags": ["老警察直觉"],
+            "abilities": ["cop_instinct"]
+          }
+        },
+        {
+          "id": "pd_4",
+          "name": "老练办案",
+          "level": 4,
+          "requires": ["pd_3"],
+          "description": "历经无数大案要案的洗礼，具备了在任何危险局面中保持冷静并作出最优决策的能力。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "firearms", "bonus": 15},
+              {"skill": "fighting", "bonus": 15}
+            ],
+            "narrative_tags": ["百战老探", "临危不惧"],
+            "abilities": ["veteran_detective"],
+            "attribute_bonuses": {"WIS": 5}
+          }
+        }
+      ]
+    },
+    {
+      "id": "drifter",
+      "name": "流浪者",
+      "name_en": "Drifter",
+      "description": "漂泊不定的社会边缘人，在风餐露宿的流浪生涯中练就了一身求生本领。他们没有财产和社会地位，但身经百战的生存智慧和临机应变的能力让他们在最绝望的境地中也能找到一线生机。",
+      "occupation_skills": ["stealth", "survival", "fighting", "dodge", "fast_talk", "navigation", "climb", "spot_hidden"],
+      "credit_rating": {"min": 0, "max": 5},
+      "attribute_bonuses": {"DEX": 5, "CON": 10, "STR": 5},
+      "narrative_tags": ["街头生存", "隐匿行踪", "临机应变"],
+      "initial_inventory": [
+        {"item": "折叠刀", "quantity": 1},
+        {"item": "破旧背包", "quantity": 1},
+        {"item": "火柴", "quantity": 1},
+        {"item": "毯子", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "dr_1",
+          "name": "街头生存",
+          "level": 1,
+          "requires": [],
+          "description": "在街头流浪的岁月磨练出了基本的生存技能，知道如何在恶劣环境中找到食物和栖身之所。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "survival", "bonus": 15},
+              {"skill": "spot_hidden", "bonus": 10}
+            ],
+            "narrative_tags": ["求生本能"]
+          }
+        },
+        {
+          "id": "dr_2",
+          "name": "隐匿无踪",
+          "level": 2,
+          "requires": ["dr_1"],
+          "description": "擅长在城市和荒野中消失无踪，无论是躲避追捕还是潜入禁区都游刃有余。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "stealth", "bonus": 15},
+              {"skill": "dodge", "bonus": 10}
+            ],
+            "narrative_tags": ["无影无踪"],
+            "abilities": ["vanish"]
+          }
+        },
+        {
+          "id": "dr_3",
+          "name": "即兴武器",
+          "level": 3,
+          "requires": ["dr_2"],
+          "description": "能够将任何随手可得的物品变成致命的武器，在没有装备的情况下依然具有战斗力。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "fighting", "bonus": 15},
+              {"skill": "climb", "bonus": 10}
+            ],
+            "narrative_tags": ["就地取材"],
+            "abilities": ["improvised_weapons"]
+          }
+        },
+        {
+          "id": "dr_4",
+          "name": "九死一生",
+          "level": 4,
+          "requires": ["dr_3"],
+          "description": "无数次在死亡线上挣扎的经历赋予了他们超乎寻常的生存本能，在最绝望的境地也能找到逃生之路。",
+          "grants": {
+            "skill_bonuses": [
+              {"skill": "dodge", "bonus": 20},
+              {"skill": "survival", "bonus": 15}
+            ],
+            "narrative_tags": ["死里逃生", "不屈意志"],
+            "abilities": ["survivor_instinct"],
+            "attribute_bonuses": {"CON": 5}
+          }
+        }
+      ]
+    }
+  ]
+}

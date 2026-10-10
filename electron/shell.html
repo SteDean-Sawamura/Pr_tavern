@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>酒馆</title>
+  <link rel="stylesheet" href="shell.css">
+</head>
+<body>
+  <!-- 标题栏 -->
+  <header class="titlebar" id="titlebar">
+    <div class="titlebar-drag">
+      <span class="titlebar-title">酒馆</span>
+    </div>
+    <div class="titlebar-controls">
+      <button class="titlebar-btn" id="btn-minimize" title="最小化">─</button>
+      <button class="titlebar-btn" id="btn-maximize" title="最大化">□</button>
+      <button class="titlebar-btn titlebar-btn-close" id="btn-close" title="关闭">✕</button>
+    </div>
+  </header>
+
+  <!-- 主体 -->
+  <div class="app-body">
+    <!-- 侧栏 -->
+    <nav class="sidebar">
+      <div class="sidebar-nav">
+        <button class="nav-item active" data-target="tavern" title="对话模式">
+          <span class="nav-icon">💬</span>
+          <span class="nav-label">对话</span>
+        </button>
+        <button class="nav-item" data-target="rpg" title="RPG推演">
+          <span class="nav-icon">🗺️</span>
+          <span class="nav-label">RPG</span>
+        </button>
+        <div class="nav-separator"></div>
+        <button class="nav-item" data-target="scripts" title="剧本管理">
+          <span class="nav-icon">📚</span>
+          <span class="nav-label">剧本</span>
+        </button>
+      </div>
+      <div class="sidebar-bottom">
+        <button class="nav-item" data-target="settings" title="设置">
+          <span class="nav-icon">⚙️</span>
+          <span class="nav-label">设置</span>
+        </button>
+      </div>
+    </nav>
+
+    <!-- 内容区 -->
+    <main class="content">
+      <iframe id="content-frame" src="about:blank"></iframe>
+    </main>
+  </div>
+
+  <!-- 状态栏 -->
+  <footer class="statusbar">
+    <div class="status-left">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text">启动中...</span>
+    </div>
+    <div class="status-right">
+      <span class="status-item" id="status-model">模型: 未配置</span>
+      <span class="status-sep">│</span>
+      <span class="status-item" id="status-mode">酒馆对话模式</span>
+    </div>
+  </footer>
+
+  <script src="shell.js"></script>
+</body>
+</html>

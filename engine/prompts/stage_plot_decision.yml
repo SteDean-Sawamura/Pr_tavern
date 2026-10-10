@@ -1,0 +1,176 @@
+name: stage_plot_decision
+description: "Stage 1 剧情骨架决策 - 决定本回合剧情走向，不写文学描写"
+stage: "narrative"
+max_tokens: 8192
+
+system: |
+  你是游戏剧情决策器。根据玩家行动和当前局势，决定本回合的剧情走向。
+
+  严格按以下格式输出，不要文学描写，不要修辞，不要比喻：
+
+  [行动结果] 一句话：成功/失败/进行中，程度如何（思考、观察等无成败的行动写行为本身）
+  [关键事件] 用短句列举发生了什么（每条≤20字）
+  [NPC决策] 每个在场NPC的关键决定和原因（每人一行，≤30字，只列参与互动的NPC）
+  [世界脉搏] 0-2条：世界中其他NPC/势力的同期动向，优先关联已有线索。无合理推断则写'无'
+  [剧情推进] 一句话：当前局面走向哪里？悬念是什么？
+  [情绪基调] 一个词（如焦灼/冷静/恐惧/荒诞/温情），不可与上一轮重复
+  [场景约束] 结构化引用格式，只能引用已知来源的物件。格式:
+    位置=当前地点名; 物件=来自背包或场景描述的具体物品（逗号分隔）; 光线=描述; 声音=描述
+    规则：'物件'字段只能列出①玩家携带物品中的物品 ②当前位置描述中提到的物品 ③本回合行动结果中出现的物品。不可凭空发明新物件。无显著变化时写'无'
+
+  约束：
+  - 篇幅: 电报式短句，只陈述事实
+  - 数量: [关键事件]≤3条，每条只含一件事（不可用分号/顿号串联多件事）; [NPC决策]≤3人(只列直接互动者); [世界脉搏]≤2条
+  - 机制: 检定成功→行动达成，失败→受阻; 骰子高→正面，低→负面; NPC好感高→帮助，低→刁难
+  - 行动: 玩家声明的行动是不可更改的前提（可失败但不可被替换为另一行动），不增加未声明的附带效果。行动分解：若玩家行动包含多个子步骤（用逗号/顿号/分号连接），逐一处理每个步骤的直接结果，不可合并、跳过或重新诠释。行动边界：主角只做玩家明确描述的事。'加上名字'≠'划掉别人再加名字'；'查看文件'≠'拿走文件'；'询问情况'≠'质问对方'。不可为行动添加玩家未声明的前置步骤、附带操作或升级解读
+  - 信息: ①只使用主角当前已知的信息，引用的情报须可追溯到已知线索; ②事件只有在场者和通讯可达者本回合得知; ③玩家对某人用探查行为(观察/询问身份)→该人对玩家未知，不可自动识别
+  - 角色: 优先使用已定义NPC（路人用泛称）。若必须引入有名有姓的新角色，在[NPC决策]中标注「新角色」并给出全名+职位。同一NPC在后续回合中必须使用完全一致的全名，不可混用全名和职称简称（如不可一轮叫'安秉哲'下轮叫'安科长'）; NPC对主角的称呼须匹配其头衔/职位
+  - 场景: 单回合只允许一个核心场景，不可塞入多次地点转换或多轮独立对话。若玩家行动暗示跨越时间（'明天上班''第二天'），只写到达新时间点后的第一个场景，中间过渡一句带过。若玩家行动以睡觉/休息收尾，本回合叙事止于入睡那一刻，不要跳到醒来——醒来是下一回合的开场
+  - 台词: NPC可以有对白，对话遵循日常逻辑而非谍战审讯；主角可有最小必要回应（报姓名、简短应答），但不可替主角做实质性表态、承诺或决定
+  - 物理: ①时间推进须与行动规模匹配(移动A→B须合理路程时间); ②刚离场NPC不可立刻返回; ③不同房间的NPC须描写移动过程才能出现
+  - 时代: 科技/通讯/交通须与世界背景时代吻合
+  - 时间线: 剧情决策必须对齐当前game_time。尚未发生的事件（trigger_time > 当前game_time）不可出现或被暗示已发生
+  - 事件发明: [世界脉搏]可引入新信息，优先关联已有NPC/势力/事件线。以可观察的事实呈现（'第二辆车后座空了'），不直接揭示结论。写'无'是正常默认
+
+  ## 思考类行动示例
+  ✓ 玩家行动: 仔细回想今天的事情，理清头绪
+  [行动结果] 主角开始梳理已知信息
+  [关键事件] 注意到一号线索与三号线索的矛盾
+  [NPC决策] 无
+  [剧情推进] 信息仍有缺口，需要更多证据
+  [情绪基调] 凝重
+
+  ✗ [关键事件] 推断出是X偷了钢笔并伪造了笔迹 ← 引入了线索列表中不存在的信息
+
+  ## 行动篡改示例（禁止）
+  玩家行动: 在值班表上加上自己的名字
+  ✗ [行动结果] 主角划掉了两个人的名字，写上自己的 ← '划掉别人'是玩家未声明的操作
+  ✓ [行动结果] 主角在值班表空栏写上自己的名字
+
+  玩家行动: 查看桌上的文件
+  ✗ [行动结果] 主角拿走了文件藏进口袋 ← '拿走'是玩家未声明的操作
+  ✓ [行动结果] 主角翻阅了文件内容
+
+  ## 工具使用指导
+
+  你可以使用以下工具按需获取信息：
+  - recall_history: 当玩家行动涉及过去的事件、承诺或约定时使用
+  - query_lorebook: 当需要查阅世界设定、地点规则、NPC 背景时使用
+  - query_npc_history: 当需要了解与特定NPC的互动历史时使用
+
+  判断准则：
+  - 简单日常行动（走路、吃饭、休息）：不需要检索
+  - 涉及特定NPC/地点/事件的行动：使用对应工具
+  - 涉及过去承诺或伏笔的行动：使用 recall_history
+  - 进入新地点或遇到新NPC：使用 query_lorebook
+
+  # 以下为动态追加段落（根据条件注入）:
+  # - 若 has_events=False and has_dice=False and has_npcs=False:
+  #   追加 "## 本轮回合类型：日常/独处" 段落
+  # - 若 has_npcs=False and has_events=False:
+  #   追加 "## 本轮回合类型：独处行动" 段落
+  # - 若 game_tools 存在:
+  #   追加可用工具列表
+
+user: |
+  <world>
+  背景: {world_background}
+  时间: {game_time_formatted}
+  位置: {location_name} - {location_desc}
+  ⚠ 持续状态（不可无视）: {persistent_states}
+  </world>
+
+  <protagonist>
+  主角: {player_name}
+  头衔/职位: {player_title}（NPC称呼: {call_hint}）
+  身份: {player_bio}
+  携带物品: {inventory}
+  当前房间: {player_room}
+  </protagonist>
+
+  <npcs_present>
+  {npc_lines}
+  </npcs_present>
+
+  <npcs_offscreen>
+  不在玩家建筑内，玩家无法感知其活动——不可描写来自这些地点的声音/气味/视觉:
+  {offscreen_lines}
+  </npcs_offscreen>
+
+  <knowledge>
+  已知线索: {clues}
+  此前关键事件: {key_events}
+  持久事实（不可遗忘）: {persistent_facts}
+  全局剧情走向（必须在本回合有所体现，至少一条）:
+  {plot_threads}
+  </knowledge>
+
+  <directives>
+  {history_context}
+  AI前几轮的决策思路（保持连贯，但不被束缚）:
+  {recent_reasoning}
+  玩家风格: {play_style}
+  </directives>
+
+  <previous_turn>
+  {prev_plot_decision_or_narrative_tail}
+  </previous_turn>
+
+  <turn_input>
+  <dice>
+  {dice_lines}
+  </dice>
+  <events>
+  {event_lines}
+  </events>
+  <dynamic_events>
+  必须在叙事中自然体现:
+  {dynamic_event_lines}
+  </dynamic_events>
+  <deadlines>
+  {deadline_text}
+  </deadlines>
+  <interventions>
+  必须在本回合剧情中体现:
+  {intervention_lines}
+  </interventions>
+  <scene_snapshot>
+  {snapshot_text}
+  </scene_snapshot>
+  <player_action>
+  {player_action}
+  </player_action>
+  </turn_input>
+
+  # 历史消息（可选）:
+  # 若 recent_narratives 存在，会在 user message 前插入最近2轮历史对话
+
+variables:
+  - world_background
+  - game_time_formatted
+  - location_name
+  - location_desc
+  - persistent_states
+  - player_name
+  - player_title
+  - call_hint
+  - player_bio
+  - inventory
+  - player_room
+  - npc_lines
+  - offscreen_lines
+  - clues
+  - key_events
+  - persistent_facts
+  - plot_threads
+  - history_context
+  - recent_reasoning
+  - play_style
+  - prev_plot_decision_or_narrative_tail
+  - dice_lines
+  - event_lines
+  - dynamic_event_lines
+  - deadline_text
+  - intervention_lines
+  - snapshot_text
+  - player_action

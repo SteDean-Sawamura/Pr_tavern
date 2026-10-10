@@ -1,0 +1,1179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>酒馆 - AI互动文字游戏</title>
+    <link rel="stylesheet" href="/static/css/design-tokens.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header id="app-header">
+        <div class="header-left">
+            <button class="sidebar-toggle" onclick="toggleSidebar()" title="收起/展开侧栏" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false">&#9776;</button>
+            <h1>酒馆</h1>
+            <span id="header-subtitle" class="subtitle">AI互动文字游戏</span>
+            <button id="header-controls-toggle" class="btn-secondary header-controls-toggle" type="button" onclick="toggleHeaderControls()" aria-controls="header-controls" aria-expanded="false">推演设置</button>
+        </div>
+        <div class="header-right">
+            <span id="game-time" class="game-time"></span>
+            <span id="weather-badge" class="weather-badge"></span>
+            <div id="header-controls" class="header-controls">
+                <button id="pipeline-mode-btn" onclick="togglePipelineMode()" title="切换推演模式" class="btn-mode-toggle">⚡ workflow</button>
+                <a href="/shell" title="统一视图" class="link-shell">⬡ 统一视图</a>
+                <span id="pacing-badge" class="pacing-indicator" style="display:none"></span>
+                <span id="token-usage" class="token-usage-badge" style="display:none" title="本轮 token 用量"></span>
+                <label class="profile-switch">
+                    <span class="mobile-control-label">AI 配置</span>
+                    <select id="quick-profile-select" onchange="quickSwitchProfile(this.value)" title="快速切换AI配置" aria-label="AI 配置">
+                        <option value="">无AI配置</option>
+                    </select>
+                </label>
+            </div>
+        </div>
+    </header>
+
+    <div id="app-container">
+        <button id="sidebar-backdrop" type="button" aria-label="关闭面板" onclick="_closeMobilePanels()" hidden></button>
+        <!-- Sidebar -->
+        <aside id="sidebar">
+            <nav>
+                <button class="nav-btn active" data-panel="game" onclick="switchPanel('game')">
+                    <span class="icon">&#9654;</span> 游戏
+                </button>
+                <button class="nav-btn" data-panel="scripts" onclick="switchPanel('scripts')">
+                    <span class="icon">&#9997;</span> 剧本工坊
+                </button>
+                <button class="nav-btn" data-panel="materials" onclick="switchPanel('materials')">
+                    <span class="icon">&#128218;</span> 素材
+                </button>
+                <button class="nav-btn" data-panel="settings" onclick="switchPanel('settings')">
+                    <span class="icon">&#9881;</span> 设置
+                </button>
+            </nav>
+
+            <div id="sidebar-saves" class="sidebar-section">
+                <h3>存档</h3>
+                <div id="sidebar-save-list"></div>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main id="main-area">
+            <!-- Game Panel -->
+            <div id="panel-game" class="panel active">
+                <div id="game-start-screen">
+                    <div class="game-start-hero">
+                        <h2>开始你的冒险</h2>
+                        <p class="hero-desc">选择一个剧本，开启全新的世界线。</p>
+                        <p class="legacy-entry">旧版 RPG 存档与主游戏不互通。<a href="/rpg/">前往旧版 RPG 继续游玩</a></p>
+                    </div>
+                    <fieldset id="game-start-form" aria-label="新游戏设置">
+                    <div id="script-select-area">
+                        <label for="script-select">选择剧本:</label>
+                        <select id="script-select" onchange="onScriptSelected()" aria-describedby="script-selection-status"></select>
+                        <label for="game-view-select">初始视图:</label>
+                        <select id="game-view-select" aria-label="初始游玩视图">
+                            <option value="narrative">叙事</option>
+                            <option value="map">大地图</option>
+                        </select>
+                        <button onclick="startNewGame()" class="btn-primary" id="btn-start-game" disabled>开始游戏</button>
+                        <span id="game-start-status" class="selection-feedback" role="status"></span>
+                        <span class="view-choice-note">两种视图共用存档与推演；游戏时间仍随行动推进，游玩中可切换。</span>
+                        <div class="selection-feedback">
+                            <span id="script-selection-status" role="status">正在加载剧本…</span>
+                            <button type="button" id="btn-retry-script" class="btn-secondary" onclick="retryScriptSelection()" hidden>重试加载</button>
+                        </div>
+                    </div>
+                    <div id="character-select-area" style="display:none;">
+                        <h3>选择你的角色</h3>
+                        <div id="preset-cards" role="group" aria-label="预设角色"></div>
+                        <div id="custom-char-area" style="display:none;">
+                            <div class="char-divider"><span>或者 — 自建角色</span></div>
+                            <div class="custom-char-form">
+                                <div class="form-row">
+                                    <div class="form-group form-half">
+                                        <label>姓名:</label>
+                                        <input type="text" id="custom-char-name" placeholder="你的角色名">
+                                    </div>
+                                    <div class="form-group form-half">
+                                        <label>初始位置:</label>
+                                        <select id="custom-char-location"></select>
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label>简介/身份:</label>
+                                    <input type="text" id="custom-char-bio" placeholder="角色身份和背景">
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group form-half">
+                                        <label>性格特征:</label>
+                                        <input type="text" id="custom-char-personality" placeholder="如：内向谨慎、正义感强">
+                                    </div>
+                                    <div class="form-group form-half">
+                                        <label>外貌描述:</label>
+                                        <input type="text" id="custom-char-portrait" placeholder="如：黑发、戴眼镜、身材瘦高">
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label>长期目标:</label>
+                                    <input type="text" id="custom-char-goal" placeholder="角色想要达成的目标">
+                                </div>
+                                <div id="class-select-area" style="display:none;">
+                                    <h4 class="custom-attrs-title">选择职业</h4>
+                                    <div id="class-cards" role="group" aria-label="可选职业"></div>
+                                    <div id="skill-proficiency-area" style="display:none;">
+                                        <h5>选择熟练技能 (<span id="skill-choice-count">2</span>个)</h5>
+                                        <div id="skill-checkboxes"></div>
+                                        <div class="selection-feedback">
+                                            <span id="skill-selection-status" role="status"></span>
+                                            <button type="button" id="btn-retry-skills" class="btn-secondary" onclick="selectClass(_selectedClassId)" hidden>重试技能</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <h4 class="custom-attrs-title">初始属性</h4>
+                                <div id="custom-char-attrs"></div>
+                                <button onclick="selectCustomChar()" class="btn-secondary">确认角色</button>
+                            </div>
+                        </div>
+                        <div id="npc-edit-area" style="display:none;">
+                            <div class="npc-edit-header" onclick="toggleNpcEditPanel()">
+                                <span class="npc-edit-title">自定义身边的人</span>
+                                <span id="npc-edit-toggle" class="toggle-arrow">&#9662;</span>
+                            </div>
+                            <div id="npc-edit-body" class="npc-edit-body" style="display:none;">
+                                <div id="npc-edit-cards"></div>
+                                <button class="btn-secondary npc-add-btn" onclick="addCustomNpc()">+ 新增NPC</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="opening-authors-note" class="authors-note-panel" style="display:none;max-width:640px;margin:0.6rem auto 0">
+                        <div class="authors-note-header" onclick="toggleOpeningAN()">
+                            <span>&#9998; 创作指令 (Author's Note)</span>
+                            <span id="opening-an-toggle" class="toggle-arrow">&#9660;</span>
+                        </div>
+                        <div id="opening-an-body" class="authors-note-body" style="display:none;">
+                            <p style="color:var(--text-muted);font-size:0.78rem;margin-bottom:0.4rem">
+                                设定开场叙事的风格约束，将影响AI生成的开场描述和初始推演。
+                            </p>
+                            <div id="opening-style-presets" class="style-presets"></div>
+                            <textarea id="opening-an-input" rows="3" placeholder="如：叙事风格偏写实克制、避免过度修辞、对话使用短句..."></textarea>
+                            <div style="margin-top:0.8rem;border-top:1px solid var(--border);padding-top:0.6rem">
+                                <label style="font-size:0.82rem;color:var(--text-muted)">图像风格 (Image Style)</label>
+                                <div id="opening-image-style-presets" class="style-presets" style="margin-top:0.3rem"></div>
+                                <textarea id="opening-image-style-input" rows="2" placeholder="自定义图像画风（如：cinematic lighting, oil painting style 或 赛博朋克风格，霓虹灯光）..." style="margin-top:0.3rem"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                    </fieldset>
+                    <div id="saves-area">
+                        <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem">
+                            <h3 style="margin:0">继续游戏</h3>
+                            <div>
+                                <button class="btn-secondary btn-small" onclick="document.getElementById('save-import-input').click()">导入存档</button>
+                                <input type="file" id="save-import-input" accept=".json,application/json" style="display:none" onchange="importSaveFile(event)">
+                            </div>
+                        </div>
+                        <div id="continue-saves"></div>
+                    </div>
+                </div>
+
+                <div id="game-play-screen" style="display:none;">
+                    <div id="game-overlay" class="game-overlay" style="display:none;"><div class="overlay-spinner"></div></div>
+                    <div class="game-toolbar">
+                        <button class="btn-secondary btn-small" onclick="backToHome()" title="返回首页">&larr; 首页</button>
+                        <button class="btn-secondary btn-small" onclick="scrollToLatest()" title="滚动到最新">&darr; 最新</button>
+                        <button class="btn-secondary btn-small" id="map-mode-toggle" onclick="toggleMainMapView()" aria-label="切换到大地图视图" title="切换到大地图视图（同一存档）">大地图</button>
+                        <button class="btn-secondary btn-small" id="mobile-status-toggle" type="button" onclick="toggleStatusPanel()" aria-controls="status-panel" aria-expanded="false" title="角色、世界与 Agent">状态</button>
+                        <span class="toolbar-spacer"></span>
+                        <span id="turn-indicator" class="turn-indicator"></span>
+                    </div>
+                    <div id="scene-image-container" style="display:none;">
+                        <img id="scene-image" src="" alt="场景图">
+                        <button id="img-mode-toggle" onclick="toggleImageMode()" title="切换图片模式: 上图下文 / 全屏背景">&#8635;</button>
+                    </div>
+                    <div id="scene-image-gen-bar" style="display:none;">
+                        <button onclick="generateSceneImageForCurrent()" class="btn-secondary btn-small" id="btn-gen-scene-img" title="为当前回合生成背景图">&#127912; 生成背景图</button>
+                    </div>
+                    <div id="game-content-layout">
+                        <section id="main-map-view" aria-label="游戏地图" hidden>
+                            <div class="main-map-heading">
+                                <div class="main-map-title"><strong>世界地图</strong><span id="main-map-location-count">已发现 0 处</span></div>
+                                <span id="main-map-time"></span>
+                                <button type="button" id="main-map-focus-toggle" class="btn-secondary btn-small" onclick="toggleMainMapFocus()" aria-pressed="false">聚焦地图</button>
+                            </div>
+                            <div id="main-map-body">
+                                <div id="main-map-agent-status" hidden>
+                                    <span id="main-map-agent-message" role="status" aria-live="polite"></span>
+                                    <button type="button" id="main-map-agent-jump" class="btn-secondary btn-small" onclick="jumpToMainMapAgent()" hidden>查看交互</button>
+                                </div>
+                                <div id="main-map-scene" aria-label="当前位置的现场互动"></div>
+                                <div class="main-map-legend" aria-label="地图图例">
+                                    <span class="main-map-key current">当前位置</span>
+                                    <span class="main-map-key route">所选路线</span>
+                                    <span class="main-map-key last-seen">旧情报，非实时位置</span>
+                                </div>
+                                <div id="main-map-viewport">
+                                    <svg id="main-map-svg" viewBox="120 0 720 680" role="group" tabindex="0" aria-label="已发现地点及连接" aria-describedby="main-map-navigation-help"></svg>
+                                </div>
+                                <div id="main-map-navigation" role="group" aria-label="地图视角">
+                                    <span id="main-map-navigation-help">拖动空白处 · 方向键平移</span>
+                                    <button type="button" id="main-map-zoom-out" onclick="zoomMainMap(0.8)" aria-label="缩小地图" title="缩小地图（−）">−</button>
+                                    <span id="main-map-zoom-level" aria-label="地图缩放比例">100%</span>
+                                    <button type="button" id="main-map-zoom-in" onclick="zoomMainMap(1.25)" aria-label="放大地图" title="放大地图（+）">+</button>
+                                    <button type="button" onclick="fitMainMap()" aria-label="查看全图" title="查看全图（0）">全图</button>
+                                    <button type="button" onclick="centerMainMap()" aria-label="返回当前位置" title="返回当前位置（Home）">当前位置</button>
+                                </div>
+                                <div id="main-map-locations" aria-label="已发现地点"></div>
+                            </div>
+                            <div id="main-map-hint" role="status">点击地点查看路线并填写行动；地图随回合更新。</div>
+                            <ol id="main-map-activity" role="log" aria-label="本回合推演进度" aria-live="polite" hidden></ol>
+                            <div id="main-map-command-dock" aria-label="地图行动指令">
+                                <div id="main-map-story-choices" aria-label="待决剧情选择" hidden></div>
+                                <details id="main-map-suggested-actions">
+                                    <summary>普通行动建议</summary>
+                                </details>
+                            </div>
+                        </section>
+                        <div id="narrative-area">
+                            <div id="main-map-agent-dock" hidden></div>
+                            <div id="narrative-content"></div>
+                        </div>
+                    </div>
+
+                    <!-- Swipe controls -->
+                    <div id="swipe-controls" style="display:none;">
+                        <button class="swipe-btn" id="swipe-left" onclick="swipeLeft()" title="上一个回复">&larr;</button>
+                        <span id="swipe-counter" class="swipe-counter" onclick="openSwipePicker()" title="点击查看所有 Swipe">1/1</span>
+                        <button class="swipe-btn" id="swipe-right" onclick="swipeRight()" title="下一个回复">&rarr;</button>
+                        <button class="swipe-btn swipe-regen" id="btn-regenerate" onclick="regenerateResponse()" title="重新生成全部">&#x21bb;</button>
+                        <button class="swipe-btn swipe-regen" id="btn-regen-choices" onclick="regenerateStage('choices')" title="重新生成选项">&#x21bb;选项</button>
+                        <button class="swipe-btn swipe-regen" id="btn-regen-state" onclick="regenerateStage('state')" title="重新推演状态">&#x21bb;状态</button>
+                        <button class="swipe-btn swipe-regen" id="btn-feedback-regen" onclick="feedbackRegen()" title="带反馈重写叙事">&#x270e;</button>
+                        <button class="swipe-btn swipe-continue" id="btn-continue" onclick="continueNarrative()" title="续写叙事">&#x21e2;</button>
+                        <button class="swipe-btn" id="btn-undo" onclick="undoLastTurn()" title="撤销上一步">&#x21a9;</button>
+                    </div>
+
+                    <div id="dice-display" style="display:none;"></div>
+                    <div id="choices-area"></div>
+                    <div id="freeform-area">
+                        <input type="text" id="freeform-input" placeholder="输入你的行动（如：观察、交谈、攻击、潜入...）" onkeydown="handleFreeformKeydown(event)">
+                        <button id="freeform-submit" onclick="submitFreeform('action')" class="btn-primary" title="明确执行游戏行动，不自动识别查询或撤销">行动</button>
+                        <button id="freeform-query" onclick="submitFreeform('query')" class="btn-secondary btn-quick" title="只回答问题，不推进回合" hidden>询问</button>
+                        <button onclick="quickAction('等待1小时，观察周围变化')" class="btn-secondary btn-quick" title="等待1小时">等待</button>
+                        <button onclick="quickAction('找一个安全的地方休息到天亮')" class="btn-secondary btn-quick" title="休息至次日">休息</button>
+                        <button onclick="triggerNpcDialogue()" class="btn-secondary btn-quick" id="npc-dialogue-btn" title="让在场NPC各自发言" style="display:none">NPC对话</button>
+                        <button onclick="toggleStreamMode()" class="btn-secondary" id="stream-toggle" title="切换流式/普通模式">流式</button>
+                    </div>
+                    <div class="freeform-hint">
+                        提示: 按 <kbd>1</kbd>-<kbd>4</kbd> 快速选择选项，或在上方输入框自由描述行动（动词+对象效果最好）
+                        <span id="intent-mode-hint" hidden>；叙事视图按 <kbd>Enter</kbd> 智能判断，大地图按 <kbd>Enter</kbd> 直接行动；<kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd> 直接行动，点击「询问」只答不推进</span>
+                    </div>
+                    <div id="skill-check-hint" class="skill-hint" style="display:none"></div>
+
+                    <!-- Knowledge panel (lorebook + data bank) -->
+                    <div id="databank-lore-panel" class="authors-note-panel" style="margin-top:0.5rem">
+                        <div class="authors-note-header" onclick="toggleDataBankLore()">
+                            <span>&#128218; 知识库 (Data Bank)</span>
+                            <span id="databank-lore-toggle" class="toggle-arrow">&#9660;</span>
+                        </div>
+                        <div id="databank-lore-body" style="display:none;padding:0.5rem">
+                            <div id="databank-lore-entries" style="font-size:0.82rem;margin-bottom:0.5rem">
+                                <span style="color:var(--text-muted)">暂无本回合知识</span>
+                            </div>
+                            <hr style="border:none;border-top:1px solid var(--border);margin:0.5rem 0">
+                            <div id="databank-file-list" style="font-size:0.82rem;margin-bottom:0.5rem"></div>
+                            <input type="file" id="databank-file-input" accept=".txt,.md,.text" style="display:none" onchange="uploadDataBankFile(this)">
+                            <div style="display:flex;gap:0.4rem;align-items:center;flex-wrap:wrap">
+                                <button onclick="document.getElementById('databank-file-input').click()" class="btn-secondary" style="font-size:0.8rem">上传文档</button>
+                                <input type="text" id="db-scrape-url" placeholder="输入网页URL抓取内容..." style="flex:1;min-width:120px;font-size:0.8rem;padding:0.3rem 0.5rem;border-radius:4px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary)">
+                                <button onclick="scrapeToDataBank()" class="btn-secondary" style="font-size:0.8rem">抓取</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Author's Note panel -->
+                    <div id="authors-note-panel" class="authors-note-panel">
+                        <div class="authors-note-header" onclick="toggleAuthorsNote()">
+                            <span>&#9998; 创作指令 (Author's Note)</span>
+                            <span id="authors-note-toggle" class="toggle-arrow">&#9660;</span>
+                        </div>
+                        <div id="authors-note-body" class="authors-note-body" style="display:none;">
+                            <p style="color:var(--text-muted);font-size:0.78rem;margin-bottom:0.4rem">
+                                选择预设文风或自行编写指令，影响AI叙事风格。可叠加修改。
+                            </p>
+                            <div id="style-presets" class="style-presets"></div>
+                            <textarea id="authors-note-input" rows="3" placeholder="在此输入创作指令..."></textarea>
+                            <div style="margin-top:0.3rem;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
+                                <button onclick="saveAuthorsNote()" class="btn-secondary" style="font-size:0.8rem">保存指令</button>
+                                <select id="authors-note-position" onchange="toggleANDepth()" style="font-size:0.8rem">
+                                    <option value="end">注入系统提示末尾</option>
+                                    <option value="at_depth">指定深度插入</option>
+                                </select>
+                                <label id="an-depth-label" style="display:none;font-size:0.8rem">深度: <input type="number" id="authors-note-depth" value="4" min="1" max="50" style="width:40px"></label>
+                                <span id="authors-note-status" style="font-size:0.75rem;color:var(--text-muted)"></span>
+                            </div>
+                            <div style="margin-top:0.8rem;border-top:1px solid var(--border);padding-top:0.6rem">
+                                <label style="font-size:0.82rem;color:var(--text-muted)">排斥内容 (负面提示)</label>
+                                <textarea id="negative-prompt-input" rows="2" placeholder="不允许出现的内容（如：暴力描写、第四面墙、现代科技）..." style="margin-top:0.3rem"></textarea>
+                                <div style="margin-top:0.3rem;display:flex;align-items:center;gap:0.5rem">
+                                    <button onclick="saveNegativePrompt()" class="btn-secondary" style="font-size:0.8rem">保存</button>
+                                    <span id="negative-prompt-status" style="font-size:0.75rem;color:var(--text-muted)"></span>
+                                </div>
+                            </div>
+                            <div style="margin-top:0.8rem;border-top:1px solid var(--border);padding-top:0.6rem">
+                                <label style="font-size:0.82rem;color:var(--text-muted)">图像风格 (Image Style)</label>
+                                <div id="image-style-presets" class="style-presets" style="margin-top:0.3rem"></div>
+                                <textarea id="image-style-input" rows="2" placeholder="自定义图像画风（如：cinematic lighting, oil painting style 或 赛博朋克风格，霓虹灯光）..." style="margin-top:0.3rem"></textarea>
+                                <div style="margin-top:0.3rem;display:flex;align-items:center;gap:0.5rem">
+                                    <button onclick="saveImageStyle()" class="btn-secondary" style="font-size:0.8rem">保存</button>
+                                    <span id="image-style-status" style="font-size:0.75rem;color:var(--text-muted)"></span>
+                                </div>
+                            </div>
+                            <div style="margin-top:0.8rem;border-top:1px solid var(--border);padding-top:0.6rem">
+                                <label style="font-size:0.82rem;color:var(--text-muted)">词汇偏置 (Logit Bias)</label>
+                                <div id="logit-bias-list" style="font-size:0.8rem;margin-top:0.3rem"></div>
+                                <div style="display:flex;gap:0.3rem;align-items:center;margin-top:0.3rem;flex-wrap:wrap">
+                                    <input type="text" id="lb-word" placeholder="词汇" style="width:80px;font-size:0.8rem;padding:0.25rem 0.4rem;border-radius:4px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary)">
+                                    <input type="range" id="lb-value" min="-10" max="10" value="0" style="width:80px" oninput="document.getElementById('lb-value-display').textContent=this.value">
+                                    <span id="lb-value-display" style="font-size:0.75rem;min-width:20px;text-align:center">0</span>
+                                    <button onclick="addLogitBias()" class="btn-secondary" style="font-size:0.75rem;padding:0.2rem 0.4rem">+</button>
+                                </div>
+                            </div>
+                            <div style="margin-top:0.8rem;border-top:1px solid var(--border);padding-top:0.6rem">
+                                <label style="font-size:0.82rem;color:var(--text-muted)">Lorebook 递归深度</label>
+                                <div style="display:flex;gap:0.4rem;align-items:center;margin-top:0.3rem">
+                                    <input type="number" id="lorebook-recursion-input" value="4" min="1" max="8" style="width:50px;font-size:0.8rem;padding:0.25rem 0.4rem;border-radius:4px;border:1px solid var(--border-color);background:var(--bg-secondary);color:var(--text-primary)">
+                                    <button onclick="saveLorebookRecursion()" class="btn-secondary" style="font-size:0.75rem;padding:0.2rem 0.4rem">应用</button>
+                                    <span id="lorebook-recursion-status" style="font-size:0.75rem;color:var(--text-muted)"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
+            <!-- Scripts Panel -->
+            <div id="panel-scripts" class="panel">
+                <h2>剧本工坊</h2>
+
+                <div id="scripts-list-view">
+                    <div class="form-actions" style="margin-bottom:1rem">
+                        <button onclick="showNewScriptWizard()" class="btn-primary">+ 新建剧本</button>
+                        <button onclick="showAIFullGenerate()" class="btn-accent">AI一键生成剧本</button>
+                        <button onclick="document.getElementById('import-script-file').click()" class="btn-secondary">导入剧本</button>
+                        <button onclick="loadScripts()" class="btn-secondary">刷新列表</button>
+                        <input type="file" id="import-script-file" accept=".json" style="display:none" onchange="importScript(this)">
+                    </div>
+                    <div id="scripts-list"></div>
+                </div>
+
+                <!-- Visual Script Builder -->
+                <div id="script-wizard" style="display:none;">
+                    <div class="wizard-header">
+                        <h3 id="wizard-title">新建剧本</h3>
+                        <button onclick="closeWizard()" class="btn-secondary">返回列表</button>
+                    </div>
+
+                    <div class="wizard-tabs">
+                        <button class="wizard-tab active" data-step="basic" onclick="wizardStep('basic')">基本信息</button>
+                        <button class="wizard-tab" data-step="characters" onclick="wizardStep('characters')">角色设计</button>
+                        <button class="wizard-tab" data-step="world" onclick="wizardStep('world')">世界构建</button>
+                        <button class="wizard-tab" data-step="organizations" onclick="wizardStep('organizations')">组织势力</button>
+                        <button class="wizard-tab" data-step="events" onclick="wizardStep('events')">事件系统</button>
+                        <button class="wizard-tab" data-step="dice" onclick="wizardStep('dice')">随机项</button>
+                        <button class="wizard-tab" data-step="lorebook" onclick="wizardStep('lorebook')">知识库</button>
+                        <button class="wizard-tab" data-step="story_tree" onclick="wizardStep('story_tree')">剧情树</button>
+                        <button class="wizard-tab" data-step="json" onclick="wizardStep('json')">JSON源码</button>
+                    </div>
+
+                    <div class="wizard-body-with-copilot">
+                    <div class="wizard-main">
+
+                    <!-- Step: Basic Info -->
+                    <div class="wizard-step active" id="step-basic">
+                        <div class="form-group">
+                            <label>剧本ID (英文):</label>
+                            <input type="text" id="w-script-id" placeholder="my_story">
+                        </div>
+                        <div class="form-group">
+                            <label>剧本名称:</label>
+                            <input type="text" id="w-script-name" placeholder="我的故事">
+                        </div>
+                        <div class="form-group">
+                            <label>开局时间:</label>
+                            <input type="datetime-local" id="w-start-time" value="2025-09-01T07:00">
+                        </div>
+                        <div class="form-group">
+                            <label>世界背景:</label>
+                            <input type="text" id="w-bg-prompt" placeholder="简单描述你想要的世界（如：民国上海滩黑帮故事）" style="margin-bottom:0.3rem">
+                            <textarea id="w-background" rows="6" placeholder="详细的世界背景描述..."></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="w-dice-enabled" checked> 启用骰子检定</label>
+                            <select id="w-check-rule" style="margin-left:0.5rem">
+                                <option value="default">默认 (d100≥阈值)</option>
+                                <option value="brp">BRP/CoC (d100≤技能值)</option>
+                                <option value="dnd">D&D (d20+修正≥DC)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>摘要词数阈值: <input type="number" id="w-summary-word-threshold" value="3000" min="0" max="50000" style="width:70px"> <small style="color:var(--text-muted)">(未摘要文本超过此字数时触发摘要，0=仅按回合数)</small></label>
+                            <label>推理回注轮数: <input type="number" id="w-reasoning-lookback" value="2" min="1" max="10" style="width:50px"> <small style="color:var(--text-muted)">(前N轮的AI决策思路传递给下一回合)</small></label>
+                            <label><input type="checkbox" id="w-vector-summarize"> 向量摘要化 <small style="color:var(--text-muted)">(存入向量前先摘要，提高检索精度)</small></label>
+                        </div>
+                    </div>
+
+                    <!-- Step: Characters -->
+                    <div class="wizard-step" id="step-characters">
+                        <div class="tab-gen-bar"><input class="ai-hint-input" placeholder="补充需求（可选，如&quot;多生成商人类型NPC&quot;）" /><button class="btn-ai-tab-gen" onclick="aiGenerateTab('characters')">AI一键新建</button><button class="btn-ai-tab-supp" onclick="aiSupplementTab('characters')">AI一键优化</button><button class="btn-ai-tab-import" onclick="openMaterialPicker('characters')">从素材导入</button></div>
+                        <details>
+                            <summary>通用属性</summary>
+                            <div class="section-body">
+                                <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 0.4rem">所有主角共享的属性列表和默认值</p>
+                                <div id="attr-ai-result"></div>
+                                <div id="w-attributes">
+                                    <div class="attr-editor"><input type="text" placeholder="属性名(中文)" class="w-attr-name" value="健康"><input type="number" class="w-attr-val" value="80" min="0" max="100"><input type="text" placeholder="说明" class="w-attr-rule" value="0代表重病，100代表极佳"></div>
+                                    <div class="attr-editor"><input type="text" placeholder="属性名" class="w-attr-name" value="心情"><input type="number" class="w-attr-val" value="70" min="0" max="100"><input type="text" placeholder="说明" class="w-attr-rule" value="整体情绪状态"></div>
+                                </div>
+                                <button onclick="addAttrRow()" class="btn-secondary">+ 添加属性</button>
+                            </div>
+                        </details>
+
+                        <details>
+                            <summary>主角设定</summary>
+                            <div class="section-body">
+                                <div class="form-group" style="margin-bottom:0.5rem">
+                                    <label><input type="checkbox" id="w-allow-custom-char" checked> 允许玩家自建角色</label>
+                                </div>
+                                <div class="form-group">
+                                    <label>默认主角简介:</label>
+                                    <input type="text" id="w-pc-bio" placeholder="主角的身份和背景（无预设时使用）">
+                                </div>
+                                <div class="form-group">
+                                    <label>初始位置:</label>
+                                    <input type="text" id="w-pc-location" placeholder="主角的初始位置">
+                                </div>
+                                <div class="form-group">
+                                    <label>长期目标:</label>
+                                    <input type="text" id="w-pc-goal" placeholder="主角的长期目标">
+                                </div>
+                                <div class="form-row">
+                                    <div class="form-group form-half">
+                                        <label>性格特征:</label>
+                                        <input type="text" id="w-pc-personality" placeholder="如：内向谨慎、正义感强">
+                                    </div>
+                                    <div class="form-group form-half">
+                                        <label>外貌描述:</label>
+                                        <input type="text" id="w-pc-portrait" placeholder="如：黑发、戴眼镜、身材瘦高">
+                                    </div>
+                                </div>
+                                <hr style="border:none;border-top:1px solid var(--border);margin:0.8rem 0">
+                                <div class="form-group" style="margin-bottom:0.5rem">
+                                    <label><input type="checkbox" id="w-fixed-opening" checked> 启用固定开局</label>
+                                </div>
+                                <div class="form-group">
+                                    <label>开局描述:</label>
+                                    <textarea id="w-opening-text" rows="5" placeholder="游戏开场白，第二人称描述（你...）"></textarea>
+                                </div>
+                                <h4>开局选项</h4>
+                                <div id="w-opening-choices">
+                                    <div class="choice-editor" data-idx="0">
+                                        <input type="text" class="w-choice-text" placeholder="选项1: 玩家可以做什么...">
+                                        <input type="text" class="w-choice-result" placeholder="结果描述">
+                                        <select class="w-choice-type" onchange="toggleChoiceConditional(this)"><option value="deterministic">确定性</option><option value="conditional">骰子决定</option></select>
+                                        <div class="choice-conditional-fields" style="display:none">
+                                            <input type="number" class="w-choice-threshold" placeholder="阈值(1-100)" min="1" max="100" value="50">
+                                            <input type="text" class="w-choice-success" placeholder="成功时描述">
+                                            <input type="text" class="w-choice-failure" placeholder="失败时描述">
+                                        </div>
+                                    </div>
+                                    <div class="choice-editor" data-idx="1">
+                                        <input type="text" class="w-choice-text" placeholder="选项2: 玩家可以做什么...">
+                                        <input type="text" class="w-choice-result" placeholder="结果描述">
+                                        <select class="w-choice-type" onchange="toggleChoiceConditional(this)"><option value="deterministic">确定性</option><option value="conditional">骰子决定</option></select>
+                                        <div class="choice-conditional-fields" style="display:none">
+                                            <input type="number" class="w-choice-threshold" placeholder="阈值(1-100)" min="1" max="100" value="50">
+                                            <input type="text" class="w-choice-success" placeholder="成功时描述">
+                                            <input type="text" class="w-choice-failure" placeholder="失败时描述">
+                                        </div>
+                                    </div>
+                                    <div class="choice-editor" data-idx="2">
+                                        <input type="text" class="w-choice-text" placeholder="选项3: 玩家可以做什么...">
+                                        <input type="text" class="w-choice-result" placeholder="结果描述">
+                                        <select class="w-choice-type" onchange="toggleChoiceConditional(this)"><option value="deterministic">确定性</option><option value="conditional">骰子决定</option></select>
+                                        <div class="choice-conditional-fields" style="display:none">
+                                            <input type="number" class="w-choice-threshold" placeholder="阈值(1-100)" min="1" max="100" value="50">
+                                            <input type="text" class="w-choice-success" placeholder="成功时描述">
+                                            <input type="text" class="w-choice-failure" placeholder="失败时描述">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </details>
+
+                        <details>
+                            <summary>初始背包</summary>
+                            <div class="section-body">
+                                <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 0.4rem">主角在游戏开始时携带的物品</p>
+                                <div id="w-inventory"></div>
+                                <button onclick="addInventoryRow()" class="btn-secondary">+ 添加物品</button>
+                            </div>
+                        </details>
+
+                        <details>
+                            <summary>预设主角</summary>
+                            <div class="section-body">
+                                <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 0.4rem">添加多个预设主角供玩家选择。不添加则使用上方默认设定。</p>
+                                <div id="w-presets"></div>
+                                <button onclick="addPresetEditor()" class="btn-secondary">+ 添加预设主角</button>
+                            </div>
+                        </details>
+
+                        <details>
+                            <summary>NPC</summary>
+                            <div class="section-body">
+                                <div id="w-npcs"></div>
+                                <button onclick="addNpcEditor()" class="btn-secondary">+ 手动添加NPC</button>
+                            </div>
+                        </details>
+
+                        <details>
+                            <summary>NPC关系网</summary>
+                            <div class="section-body">
+                                <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 0.4rem">点击两个节点创建有向关系边，点击边编辑三维数值</p>
+                                <div id="npc-rel-graph"></div>
+                            </div>
+                        </details>
+                    </div>
+
+                    <!-- Step: World -->
+                    <div class="wizard-step" id="step-world">
+                        <div class="tab-gen-bar"><input class="ai-hint-input" placeholder="补充需求（可选）" /><button class="btn-ai-tab-gen" onclick="aiGenerateTab('world')">AI一键新建</button><button class="btn-ai-tab-supp" onclick="aiSupplementTab('world')">AI一键优化</button><button class="btn-ai-tab-import" onclick="openMaterialPicker('world')">从素材导入</button></div>
+                        <details>
+                            <summary>地点</summary>
+                            <div class="section-body">
+                                <div id="w-locations"></div>
+                                <button onclick="addLocationEditor()" class="btn-secondary">+ 手动添加地点</button>
+                            </div>
+                        </details>
+
+                        <details>
+                            <summary>世界属性</summary>
+                            <div class="section-body">
+                                <div id="w-world-props"></div>
+                                <button onclick="addWorldPropEditor()" class="btn-secondary">+ 添加世界属性</button>
+                            </div>
+                        </details>
+
+                        <details>
+                            <summary>持续状态 (Buff/Debuff)</summary>
+                            <div class="section-body">
+                                <div id="w-persistent-states"></div>
+                                <button onclick="addPersistentStateEditor()" class="btn-secondary">+ 手动添加</button>
+                            </div>
+                        </details>
+                    </div>
+
+                    <!-- Step: Organizations & Factions -->
+                    <div class="wizard-step" id="step-organizations">
+                        <div class="tab-gen-bar"><input class="ai-hint-input" placeholder="补充需求（可选）" /><button class="btn-ai-tab-gen" onclick="aiGenerateTab('organizations')">AI一键新建</button><button class="btn-ai-tab-supp" onclick="aiSupplementTab('organizations')">AI一键优化</button><button class="btn-ai-tab-import" onclick="openMaterialPicker('organizations')">从素材导入</button></div>
+                        <details>
+                            <summary>组织/势力</summary>
+                            <div class="section-body">
+                                <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.8rem">帮派、公司、军队、国家、阵营等组织或势力，NPC可以归属于组织。</p>
+                                <div id="w-organizations"></div>
+                                <button onclick="addOrganizationEditor()" class="btn-secondary">+ 手动添加组织/势力</button>
+                            </div>
+                        </details>
+
+                        <details>
+                            <summary>组织/势力间关系</summary>
+                            <div class="section-body">
+                                <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.8rem">定义组织或势力之间的同盟、敌对、竞争、从属等关系，AI生成叙事时会基于此理解格局。</p>
+                                <div id="w-org-rels"></div>
+                                <button onclick="addOrgRelEditor()" class="btn-secondary">+ 手动添加组织关系</button>
+                            </div>
+                        </details>
+                    </div>
+
+                    <!-- Step: Events -->
+                    <div class="wizard-step" id="step-events">
+                        <div class="tab-gen-bar"><input class="ai-hint-input" placeholder="补充需求（可选）" /><button class="btn-ai-tab-gen" onclick="aiGenerateTab('events')">AI一键新建</button><button class="btn-ai-tab-supp" onclick="aiSupplementTab('events')">AI一键优化</button><button class="btn-ai-tab-import" onclick="openMaterialPicker('events')">从素材导入</button></div>
+                        <details>
+                            <summary>周期事件</summary>
+                            <div class="section-body">
+                                <div id="w-cyclic-events"></div>
+                                <button onclick="addCyclicEventEditor()" class="btn-secondary">+ 手动添加</button>
+                            </div>
+                        </details>
+
+                        <details>
+                            <summary>一次性剧情节点</summary>
+                            <div class="section-body">
+                                <div id="w-onetime-events"></div>
+                                <button onclick="addOnetimeEventEditor()" class="btn-secondary">+ 手动添加</button>
+                            </div>
+                        </details>
+
+                        <details>
+                            <summary>氛围基调规则</summary>
+                            <div class="section-body">
+                                <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.8rem">当条件满足时，AI 叙事风格将自动切换。优先级高的规则覆盖低的。</p>
+                                <div id="w-tone-rules"></div>
+                                <button onclick="addToneRuleEditor()" class="btn-secondary">+ 添加基调规则</button>
+                            </div>
+                        </details>
+
+                        <details>
+                            <summary>支线任务模板</summary>
+                            <div class="section-body">
+                                <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.8rem">当条件满足时自动激活支线任务提示，AI 将在叙事中自然引出。</p>
+                                <div id="w-quest-templates"></div>
+                                <button onclick="addQuestTemplateEditor()" class="btn-secondary">+ 添加支线模板</button>
+                            </div>
+                        </details>
+                    </div>
+
+                    <!-- Step: Dice/Random -->
+                    <div class="wizard-step" id="step-dice">
+                        <div class="tab-gen-bar"><input class="ai-hint-input" placeholder="补充需求（可选）" /><button class="btn-ai-tab-gen" onclick="aiGenerateTab('dice')">AI一键新建</button><button class="btn-ai-tab-supp" onclick="aiSupplementTab('dice')">AI一键优化</button><button class="btn-ai-tab-import" onclick="openMaterialPicker('dice')">从素材导入</button></div>
+                        <h4>随机项</h4>
+                        <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.8rem">随机项是骰子驱动的系统，如天气、随机事件等。每个随机项定义骰子公式和结果区间。</p>
+                        <div id="w-random-items"></div>
+                        <button onclick="addRandomItemEditor()" class="btn-secondary">+ 手动添加随机项</button>
+
+                        <h4 style="margin-top:1.5rem">脚本变量</h4>
+                        <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.8rem">定义可在 lorebook 和 prompt 中用 <code>{{var::变量id}}</code> 引用的变量。AI 可通过 state_changes 修改它们。</p>
+                        <div id="w-variables"></div>
+                        <button onclick="addVariableEditor()" class="btn-secondary">+ 添加变量</button>
+
+                        <h4 style="margin-top:1.5rem">触发器</h4>
+                        <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.8rem">定义生命周期钩子：在特定事件发生时自动执行操作（修改变量、注入prompt等）。</p>
+                        <div id="w-triggers"></div>
+                        <button onclick="addTriggerEditor()" class="btn-secondary">+ 添加触发器</button>
+
+                        <h4 style="margin-top:1.5rem">正则脚本</h4>
+                        <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.8rem">定义正则替换规则，自动对 AI 输出或用户输入做后处理（如过滤OOC、格式化对话）。</p>
+                        <div id="w-regex-scripts"></div>
+                        <button onclick="addRegexScriptEditor()" class="btn-secondary">+ 添加正则规则</button>
+                    </div>
+
+                    <!-- Step: Lorebook / World Info -->
+                    <div class="wizard-step" id="step-lorebook">
+                        <div class="tab-gen-bar"><input class="ai-hint-input" placeholder="补充需求（可选）" /><button class="btn-ai-tab-gen" onclick="aiGenerateTab('lorebook')">AI一键新建</button><button class="btn-ai-tab-supp" onclick="aiSupplementTab('lorebook')">AI一键优化</button><button class="btn-ai-tab-import" onclick="openMaterialPicker('lorebook')">从素材导入</button></div>
+                        <h4>知识库 (Lorebook / World Info)</h4>
+                        <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.8rem">
+                            知识库词条只在关键词被提及时才会注入到AI提示词中，让庞大的世界观不浪费token。
+                            设置关键词列表，当玩家输入或近期剧情中出现这些词时，该词条会被自动激活。
+                        </p>
+                        <div class="lore-global-settings" style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:0.8rem;padding:0.5rem;background:var(--bg-darker,#1a1a2e);border-radius:6px;font-size:0.82rem">
+                            <label>Token预算: <input type="number" id="w-lore-token-budget" value="0" min="0" max="10000" style="width:65px" title="0=不限制"> <small style="color:var(--text-muted)">(0=不限)</small></label>
+                            <label>递归深度: <input type="number" id="w-lore-max-recursion" value="2" min="0" max="5" style="width:45px" title="已激活词条内容触发更多词条的最大递归层数"></label>
+                        </div>
+                        <div id="w-lorebook"></div>
+                        <button onclick="addLorebookEditor()" class="btn-secondary">+ 手动添加词条</button>
+                    </div>
+
+                    <!-- Step: Story Tree -->
+                    <div class="wizard-step" id="step-story_tree">
+                        <div class="tab-gen-bar"><input class="ai-hint-input" placeholder="补充需求（可选）" /><button class="btn-ai-tab-gen" onclick="aiGenerateTab('story_tree')">AI一键新建</button><button class="btn-ai-tab-supp" onclick="aiSupplementTab('story_tree')">AI一键优化</button></div>
+                        <h4>剧情树</h4>
+                        <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.8rem">
+                            类似 HOI4 国策树的剧情推进系统。定义多条剧情线，每条线包含有序节点（自动触发/玩家选择/任务/限时），节点间有前置依赖和分支选择。
+                            节点可联动知识库、变量、提示词注入等效果。
+                        </p>
+                        <div id="st-editor-toolbar">
+                            <button class="btn-secondary btn-sm st-graph-only" onclick="stAddTree()">+剧情线</button>
+                            <button class="btn-secondary btn-sm st-graph-only" onclick="stAddNode()">+节点</button>
+                            <button class="btn-secondary btn-sm st-graph-only" onclick="stAddEvent()">+事件</button>
+                            <button class="btn-secondary btn-sm st-graph-only" onclick="stDeleteTree()" title="删除剧情线" style="color:var(--danger)">删除线</button>
+                            <button class="btn-ai-tab-gen btn-sm st-graph-only" id="btn-ai-optimize-events" onclick="aiOptimizeEventSystem()" title="AI分析全部事件系统，新增事件、补充关联">AI优化事件</button>
+                            <span style="flex:1"></span>
+                            <label class="st-graph-only" style="font-size:0.78rem;display:flex;align-items:center;gap:4px">缩放<input type="range" id="st-zoom-slider" min="30" max="200" value="100" style="width:80px" oninput="stSetZoom(this.value/100)"></label>
+                            <button class="btn-secondary btn-sm" id="st-mode-toggle" onclick="stToggleMode()">表单模式</button>
+                        </div>
+                        <div id="st-graph-editor">
+                            <div id="st-canvas-wrap">
+                                <div id="st-canvas"></div>
+                            </div>
+                            <div id="st-props-panel">
+                                <div id="st-props-placeholder">点击节点查看属性</div>
+                                <div id="st-props-content" style="display:none"></div>
+                            </div>
+                        </div>
+                        <div id="st-form-wrapper">
+                            <div id="w-story-trees"></div>
+                            <button onclick="addStoryTreeEditor()" class="btn-secondary">+ 添加剧情线</button>
+                        </div>
+                    </div>
+
+                    <!-- Step: JSON source -->
+                    <div class="wizard-step" id="step-json">
+                        <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.5rem">直接编辑JSON源码（修改后会同步到可视化编辑器）</p>
+                        <textarea id="script-json-editor" rows="30" placeholder="剧本JSON..."></textarea>
+                        <div class="editor-buttons">
+                            <button onclick="syncJsonToWizard()" class="btn-secondary">从JSON同步到编辑器</button>
+                            <button onclick="validateScriptEdit()" class="btn-secondary">验证</button>
+                        </div>
+                        <div id="script-validation-result"></div>
+                    </div>
+
+                    <div class="wizard-footer">
+                        <button onclick="saveWizardScript()" class="btn-primary">保存剧本</button>
+                        <button onclick="previewWizardJson()" class="btn-secondary">预览JSON</button>
+                    </div>
+                    </div><!-- /wizard-main -->
+
+                    <!-- AI Co-Pilot Panel -->
+                    <div id="copilot-panel" class="copilot-panel">
+                        <div class="copilot-header">
+                            <span class="copilot-title">AI 共创</span>
+                            <div class="copilot-mode-tabs">
+                                <button class="copilot-mode-btn active" data-mode="result" onclick="_switchCopilotMode('result')">生成结果</button>
+                                <button class="copilot-mode-btn" data-mode="fillFields" onclick="_switchCopilotMode('fillFields')">补字段</button>
+                            </div>
+                        </div>
+                        <div id="copilot-content" class="copilot-content">
+                            <div class="copilot-placeholder">
+                                <p>使用各页面的"AI一键新建"后，生成结果摘要将在此处显示。</p>
+                                <p style="font-size:0.75rem;margin-top:0.3rem">支持智能合并（新增/更新已有内容）和一键撤销。</p>
+                            </div>
+                        </div>
+                    </div>
+                    </div><!-- /wizard-body-with-copilot -->
+                </div>
+
+                <!-- AI Generate Full Script Modal -->
+                <div id="ai-generate-modal" class="modal" style="display:none;">
+                    <div class="modal-content">
+                        <span class="modal-close" onclick="document.getElementById('ai-generate-modal').style.display='none'">&times;</span>
+                        <h3>AI一键生成剧本</h3>
+                        <p style="color:var(--text-secondary);margin:0.5rem 0">描述你想要的游戏世界，AI会帮你生成完整剧本。越详细越好！</p>
+                        <textarea id="ai-full-prompt" rows="5" placeholder="例如：一个发生在民国时期上海滩的黑帮故事。主角是一个从乡下来的年轻人，进入了一家茶馆做学徒。茶馆其实是黑帮的据点..."></textarea>
+                        <div class="form-actions" style="margin-top:0.5rem">
+                            <button onclick="doAIFullGenerate()" class="btn-primary" id="ai-gen-btn">开始生成</button>
+                        </div>
+                        <div id="ai-gen-status" style="margin-top:0.5rem"></div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Materials Panel (combined search + library) -->
+            <div id="panel-materials" class="panel">
+                <h2>素材</h2>
+                <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.8rem">搜索网络或使用AI生成背景知识，收藏到素材库后可一键导入到正在编辑的剧本，或基于多个素材直接生成新剧本。</p>
+
+                <!-- 搜索区 -->
+                <div class="search-bar">
+                    <input type="text" id="search-input" placeholder="搜索关键词（网页/AI/抓取）..." onkeypress="if(event.key==='Enter')performSearch()">
+                    <button onclick="performSearch()" class="btn-primary">搜索</button>
+                </div>
+                <div class="search-options">
+                    <label><input type="checkbox" id="src-web" checked> 网页搜索</label>
+                    <label><input type="checkbox" id="src-ai" checked> AI知识</label>
+                    <label><input type="checkbox" id="src-scrape"> 网页抓取</label>
+                </div>
+
+                <!-- Advanced search settings -->
+                <div class="search-advanced-toggle" onclick="this.classList.toggle('open');document.getElementById('search-advanced').classList.toggle('open')">
+                    高级设置 <span class="toggle-arrow">&#9662;</span>
+                </div>
+                <div id="search-advanced" class="search-advanced">
+                    <div class="sa-row">
+                        <label class="sa-label">搜索结果数量:</label>
+                        <input type="range" id="search-max-results" min="1" max="20" value="5" oninput="document.getElementById('search-max-val').textContent=this.value">
+                        <span id="search-max-val" class="sa-val">5</span>
+                    </div>
+                    <div class="sa-row">
+                        <label class="sa-label">抓取网址（每行一个）:</label>
+                        <textarea id="scrape-urls" rows="3" placeholder="https://example.com/page1&#10;https://example.com/page2&#10;https://example.com/page3" class="sa-textarea"></textarea>
+                    </div>
+                    <p class="sa-hint">勾选"网页抓取"后，将并行解析上方所有网址并提取正文内容。</p>
+                </div>
+
+                <div id="search-results" class="results-area"></div>
+
+                <hr class="material-divider">
+
+                <!-- 素材库区 -->
+                <h3 style="margin-top:0.8rem;display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap">
+                    素材库
+                    <span class="material-batch-actions">
+                        <button onclick="showManualAddMaterial()" class="btn-secondary" title="手动输入文本添加素材">手动添加</button>
+                        <button onclick="triggerMaterialFileImport()" class="btn-secondary" title="从 txt/md/doc 文件导入">文件导入</button>
+                        <button onclick="aiGenerateFromMaterials()" class="btn-primary" title="勾选若干素材后，基于这些素材一键生成完整剧本">基于选中素材生成剧本</button>
+                    </span>
+                    <input type="file" id="material-file-input" accept=".txt,.md,.doc,.docx" multiple style="display:none" onchange="handleMaterialFileImport(this)">
+                </h3>
+                <div class="search-bar">
+                    <input type="text" id="material-search-input" placeholder="筛选素材..." onkeypress="if(event.key==='Enter')searchMaterials()">
+                    <button onclick="searchMaterials()" class="btn-secondary">筛选</button>
+                    <button onclick="loadMaterials()" class="btn-secondary">全部</button>
+                </div>
+                <div id="material-tags-filter" class="tags-area"></div>
+                <div id="materials-list" class="results-area"></div>
+            </div>
+
+            <!-- World Tree and Story Tree moved into status panel tabs -->
+
+            <!-- Settings Panel -->
+            <div id="panel-settings" class="panel">
+                <h2>设置</h2>
+                <div class="settings-section">
+                    <h3>AI模型配置</h3>
+                    <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:1rem">保存多组AI配置，在游戏和剧本编写中用标题栏下拉框随时切换。支持OpenAI兼容的第三方API。</p>
+
+                    <h4>已保存配置</h4>
+                    <div id="profiles-list" style="margin-bottom:1rem"></div>
+
+                    <h4>添加新配置</h4>
+                    <div class="form-group">
+                        <label>快速预设:</label>
+                        <select id="preset-select" onchange="applyPreset(this.value)">
+                            <option value="">-- 选择预设或手动填写 --</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>配置名称:</label>
+                        <input type="text" id="profile-name" placeholder="如：GPT-4o (xi-ai)">
+                    </div>
+                    <div class="form-group">
+                        <label>接口类型:</label>
+                        <select id="profile-provider-type">
+                            <option value="openai_compatible">OpenAI兼容 (第三方API)</option>
+                            <option value="openai">OpenAI 官方</option>
+                            <option value="claude">Claude (Anthropic)</option>
+                            <option value="ollama">Ollama 本地</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>API Key:</label>
+                        <input type="password" id="profile-api-key" placeholder="sk-你的密钥">
+                    </div>
+                    <div class="form-group">
+                        <label>Base URL:</label>
+                        <input type="text" id="profile-base-url" placeholder="https://api.xi-ai.cn/v1">
+                    </div>
+                    <div class="form-group">
+                        <label>模型名称:</label>
+                        <input type="text" id="profile-model" placeholder="gpt-4o" value="gpt-4o">
+                    </div>
+                    <div class="form-group">
+                        <label>最大Token数:</label>
+                        <input type="number" id="profile-max-tokens" value="8192">
+                    </div>
+                    <details style="margin-bottom:0.8rem">
+                        <summary style="cursor:pointer;font-size:0.85rem;color:var(--text-muted)">分阶段模型覆盖（可选）</summary>
+                        <p style="font-size:0.78rem;color:var(--text-muted);margin:0.3rem 0">不填则使用上方默认模型。可为每个阶段指定不同 model 名（共用同一 API Key / Base URL）。</p>
+                        <div class="form-group"><label>叙事 (narrative):</label><input type="text" id="profile-sm-narrative" placeholder="留空=默认"></div>
+                        <div class="form-group"><label>选项 (choices):</label><input type="text" id="profile-sm-choices" placeholder="留空=默认"></div>
+                        <div class="form-group"><label>状态 (state):</label><input type="text" id="profile-sm-state" placeholder="留空=默认"></div>
+                        <div class="form-group"><label>总结 (summary):</label><input type="text" id="profile-sm-summary" placeholder="留空=默认"></div>
+                        <div class="form-group"><label>知识图谱 (knowledge):</label><input type="text" id="profile-sm-knowledge_graph" placeholder="留空=默认"></div>
+                    </details>
+                    <div class="form-actions">
+                        <button onclick="saveNewProfile()" class="btn-primary">保存配置</button>
+                        <button onclick="testActiveProfile()" class="btn-secondary">测试当前配置</button>
+                    </div>
+                    <div id="config-status"></div>
+                </div>
+
+                <div class="settings-section">
+                    <h3>场景图生成</h3>
+                    <p style="color:var(--text-muted);font-size:0.82rem;margin-bottom:1rem">保存多组图像生成配置，随时切换。支持 OpenAI、Gemini API、本地 ComfyUI。</p>
+
+                    <h4>已保存配置</h4>
+                    <div id="img-profiles-list" style="margin-bottom:1rem"></div>
+
+                    <h4 id="img-form-title">添加新配置</h4>
+                    <div class="form-group">
+                        <label>配置名称:</label>
+                        <input type="text" id="img-profile-name" placeholder="如：京东云 Gemini">
+                    </div>
+                    <div class="form-group">
+                        <label>图像提供者:</label>
+                        <select id="img-provider-select" onchange="onImgProviderChange()">
+                            <option value="openai">OpenAI (DALL-E / gpt-image)</option>
+                            <option value="gemini">Gemini API (京东云等)</option>
+                            <option value="comfyui">ComfyUI 本地</option>
+                        </select>
+                    </div>
+                    <div id="img-openai-config" style="display:none">
+                        <div class="form-group">
+                            <label>API Key (留空则复用AI配置):</label>
+                            <input type="password" id="img-openai-key" placeholder="sk-...">
+                        </div>
+                        <div class="form-group">
+                            <label>Base URL (留空则默认):</label>
+                            <input type="text" id="img-openai-base-url" placeholder="https://api.openai.com/v1">
+                        </div>
+                        <div class="form-group">
+                            <label>模型:</label>
+                            <input type="text" id="img-openai-model" value="gpt-image-1">
+                        </div>
+                        <div class="form-group">
+                            <label>尺寸:</label>
+                            <select id="img-openai-size">
+                                <option value="1536x1024">1536x1024 (横版)</option>
+                                <option value="1024x1024">1024x1024 (方形)</option>
+                                <option value="1024x1536">1024x1536 (竖版)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>质量:</label>
+                            <select id="img-openai-quality">
+                                <option value="low">Low (快速)</option>
+                                <option value="medium">Medium</option>
+                                <option value="high">High (慢)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="img-gemini-config" style="display:none">
+                        <div class="form-group">
+                            <label>API Key:</label>
+                            <input type="password" id="img-gemini-key" placeholder="pk-...">
+                        </div>
+                        <div class="form-group">
+                            <label>完整端点 URL:</label>
+                            <input type="text" id="img-gemini-base-url" placeholder="http://ai-api.jdcloud.com/v1/images/gemini_flash/generations">
+                        </div>
+                        <div class="form-group">
+                            <label>模型:</label>
+                            <input type="text" id="img-gemini-model" value="Gemini 3-Pro-Image-Preview">
+                        </div>
+                    </div>
+                    <div id="img-comfyui-config" style="display:none">
+                        <div class="form-group">
+                            <label>ComfyUI 地址:</label>
+                            <input type="text" id="img-comfyui-url" value="http://127.0.0.1:8188">
+                        </div>
+                        <div class="form-group">
+                            <label>宽度:</label>
+                            <input type="number" id="img-comfyui-width" value="1024">
+                        </div>
+                        <div class="form-group">
+                            <label>高度:</label>
+                            <input type="number" id="img-comfyui-height" value="576">
+                        </div>
+                        <div class="form-group">
+                            <label>采样步数:</label>
+                            <input type="number" id="img-comfyui-steps" value="20">
+                        </div>
+                        <div class="form-group">
+                            <label>Checkpoint:</label>
+                            <input type="text" id="img-comfyui-checkpoint" placeholder="sd_xl_base_1.0.safetensors">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>显示模式:</label>
+                        <select id="img-display-mode">
+                            <option value="split">上图下文（分区）</option>
+                            <option value="overlay">全屏背景 + 半透明文字</option>
+                        </select>
+                    </div>
+                    <div class="form-actions">
+                        <button onclick="saveImageProfile()" class="btn-primary" id="img-save-btn">保存配置</button>
+                        <button onclick="resetImgProfileForm()" class="btn-secondary">重置</button>
+                    </div>
+                    <div id="img-config-status"></div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Status Panel (right sidebar, game only) -->
+        <button id="status-panel-toggle" class="status-panel-toggle" onclick="toggleStatusPanel()" title="收起/展开状态栏">&#10095;</button>
+        <aside id="status-panel" aria-label="游戏状态" style="display:none;">
+            <div class="mobile-status-heading">
+                <strong>游戏状态</strong>
+                <button class="mobile-status-close" type="button" onclick="toggleStatusPanel()" aria-label="关闭游戏状态">关闭</button>
+            </div>
+            <div class="status-tabs">
+                <button class="status-tab active" data-page="sp-char" onclick="switchStatusTab(this)">角色</button>
+                <button class="status-tab" data-page="sp-social" onclick="switchStatusTab(this)">社交</button>
+                <button class="status-tab" data-page="sp-world" onclick="switchStatusTab(this)">世界</button>
+                <button class="status-tab" data-page="sp-tree" onclick="switchStatusTab(this)">世界树</button>
+                <button class="status-tab" id="storytree-status-tab" data-page="sp-storytree" onclick="switchStatusTab(this)">剧情树</button>
+                <button class="status-tab" id="clues-status-tab" data-page="sp-clues" onclick="switchStatusTab(this)">线索</button>
+                <button class="status-tab" data-page="sp-log" onclick="switchStatusTab(this)">日志</button>
+                <button class="status-tab" data-page="sp-chronicle" onclick="switchStatusTab(this)">编年史</button>
+                <button class="status-tab" data-page="sp-observ" onclick="switchStatusTab(this)">Agent</button>
+            </div>
+
+            <!-- Page: Character -->
+            <div id="sp-char" class="status-page active">
+                <div id="status-player-info" class="player-info-card"></div>
+                <div id="status-xp-level" style="display:none"></div>
+                <h3>状态</h3>
+                <div id="status-attributes"></div>
+                <div id="status-skill-trees" style="display:none"></div>
+                <div id="status-play-style"></div>
+                <details class="disc-details"><summary class="disc-summary">探索进度</summary><div id="status-discovery"></div></details>
+                <h3>背包</h3>
+                <div id="status-inventory"></div>
+                <h3>位置</h3>
+                <div id="status-location"></div>
+                <div id="status-interactables"></div>
+                <div id="status-location-map"></div>
+            </div>
+
+            <!-- Page: Social -->
+            <div id="sp-social" class="status-page">
+                <h3>角色</h3>
+                <div id="status-npcs"></div>
+                <h3 id="status-reputation-header" style="display:none">阵营声望</h3>
+                <div id="status-reputation"></div>
+                <h3 id="status-moral-alignment-header" style="display:none">道德画像</h3>
+                <div id="status-moral-alignment"></div>
+            </div>
+
+            <!-- Page: World -->
+            <div id="sp-world" class="status-page">
+                <h3>世界属性</h3>
+                <div id="status-world-props"></div>
+                <h3>持续状态</h3>
+                <div id="status-persistent"></div>
+                <h3 id="status-deadlines-header" style="display:none">时限任务</h3>
+                <div id="status-deadlines"></div>
+                <h3 id="status-quests-header" style="display:none">可接任务</h3>
+                <div id="status-quests"></div>
+                <h3 id="status-threads-header" style="display:none">叙事线索</h3>
+                <div id="status-threads"></div>
+                <details class="disc-details pc-event-reports">
+                    <summary class="disc-summary" id="status-pc-reports-summary">主角听闻 · 未经核实（0）</summary>
+                    <div id="status-pc-reports"></div>
+                </details>
+                <h3>公开动态</h3>
+                <div id="status-world-dynamics"></div>
+            </div>
+
+            <!-- Page: World Tree -->
+            <div id="sp-tree" class="status-page">
+                <div id="tree-container">
+                    <p class="placeholder-text" id="tree-placeholder">加载中...</p>
+                    <div id="tree-view"></div>
+                </div>
+            </div>
+
+            <!-- Page: Story Tree -->
+            <div id="sp-storytree" class="status-page">
+                <div id="storytree-container">
+                    <div class="storytree-toolbar">
+                        <button id="btn-storytree-expand" class="btn-sm" onclick="toggleStoryTreeExpand()">&#x26F6; 展开</button>
+                        <button onclick="viewNewspaper()" class="btn-sm">&#x1F4F0; 报纸</button>
+                    </div>
+                    <p class="placeholder-text" id="storytree-placeholder">加载中...</p>
+                    <div id="storytree-content" style="display:none">
+                        <div id="storytree-graph"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Page: Clue Board -->
+            <div id="sp-clues" class="status-page">
+                <h3>线索板</h3>
+                <div id="clue-board-filters" class="clue-filters"></div>
+                <div id="clue-board-list"></div>
+                <div id="clue-deduction" class="clue-deduction-area" style="display:none">
+                    <div class="clue-selected-label">已选线索：<span id="clue-selected-count">0</span></div>
+                    <button class="btn-primary btn-sm" onclick="submitDeduction()">尝试推理</button>
+                </div>
+                <div id="clue-deduction-result"></div>
+            </div>
+
+            <!-- Page: Log -->
+            <div id="sp-log" class="status-page">
+                <div class="adventure-log-section">
+                    <div id="game-running-stats" class="running-stats"></div>
+                    <h3>冒险日志</h3>
+                    <div id="adventure-log-content"></div>
+                    <button class="btn-secondary btn-summary" onclick="viewFullSummary()">查看完整摘要</button>
+                </div>
+            </div>
+            <!-- Page: Chronicle -->
+            <div id="sp-chronicle" class="status-page">
+                <div class="chronicle-toolbar">
+                    <input type="text" id="chronicle-search" placeholder="搜索事件..." oninput="renderChronicle(currentState)">
+                    <div id="chronicle-filters" class="chronicle-filters"></div>
+                </div>
+                <div id="chronicle-timeline"></div>
+            </div>
+            <!-- Page: Observability (Agent Trace + Performance) -->
+            <div id="sp-observ" class="status-page">
+                <h3>Agent Trace</h3>
+                <div id="agent-trace-content" class="agent-trace-content"></div>
+                <h3>Performance</h3>
+                <div id="perf-dashboard" class="perf-dashboard"></div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Shop Modal -->
+    <div id="shop-modal" class="modal" style="display:none">
+        <div class="modal-content">
+            <span class="modal-close" onclick="document.getElementById('shop-modal').style.display='none'">&times;</span>
+            <h3 id="shop-modal-title">商店</h3>
+            <div id="shop-currency" class="shop-currency"></div>
+            <div id="shop-items"></div>
+            <h4 style="margin-top:12px">出售物品</h4>
+            <div id="shop-sell-items"></div>
+        </div>
+    </div>
+
+    <div id="regenerate-hint-modal" class="modal" style="display:none" role="dialog" aria-modal="true" aria-labelledby="regenerate-hint-title">
+        <form id="regenerate-hint-form" class="modal-content">
+            <h3 id="regenerate-hint-title">重新生成全部</h3>
+            <label for="regenerate-hint-input">重生成倾向（留空则随机生成）</label>
+            <textarea id="regenerate-hint-input" rows="3"></textarea>
+            <div class="regenerate-hint-actions">
+                <button type="button" id="regenerate-hint-cancel" class="btn-secondary">取消</button>
+                <button type="submit" class="btn-primary">开始重生成</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- NPC Chat Modal -->
+    <div id="npc-chat-modal" class="modal" style="display:none">
+        <div class="modal-content npc-chat-content">
+            <span class="modal-close" onclick="closeNpcChat()">&times;</span>
+            <div class="npc-chat-header">
+                <h3 id="npc-chat-name">NPC</h3>
+                <div id="npc-chat-info" class="npc-chat-info"></div>
+            </div>
+            <div id="npc-chat-messages" class="npc-chat-messages"></div>
+            <div class="npc-chat-input">
+                <input type="text" id="npc-chat-input" placeholder="说点什么..." onkeypress="if(event.key==='Enter')sendNpcMessage()">
+                <button onclick="sendNpcMessage()" class="btn-primary">发送</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+    <script src="/static/js/npc_presence.js"></script>
+    <script src="/static/js/main_map_view.js"></script>
+    <script src="/static/js/game_ui.js"></script>
+    <!-- Material detail modal (global, outside panels so it's always accessible) -->
+    <div id="material-detail-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <span class="modal-close" onclick="closeMaterialDetail()">&times;</span>
+            <div id="material-detail-content"></div>
+        </div>
+    </div>
+
+    <div id="newspaper-modal" class="modal" style="display:none">
+        <div class="modal-content newspaper-content">
+            <span class="modal-close" onclick="closeNewspaperModal()">&times;</span>
+            <div id="newspaper-body"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/search_ui.js"></script>
+    <script src="/static/js/world_tree_view.js"></script>
+    <script src="/static/js/story_tree_view.js"></script>
+    <script src="/static/js/story_tree_editor.js"></script>
+    <script src="/static/js/script_builder.js"></script>
+    <script src="/static/js/pipeline_mode.js"></script>
+</body>
+</html>

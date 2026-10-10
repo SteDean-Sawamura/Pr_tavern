@@ -1,0 +1,107 @@
+name: world_state_shared_system
+description: "Stage 4b 世界状态推演 -- 各子引擎共享的 system prompt 模板"
+notes: |
+  由 _build_world_state_system(group, active_systems) 动态构建。
+  每个 group 从 _FIELD_DEFS 中筛选属于自己 group 的字段说明，
+  再拼接 _GROUP_META 中的 role/focus 描述和 group 专属后缀。
+  active_systems 用于 route pruning，跳过不在 active_set 中的字段。
+
+system: |
+  你是游戏{role}。严格根据叙事中实际描写的事件推演本回合的{focus}变更。
+  不要推测或编造叙事中未提及的情节。只返回紧凑JSON。
+
+  字段：
+  {field_lines}
+
+  {group_suffix}
+  省略无变化的字段。紧凑JSON输出。
+
+group_meta:
+  resource:
+    role: "资源状态引擎"
+    focus: "属性/物品/持续状态/胜负"
+  spatial:
+    role: "空间状态引擎"
+    focus: "位置移动/地点发现/NPC位置/房间/场景描写"
+  temporal:
+    role: "时间状态引擎"
+    focus: "时间推进"
+  world:
+    role: "世界属性引擎"
+    focus: "宏观世界变量变化"
+  ext:
+    role: "扩展状态引擎"
+    focus: "后果/NPC/阵营/线索/同伴/剧情线"
+
+# 各 group 的 field_lines 从 _FIELD_DEFS 按 group 过滤生成，此处列出完整字段定义
+field_defs:
+  state_changes:
+    group: resource
+    desc: '- state_changes: [{"target":"player.属性名","op":"add","value":数值,"reason":"原因"}] 也可修改NPC属性: target="npcs.{npc_id}.字段名" op="set"'
+  end_time:
+    group: temporal
+    desc: '- end_time: 叙事文本最后一句描写所对应的时刻，ISO 8601格式（如1979-10-26T10:00:00）。必填。严格对齐叙事末尾——如果叙事写到"躺在床上闭上眼"但尚未入睡，end_time就是闭眼那一刻（如23:30），绝不可跳到次日早晨。只有叙事明确描写了醒来/天亮的场景，end_time才可以是第二天。不要输出时段/时长，输出绝对时间。时间推进量必须与玩家行动规模匹配：签字/签收/查看=5~10分钟，对话/交谈=10~30分钟，移动/前往=30~120分钟，睡觉/过夜=6~10小时。玩家说"立即/马上"时推进量不超过15分钟'
+  location_change:
+    group: spatial
+    system_filter: location
+    desc: '- location_change: 玩家在本回合结束时所在的位置ID（必须从上文「已知地点」列表复制精确ID，禁止自造）。必须与叙事中主角最终所在地点一致。若叙事中主角未移动则省略此字段'
+  reveal_locations:
+    group: spatial
+    system_filter: location
+    desc: '- reveal_locations: [{"id":"位置ID","name":"显示名称"}]'
+  inventory_changes:
+    group: resource
+    system_filter: inventory
+    desc: '- inventory_changes: [{"item":"物品名","action":"add|remove","quantity":1,"description":"可选简述"}] add限制：只能添加叙事中明确描写角色获取的物品，禁止添加叙事未提及的物品。移除物品时item字段必须与背包中的物品名完全一致（复制粘贴），不要缩写或改写'
+  activate_states:
+    group: resource
+    desc: '- activate_states: [{"id":"状态ID","name":"中文显示名称（必填，不可用英文ID）","description":"一句话描述"}] 预定义状态可只填ID字符串'
+  deactivate_states:
+    group: resource
+    desc: '- deactivate_states: [状态ID]'
+  world_property_changes:
+    group: world
+    desc: '- world_property_changes: [{"id":"属性ID","value":"新值"}] 宏观世界级变量（戒严等级、势力影响等），不写物件状态'
+  npc_location_changes:
+    group: spatial
+    system_filter: npc
+    desc: '- npc_location_changes: [{"npc_id":"","new_location":"位置ID（必须从已知地点列表复制）","reason":"离开/到达原因"}] 本回合在场NPC的位置变动'
+  room_changes:
+    group: spatial
+    desc: '- room_changes: [{"id":"npc_id或player","new_room":"房间名","reason":"移动原因"}] 同一建筑内的房间级移动（如从办公室走到会议室）。player表示玩家自己的房间变化'
+  npc_contact_changes:
+    group: spatial
+    desc: '- npc_contact_changes: [{"npc_id":"NPC ID","in_contact":true或false}] 叙事明确写出当面接触或告别时填写；仅同区或过去见过不算接触'
+  scene_details:
+    group: spatial
+    desc: '- scene_details: {"atmosphere":"","sensory":"","key_objects":[],"physical":{"lighting":"照明条件(如日光灯/烛光/自然光)","floor":"地面材质(如地毯/大理石/木板)","spatial_note":"空间布局要点(如狭长走廊/开阔大厅，关键门窗朝向)"}} physical子对象描述当前地点的稳定物理特征，同一地点内不应改变；换地点时重新描述'
+  game_over:
+    group: resource
+    system_filter: game_over
+    desc: '- game_over: {"reason":"","ending_type":""} 或省略'
+  offscreen_npc_updates:
+    group: ext
+    desc: '- offscreen_npc_updates: [{"name":"NPC中文全名","action":"简述行动","location":"当前位置"}] 最多2-3个与本回合事件因果相关的离场NPC。name字段必须使用NPC的中文全名（如"人物甲""人物乙"），不要用英文ID。注意信息传播延迟：远处NPC不可能立即知道刚发生的事件并做出反应，除非有明确的通讯渠道'
+  new_npcs:
+    group: ext
+    desc: '- new_npcs: [{"id":"英文蛇形ID","name":"完整全名（符合世界观的真实姓名，禁止用X某/小X/路人甲等占位符）","title":"职位/头衔","bio":"2-3句简介：外貌特征、背景经历、与当前场景的关联","personality":"性格关键词,逗号分隔","location":"必填-当前所在位置ID","trust":0-100初始信任,"affection":0-100初始好感,"fear":0-100初始畏惧}] 关键规则：叙事中任何有名有姓、有台词或有具体互动的非预设角色必须在此注册，否则下一回合将丢失该角色的身份信息。路人甲/背景群众不需要。三维关系值根据NPC对玩家的初次印象和互动方式判断'
+  faction_reputation_changes:
+    group: ext
+    system_filter: faction
+    desc: '- faction_reputation_changes: [{"faction_id":"组织ID","change":+/-数值,"reason":"原因"}] 玩家与组织声望变化(+/-1到+/-15)'
+  moral_alignment_changes:
+    group: ext
+    system_filter: moral
+    desc: '- moral_alignment_changes: [{"axis":"mercy_vs_cruelty|honesty_vs_deception|order_vs_chaos","change":+/-数值,"reason":"原因"}] 本回合玩家行为的道德维度影响(+/-1到+/-15)'
+  recruit_companions:
+    group: ext
+    system_filter: companion
+    desc: '- recruit_companions: ["npc_id"] 当NPC明确表示愿意加入队伍/跟随玩家时添加'
+  dismiss_companions:
+    group: ext
+    system_filter: companion
+    desc: '- dismiss_companions: ["npc_id"] 当同伴离队时添加'
+  invalidate_lore:
+    group: ext
+    system_filter: _deprecated
+    desc: '- invalidate_lore: ["词条ID"]'

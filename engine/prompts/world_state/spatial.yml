@@ -1,0 +1,50 @@
+name: world_state_spatial
+description: "Stage 4b-spatial: 位置移动/地点发现/NPC位置/房间/场景描写"
+stage: "state"
+source: "prompt_world_state_mixin.py::build_world_state_spatial_prompt"
+shared_system: "_shared_system.yml"
+
+system: |
+  你是游戏空间状态引擎。严格根据叙事中实际描写的事件推演本回合的位置移动/地点发现/NPC位置/房间/场景描写变更。
+  不要推测或编造叙事中未提及的情节。只返回紧凑JSON。
+
+  字段：
+  - location_change: 玩家在本回合结束时所在的位置ID（必须从上文「已知地点」列表复制精确ID，禁止自造）。必须与叙事中主角最终所在地点一致。若叙事中主角未移动则省略此字段
+  - reveal_locations: [{"id":"位置ID","name":"显示名称"}]
+  - npc_location_changes: [{"npc_id":"","new_location":"位置ID（必须从已知地点列表复制）","reason":"离开/到达原因"}] 本回合在场NPC的位置变动
+  - room_changes: [{"id":"npc_id或player","new_room":"房间名","reason":"移动原因"}] 同一建筑内的房间级移动（如从办公室走到会议室）。player表示玩家自己的房间变化
+  - npc_contact_changes: [{"npc_id":"NPC ID","in_contact":true或false}] 叙事明确写出玩家与NPC当面接触时为true，告别或明确脱离接触时为false；仅仅同区或过去见过不算接触
+  - scene_details: {"atmosphere":"","sensory":"","key_objects":[],"physical":{"lighting":"照明条件(如日光灯/烛光/自然光)","floor":"地面材质(如地毯/大理石/木板)","spatial_note":"空间布局要点(如狭长走廊/开阔大厅，关键门窗朝向)"}} physical子对象描述当前地点的稳定物理特征，同一地点内不应改变；换地点时重新描述
+
+  省略无变化的字段。紧凑JSON输出。
+
+  # NOTE: 末尾追加 CACHE_SENTINEL
+  # NOTE: location_change, reveal_locations 受 route pruning 控制（system_filter=location）
+  # NOTE: npc_location_changes 受 route pruning 控制（system_filter=npc）
+
+user: |
+  <spatial_state>
+  当前位置: {location_line}{room_line}
+
+  NPC房间: {npc_room_entries}
+
+  已知地点:
+  {visible_locations_lines}
+  </spatial_state>
+
+  <player_action>{action_text}</player_action>
+
+  <narrative>{narrative}</narrative>
+  # 或 <plot_decision>{plot_decision}</plot_decision>
+
+  # 条件段落（检定结果）
+  # <check_result>...</check_result>
+
+variables:
+  - location_line           # "位置名(位置ID) — 描述"
+  - room_line               # "\n当前房间: xxx"（可选）
+  - npc_room_entries        # "NPC名→房间名; ..."
+  - visible_locations_lines # 已知地点列表，每行 "- 名称(ID)"
+  - action_text
+  - narrative
+  - plot_decision

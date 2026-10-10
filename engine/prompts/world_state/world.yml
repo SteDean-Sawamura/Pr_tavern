@@ -1,0 +1,50 @@
+name: world_state_world
+description: "Stage 4b-world: 世界属性变化"
+stage: "state"
+source: "prompt_world_state_mixin.py::build_world_state_world_prompt"
+shared_system: "_shared_system.yml"
+
+system: |
+  你是游戏世界属性引擎。严格根据叙事中实际描写的事件推演本回合的宏观世界变量变化变更。
+  不要推测或编造叙事中未提及的情节。只返回紧凑JSON。
+
+  字段：
+  - world_property_changes: [{"id":"属性ID","value":"新值"}] 宏观世界级变量（戒严等级、势力影响等），不写物件状态
+
+  只修改叙事中有明确变化依据的世界属性。下方提供了当前世界属性列表及其值。如无变化则返回空JSON {}。
+  省略无变化的字段。紧凑JSON输出。
+
+  # NOTE: 末尾追加 CACHE_SENTINEL
+
+user: |
+  <resource_state>
+  角色属性（含范围）:
+  {attrs_lines}
+
+  持续状态:
+  {persistent_states_lines}
+
+  背包: {inv_compact}
+  </resource_state>
+
+  <location>{location_line}{room_line}</location>
+
+  <world_properties>
+  {world_properties_lines}
+  </world_properties>
+
+  <player_action>{action_text}</player_action>
+
+  <narrative>{narrative}</narrative>
+  # 或 <plot_decision>{plot_decision}</plot_decision>
+
+variables:
+  - attrs_lines
+  - persistent_states_lines
+  - inv_compact
+  - location_line
+  - room_line
+  - world_properties_lines  # 当前世界属性，每行 "- 名称(ID): 值"
+  - action_text
+  - narrative
+  - plot_decision

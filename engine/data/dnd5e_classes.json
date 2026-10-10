@@ -1,0 +1,833 @@
+{
+  "system": "dnd5e",
+  "classes": [
+    {
+      "id": "fighter",
+      "name": "战士",
+      "name_en": "Fighter",
+      "description": "身经百战的武器大师，精通各种战斗技巧与战术。无论是挥舞利剑冲锋陷阵，还是据守阵地抵御强敌，战士都是战场上最可靠的存在。他们通过刻苦训练和实战经验磨练出无与伦比的武艺。",
+      "hit_die": 10,
+      "primary_attributes": ["STR", "CON"],
+      "saving_throw_proficiencies": ["STR", "CON"],
+      "skill_proficiencies_choose": {
+        "count": 2,
+        "from": ["acrobatics", "animal_handling", "athletics", "history", "insight", "intimidation", "perception", "survival"]
+      },
+      "spellcasting": null,
+      "attribute_bonuses": {"STR": 10, "CON": 5},
+      "narrative_tags": ["近战武器精通", "重甲精通", "盾牌精通"],
+      "initial_inventory": [
+        {"item": "长剑", "quantity": 1},
+        {"item": "链甲", "quantity": 1},
+        {"item": "盾牌", "quantity": 1},
+        {"item": "冒险者背包", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "fighter_1",
+          "name": "战斗风格",
+          "level": 1,
+          "requires": [],
+          "description": "选择一种战斗风格：防御、决斗、大武器或射箭。",
+          "grants": {
+            "narrative_tags": ["战斗风格"],
+            "check_modifiers": [{"skill": "athletics", "bonus": 2}]
+          }
+        },
+        {
+          "id": "fighter_2",
+          "name": "浮沉再起",
+          "level": 1,
+          "requires": ["fighter_1"],
+          "description": "战场上恢复少量生命力的能力，让你在危急时刻重新站起。",
+          "grants": {
+            "narrative_tags": ["浮沉再起"],
+            "abilities": ["second_wind"]
+          }
+        },
+        {
+          "id": "fighter_3",
+          "name": "行动涌现",
+          "level": 2,
+          "requires": ["fighter_2"],
+          "description": "在关键时刻爆发额外行动力，一轮内执行两次行动。",
+          "grants": {
+            "narrative_tags": ["行动涌现"],
+            "abilities": ["action_surge"]
+          }
+        },
+        {
+          "id": "fighter_4",
+          "name": "额外攻击",
+          "level": 3,
+          "requires": ["fighter_3"],
+          "description": "每次攻击行动可进行两次攻击，大幅提升输出能力。",
+          "grants": {
+            "narrative_tags": ["额外攻击"],
+            "check_modifiers": [{"skill": "athletics", "bonus": 3}]
+          }
+        }
+      ]
+    },
+    {
+      "id": "wizard",
+      "name": "法师",
+      "name_en": "Wizard",
+      "description": "穷尽毕生精力钻研奥术奥秘的学者，通过法术书记录和施展强大的魔法。法师掌握着世间最广博的法术知识，能操纵火焰、闪电乃至时空本身。他们的力量源于对魔法原理的深刻理解与不懈研究。",
+      "hit_die": 6,
+      "primary_attributes": ["INT", "WIS"],
+      "saving_throw_proficiencies": ["INT", "WIS"],
+      "skill_proficiencies_choose": {
+        "count": 2,
+        "from": ["arcana", "history", "insight", "investigation", "medicine", "religion"]
+      },
+      "spellcasting": {"attribute": "INT", "type": "full"},
+      "attribute_bonuses": {"INT": 15, "WIS": 5},
+      "narrative_tags": ["奥术施法", "法术书", "奥术恢复"],
+      "initial_inventory": [
+        {"item": "法杖", "quantity": 1},
+        {"item": "法术书", "quantity": 1},
+        {"item": "施法材料包", "quantity": 1},
+        {"item": "学者背包", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "wizard_1",
+          "name": "奥术学徒",
+          "level": 1,
+          "requires": [],
+          "description": "掌握基础的奥术理论，能够施展简单的戏法和一环法术。",
+          "grants": {
+            "narrative_tags": ["奥术学徒"],
+            "check_modifiers": [{"skill": "arcana", "bonus": 2}]
+          }
+        },
+        {
+          "id": "wizard_2",
+          "name": "奥术恢复",
+          "level": 1,
+          "requires": ["wizard_1"],
+          "description": "通过短暂休息研读法术书，恢复部分已消耗的法术位。",
+          "grants": {
+            "narrative_tags": ["奥术恢复"],
+            "abilities": ["arcane_recovery"]
+          }
+        },
+        {
+          "id": "wizard_3",
+          "name": "法术专精",
+          "level": 2,
+          "requires": ["wizard_2"],
+          "description": "选择一个奥术学派进行专精，获得该学派法术的增强效果。",
+          "grants": {
+            "narrative_tags": ["法术专精"],
+            "abilities": ["spell_specialization"]
+          }
+        },
+        {
+          "id": "wizard_4",
+          "name": "法术大师",
+          "level": 3,
+          "requires": ["wizard_3"],
+          "description": "对魔法的精深理解使你能够施展更强大的法术，并提高法术的精准度。",
+          "grants": {
+            "narrative_tags": ["法术大师"],
+            "check_modifiers": [{"skill": "arcana", "bonus": 4}]
+          }
+        }
+      ]
+    },
+    {
+      "id": "rogue",
+      "name": "盗贼",
+      "name_en": "Rogue",
+      "description": "行走于阴影之中的狡猾高手，擅长潜行、欺骗和精准的致命一击。盗贼依靠敏捷的身手和灵活的头脑在危险的世界中生存，无论是开锁、拆陷阱还是暗杀，他们都游刃有余。",
+      "hit_die": 8,
+      "primary_attributes": ["DEX", "INT"],
+      "saving_throw_proficiencies": ["DEX", "INT"],
+      "skill_proficiencies_choose": {
+        "count": 4,
+        "from": ["acrobatics", "athletics", "deception", "insight", "intimidation", "investigation", "perception", "persuasion", "sleight_of_hand", "stealth"]
+      },
+      "spellcasting": null,
+      "attribute_bonuses": {"DEX": 15, "INT": 5, "gold": 20},
+      "narrative_tags": ["偷袭", "灵巧动作", "盗贼工具精通"],
+      "initial_inventory": [
+        {"item": "短剑", "quantity": 1},
+        {"item": "短弓", "quantity": 1},
+        {"item": "皮甲", "quantity": 1},
+        {"item": "盗贼工具", "quantity": 1},
+        {"item": "冒险者背包", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "rogue_1",
+          "name": "偷袭",
+          "level": 1,
+          "requires": [],
+          "description": "当你拥有优势或目标身旁有友方时，可以对敌人造成额外的偷袭伤害。",
+          "grants": {
+            "narrative_tags": ["偷袭"],
+            "check_modifiers": [{"skill": "stealth", "bonus": 2}]
+          }
+        },
+        {
+          "id": "rogue_2",
+          "name": "灵巧动作",
+          "level": 1,
+          "requires": ["rogue_1"],
+          "description": "以附赠动作进行冲刺、脱离或躲藏，在战场上来去自如。",
+          "grants": {
+            "narrative_tags": ["灵巧动作"],
+            "abilities": ["cunning_action"]
+          }
+        },
+        {
+          "id": "rogue_3",
+          "name": "诡计多端",
+          "level": 2,
+          "requires": ["rogue_2"],
+          "description": "选择一条盗贼子路线进行专精，获得独特的战术能力。",
+          "grants": {
+            "narrative_tags": ["诡计多端"],
+            "abilities": ["roguish_archetype"],
+            "check_modifiers": [{"skill": "deception", "bonus": 3}]
+          }
+        },
+        {
+          "id": "rogue_4",
+          "name": "回避本能",
+          "level": 3,
+          "requires": ["rogue_3"],
+          "description": "面对范围攻击时本能闪避，成功豁免不受伤害，失败也只受半伤。",
+          "grants": {
+            "narrative_tags": ["回避本能"],
+            "abilities": ["evasion"],
+            "check_modifiers": [{"skill": "acrobatics", "bonus": 3}]
+          }
+        }
+      ]
+    },
+    {
+      "id": "cleric",
+      "name": "牧师",
+      "name_en": "Cleric",
+      "description": "虔诚信仰神灵的神职人员，通过祈祷获得神圣力量来治愈伤痛和驱除邪恶。牧师是冒险队伍中不可或缺的守护者，既能在前线挥舞武器战斗，也能用神术治疗和庇护同伴。",
+      "hit_die": 8,
+      "primary_attributes": ["WIS", "CHA"],
+      "saving_throw_proficiencies": ["WIS", "CHA"],
+      "skill_proficiencies_choose": {
+        "count": 2,
+        "from": ["history", "insight", "medicine", "persuasion", "religion"]
+      },
+      "spellcasting": {"attribute": "WIS", "type": "full"},
+      "attribute_bonuses": {"WIS": 15, "CHA": 5},
+      "narrative_tags": ["神圣施法", "引导神力", "中甲精通"],
+      "initial_inventory": [
+        {"item": "锤矛", "quantity": 1},
+        {"item": "链甲", "quantity": 1},
+        {"item": "盾牌", "quantity": 1},
+        {"item": "圣徽", "quantity": 1},
+        {"item": "牧师背包", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "cleric_1",
+          "name": "神域选择",
+          "level": 1,
+          "requires": [],
+          "description": "选择一个神圣领域作为你信仰的核心，获得该领域的特殊能力和额外法术。",
+          "grants": {
+            "narrative_tags": ["神域选择"],
+            "check_modifiers": [{"skill": "religion", "bonus": 2}]
+          }
+        },
+        {
+          "id": "cleric_2",
+          "name": "引导神力",
+          "level": 1,
+          "requires": ["cleric_1"],
+          "description": "引导神灵的力量产生超自然效果，可以驱散不死生物或触发神域特效。",
+          "grants": {
+            "narrative_tags": ["引导神力"],
+            "abilities": ["channel_divinity"]
+          }
+        },
+        {
+          "id": "cleric_3",
+          "name": "神圣打击",
+          "level": 2,
+          "requires": ["cleric_2"],
+          "description": "武器攻击中注入神圣力量，对敌人造成额外的光辉伤害。",
+          "grants": {
+            "narrative_tags": ["神圣打击"],
+            "abilities": ["divine_strike"]
+          }
+        },
+        {
+          "id": "cleric_4",
+          "name": "信仰守护",
+          "level": 3,
+          "requires": ["cleric_3"],
+          "description": "坚定的信仰赋予你强大的守护之力，可为队友提供神圣庇护。",
+          "grants": {
+            "narrative_tags": ["信仰守护"],
+            "abilities": ["divine_intervention"],
+            "check_modifiers": [{"skill": "medicine", "bonus": 3}]
+          }
+        }
+      ]
+    },
+    {
+      "id": "ranger",
+      "name": "游侠",
+      "name_en": "Ranger",
+      "description": "守护荒野边境的战士与猎人，精通追踪和野外生存。游侠游走于文明与自然之间，既是熟练的弓箭手和剑客，也掌握着来自大自然的魔法力量。他们是对抗荒野威胁的第一道防线。",
+      "hit_die": 10,
+      "primary_attributes": ["DEX", "WIS"],
+      "saving_throw_proficiencies": ["STR", "DEX"],
+      "skill_proficiencies_choose": {
+        "count": 3,
+        "from": ["animal_handling", "athletics", "insight", "investigation", "nature", "perception", "stealth", "survival"]
+      },
+      "spellcasting": {"attribute": "WIS", "type": "half"},
+      "attribute_bonuses": {"DEX": 10, "WIS": 10},
+      "narrative_tags": ["宿敌", "自然探索者", "双持战斗"],
+      "initial_inventory": [
+        {"item": "长弓", "quantity": 1},
+        {"item": "双弯刀", "quantity": 1},
+        {"item": "皮甲", "quantity": 1},
+        {"item": "探索者背包", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "ranger_1",
+          "name": "宿敌",
+          "level": 1,
+          "requires": [],
+          "description": "选择一类生物作为宿敌，对其追踪和战斗时获得显著优势。",
+          "grants": {
+            "narrative_tags": ["宿敌"],
+            "check_modifiers": [{"skill": "survival", "bonus": 2}]
+          }
+        },
+        {
+          "id": "ranger_2",
+          "name": "战斗风格",
+          "level": 1,
+          "requires": ["ranger_1"],
+          "description": "选择一种战斗风格：射箭、双持或防御，提升对应的战斗能力。",
+          "grants": {
+            "narrative_tags": ["战斗风格"],
+            "abilities": ["fighting_style"]
+          }
+        },
+        {
+          "id": "ranger_3",
+          "name": "游侠法术",
+          "level": 2,
+          "requires": ["ranger_2"],
+          "description": "借助与自然的联系施展法术，增强追踪、战斗和生存能力。",
+          "grants": {
+            "narrative_tags": ["游侠法术"],
+            "abilities": ["ranger_spellcasting"]
+          }
+        },
+        {
+          "id": "ranger_4",
+          "name": "林间行者",
+          "level": 3,
+          "requires": ["ranger_3"],
+          "description": "在自然环境中如鱼得水，穿越困难地形不受阻碍，追踪猎物无人能及。",
+          "grants": {
+            "narrative_tags": ["林间行者"],
+            "check_modifiers": [{"skill": "nature", "bonus": 3}, {"skill": "stealth", "bonus": 2}]
+          }
+        }
+      ]
+    },
+    {
+      "id": "bard",
+      "name": "吟游诗人",
+      "name_en": "Bard",
+      "description": "以音乐和诗歌编织魔法的艺术家，用歌声激励盟友、瓦解敌人。吟游诗人博学多才，游历四方收集传说与知识，是团队中最全能的辅助者。他们相信世间万物皆有韵律，而真正的力量蕴藏在话语和旋律之中。",
+      "hit_die": 8,
+      "primary_attributes": ["CHA", "DEX"],
+      "saving_throw_proficiencies": ["DEX", "CHA"],
+      "skill_proficiencies_choose": {
+        "count": 3,
+        "from": ["acrobatics", "animal_handling", "arcana", "athletics", "deception", "history", "insight", "intimidation", "investigation", "medicine", "nature", "perception", "performance", "persuasion", "religion", "sleight_of_hand", "stealth", "survival"]
+      },
+      "spellcasting": {"attribute": "CHA", "type": "full"},
+      "attribute_bonuses": {"CHA": 15, "DEX": 5},
+      "narrative_tags": ["吟游诗人施法", "激励", "万事通"],
+      "initial_inventory": [
+        {"item": "诗琴", "quantity": 1},
+        {"item": "皮甲", "quantity": 1},
+        {"item": "匕首", "quantity": 1},
+        {"item": "艺人背包", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "bard_1",
+          "name": "激励",
+          "level": 1,
+          "requires": [],
+          "description": "用激昂的言辞或旋律鼓舞一名同伴，使其在攻击、豁免或技能检定中获得额外加值。",
+          "grants": {
+            "narrative_tags": ["激励"],
+            "check_modifiers": [{"skill": "performance", "bonus": 2}]
+          }
+        },
+        {
+          "id": "bard_2",
+          "name": "万事通",
+          "level": 1,
+          "requires": ["bard_1"],
+          "description": "广博的知识让你在所有技能检定中都能有所发挥，即使未经训练也能略知一二。",
+          "grants": {
+            "narrative_tags": ["万事通"],
+            "abilities": ["jack_of_all_trades"]
+          }
+        },
+        {
+          "id": "bard_3",
+          "name": "诗人学识",
+          "level": 2,
+          "requires": ["bard_2"],
+          "description": "选择一个诗人学院进行深造，获得独特的表演技巧和额外能力。",
+          "grants": {
+            "narrative_tags": ["诗人学识"],
+            "abilities": ["bard_college"],
+            "check_modifiers": [{"skill": "persuasion", "bonus": 3}]
+          }
+        },
+        {
+          "id": "bard_4",
+          "name": "高等激励",
+          "level": 3,
+          "requires": ["bard_3"],
+          "description": "激励能力大幅增强，激励骰升级，且同伴可在更多情况下使用激励加值。",
+          "grants": {
+            "narrative_tags": ["高等激励"],
+            "abilities": ["superior_inspiration"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "paladin",
+      "name": "圣武士",
+      "name_en": "Paladin",
+      "description": "以神圣誓言为力量源泉的圣战士，兼具强大的战斗力和神圣魔法。圣武士是正义与秩序的化身，用剑与盾保护弱者，以信念之光驱散黑暗。他们的每一次挥剑都承载着对誓言的坚守。",
+      "hit_die": 10,
+      "primary_attributes": ["STR", "CHA"],
+      "saving_throw_proficiencies": ["WIS", "CHA"],
+      "skill_proficiencies_choose": {
+        "count": 2,
+        "from": ["athletics", "insight", "intimidation", "medicine", "persuasion", "religion"]
+      },
+      "spellcasting": {"attribute": "CHA", "type": "half"},
+      "attribute_bonuses": {"STR": 10, "CHA": 10},
+      "narrative_tags": ["圣疗术", "神圣感知", "重甲精通"],
+      "initial_inventory": [
+        {"item": "长剑", "quantity": 1},
+        {"item": "盾牌", "quantity": 1},
+        {"item": "链甲", "quantity": 1},
+        {"item": "圣徽", "quantity": 1},
+        {"item": "冒险者背包", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "paladin_1",
+          "name": "神圣感知",
+          "level": 1,
+          "requires": [],
+          "description": "感知周围邪恶与善良的存在，探测不死生物、邪魔和祝圣之物的方位。",
+          "grants": {
+            "narrative_tags": ["神圣感知"],
+            "check_modifiers": [{"skill": "insight", "bonus": 2}]
+          }
+        },
+        {
+          "id": "paladin_2",
+          "name": "圣疗术",
+          "level": 1,
+          "requires": ["paladin_1"],
+          "description": "通过触碰传递神圣能量，治愈伤口和疾病，恢复同伴的生命力。",
+          "grants": {
+            "narrative_tags": ["圣疗术"],
+            "abilities": ["lay_on_hands"]
+          }
+        },
+        {
+          "id": "paladin_3",
+          "name": "神圣誓言",
+          "level": 2,
+          "requires": ["paladin_2"],
+          "description": "立下神圣誓言，获得誓言赋予的特殊能力和引导神力的途径。",
+          "grants": {
+            "narrative_tags": ["神圣誓言"],
+            "abilities": ["sacred_oath"]
+          }
+        },
+        {
+          "id": "paladin_4",
+          "name": "神圣打击",
+          "level": 3,
+          "requires": ["paladin_3"],
+          "description": "消耗法术位在武器攻击中注入神圣力量，造成毁灭性的光辉伤害。",
+          "grants": {
+            "narrative_tags": ["神圣打击"],
+            "abilities": ["divine_smite"],
+            "check_modifiers": [{"skill": "intimidation", "bonus": 3}]
+          }
+        }
+      ]
+    },
+    {
+      "id": "barbarian",
+      "name": "野蛮人",
+      "name_en": "Barbarian",
+      "description": "来自荒野部落的凶猛战士，以原始的狂暴之力碾压一切敌人。野蛮人拥有超乎常人的体魄和生命力，在战斗中释放内心的怒火化为不可阻挡的破坏力。他们蔑视沉重的铠甲，坚信肉体本身就是最强的防御。",
+      "hit_die": 12,
+      "primary_attributes": ["STR", "CON"],
+      "saving_throw_proficiencies": ["STR", "CON"],
+      "skill_proficiencies_choose": {
+        "count": 2,
+        "from": ["animal_handling", "athletics", "intimidation", "nature", "perception", "survival"]
+      },
+      "spellcasting": null,
+      "attribute_bonuses": {"STR": 15, "CON": 10},
+      "narrative_tags": ["狂暴", "无甲防御", "鲁莽攻击"],
+      "initial_inventory": [
+        {"item": "巨斧", "quantity": 1},
+        {"item": "手斧", "quantity": 2},
+        {"item": "探索者背包", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "barbarian_1",
+          "name": "狂暴",
+          "level": 1,
+          "requires": [],
+          "description": "进入狂暴状态，获得力量攻击和伤害加值，并抵抗物理伤害。",
+          "grants": {
+            "narrative_tags": ["狂暴"],
+            "abilities": ["rage"],
+            "check_modifiers": [{"skill": "athletics", "bonus": 2}]
+          }
+        },
+        {
+          "id": "barbarian_2",
+          "name": "鲁莽攻击",
+          "level": 1,
+          "requires": ["barbarian_1"],
+          "description": "不顾防守全力进攻，所有攻击获得优势，但敌人攻击你也获得优势。",
+          "grants": {
+            "narrative_tags": ["鲁莽攻击"],
+            "abilities": ["reckless_attack"]
+          }
+        },
+        {
+          "id": "barbarian_3",
+          "name": "危险感知",
+          "level": 2,
+          "requires": ["barbarian_2"],
+          "description": "本能地感知到周围的危险，对可见的效果进行敏捷豁免时获得优势。",
+          "grants": {
+            "narrative_tags": ["危险感知"],
+            "abilities": ["danger_sense"],
+            "check_modifiers": [{"skill": "perception", "bonus": 3}]
+          }
+        },
+        {
+          "id": "barbarian_4",
+          "name": "野性本能",
+          "level": 3,
+          "requires": ["barbarian_3"],
+          "description": "野性直觉让你在战斗中先人一步，先攻检定获得优势，且狂暴中不会被突袭。",
+          "grants": {
+            "narrative_tags": ["野性本能"],
+            "abilities": ["feral_instinct"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "warlock",
+      "name": "邪术师",
+      "name_en": "Warlock",
+      "description": "与强大的异界存在签订契约，以服务换取超自然力量的施法者。邪术师的魔法来源不同于学术研究或天赋血脉，而是来自与宗主的交易。他们掌握的法术虽少但威力巨大，尤其擅长以魔能爆摧毁敌人。",
+      "hit_die": 8,
+      "primary_attributes": ["CHA", "INT"],
+      "saving_throw_proficiencies": ["WIS", "CHA"],
+      "skill_proficiencies_choose": {
+        "count": 2,
+        "from": ["arcana", "deception", "history", "intimidation", "investigation", "nature", "religion"]
+      },
+      "spellcasting": {"attribute": "CHA", "type": "full"},
+      "attribute_bonuses": {"CHA": 15, "INT": 5},
+      "narrative_tags": ["契约魔法", "魔能爆", "黑暗视觉"],
+      "initial_inventory": [
+        {"item": "轻弩", "quantity": 1},
+        {"item": "皮甲", "quantity": 1},
+        {"item": "奥术法器", "quantity": 1},
+        {"item": "学者背包", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "warlock_1",
+          "name": "异界宗主",
+          "level": 1,
+          "requires": [],
+          "description": "选择你的异界宗主：邪魔领主、大老者或精灵主，获得对应的特殊能力。",
+          "grants": {
+            "narrative_tags": ["异界宗主"],
+            "check_modifiers": [{"skill": "arcana", "bonus": 2}]
+          }
+        },
+        {
+          "id": "warlock_2",
+          "name": "魔能爆",
+          "level": 1,
+          "requires": ["warlock_1"],
+          "description": "释放强大的魔能光束攻击敌人，这是邪术师最标志性的攻击手段。",
+          "grants": {
+            "narrative_tags": ["魔能爆"],
+            "abilities": ["eldritch_blast"]
+          }
+        },
+        {
+          "id": "warlock_3",
+          "name": "契约恩赐",
+          "level": 2,
+          "requires": ["warlock_2"],
+          "description": "从宗主处获得特殊的契约恩赐：锁链契约、刀锋契约或典籍契约。",
+          "grants": {
+            "narrative_tags": ["契约恩赐"],
+            "abilities": ["pact_boon"]
+          }
+        },
+        {
+          "id": "warlock_4",
+          "name": "魔能塑形",
+          "level": 3,
+          "requires": ["warlock_3"],
+          "description": "通过魔能祈唤进一步定制和强化你的法术与能力，获得独特的魔法效果。",
+          "grants": {
+            "narrative_tags": ["魔能塑形"],
+            "abilities": ["eldritch_invocations_advanced"],
+            "check_modifiers": [{"skill": "intimidation", "bonus": 3}]
+          }
+        }
+      ]
+    },
+    {
+      "id": "druid",
+      "name": "德鲁伊",
+      "name_en": "Druid",
+      "description": "自然世界的守护者与代言人，从大地、海洋和天空中汲取魔法力量。德鲁伊能够化身为各种野兽，操纵风暴与植物，与自然万物沟通。他们致力于维护自然的平衡，抵御一切破坏自然秩序的力量。",
+      "hit_die": 8,
+      "primary_attributes": ["WIS", "CON"],
+      "saving_throw_proficiencies": ["INT", "WIS"],
+      "skill_proficiencies_choose": {
+        "count": 2,
+        "from": ["arcana", "animal_handling", "insight", "medicine", "nature", "perception", "religion", "survival"]
+      },
+      "spellcasting": {"attribute": "WIS", "type": "full"},
+      "attribute_bonuses": {"WIS": 15, "CON": 5},
+      "narrative_tags": ["德鲁伊施法", "野性变形", "自然学识"],
+      "initial_inventory": [
+        {"item": "木盾", "quantity": 1},
+        {"item": "弯刀", "quantity": 1},
+        {"item": "皮甲", "quantity": 1},
+        {"item": "德鲁伊法器", "quantity": 1},
+        {"item": "探索者背包", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "druid_1",
+          "name": "德鲁伊语",
+          "level": 1,
+          "requires": [],
+          "description": "掌握德鲁伊的秘密语言，能与自然界的生灵进行基础的交流。",
+          "grants": {
+            "narrative_tags": ["德鲁伊语"],
+            "check_modifiers": [{"skill": "nature", "bonus": 2}]
+          }
+        },
+        {
+          "id": "druid_2",
+          "name": "野性变形",
+          "level": 1,
+          "requires": ["druid_1"],
+          "description": "化身为曾见过的野兽形态，获得该野兽的体能属性和特殊能力。",
+          "grants": {
+            "narrative_tags": ["野性变形"],
+            "abilities": ["wild_shape"]
+          }
+        },
+        {
+          "id": "druid_3",
+          "name": "自然结社",
+          "level": 2,
+          "requires": ["druid_2"],
+          "description": "加入一个德鲁伊结社，获得结社专属的能力和对野性变形的增强。",
+          "grants": {
+            "narrative_tags": ["自然结社"],
+            "abilities": ["druid_circle"]
+          }
+        },
+        {
+          "id": "druid_4",
+          "name": "高等变形",
+          "level": 3,
+          "requires": ["druid_3"],
+          "description": "野性变形能力大幅进化，可以化身为更强大的生物，甚至元素形态。",
+          "grants": {
+            "narrative_tags": ["高等变形"],
+            "abilities": ["improved_wild_shape"],
+            "check_modifiers": [{"skill": "animal_handling", "bonus": 3}]
+          }
+        }
+      ]
+    },
+    {
+      "id": "monk",
+      "name": "武僧",
+      "name_en": "Monk",
+      "description": "通过修炼身心达到超凡境界的武道修行者，以气功驾驭体内的神秘能量。武僧不依赖武器和铠甲，用拳脚和敏捷的身法在战场上穿梭自如。他们的每一拳每一脚都蕴含着精炼的气劲，足以击碎坚石。",
+      "hit_die": 8,
+      "primary_attributes": ["DEX", "WIS"],
+      "saving_throw_proficiencies": ["STR", "DEX"],
+      "skill_proficiencies_choose": {
+        "count": 2,
+        "from": ["acrobatics", "athletics", "history", "insight", "religion", "stealth"]
+      },
+      "spellcasting": null,
+      "attribute_bonuses": {"DEX": 10, "WIS": 10},
+      "narrative_tags": ["武术", "气功", "无甲防御"],
+      "initial_inventory": [
+        {"item": "短剑", "quantity": 1},
+        {"item": "飞镖", "quantity": 10},
+        {"item": "探索者背包", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "monk_1",
+          "name": "武术",
+          "level": 1,
+          "requires": [],
+          "description": "精通徒手格斗，拳脚攻击的伤害提升，且可以在攻击后以附赠动作追加一次徒手打击。",
+          "grants": {
+            "narrative_tags": ["武术"],
+            "check_modifiers": [{"skill": "acrobatics", "bonus": 2}]
+          }
+        },
+        {
+          "id": "monk_2",
+          "name": "气功",
+          "level": 1,
+          "requires": ["monk_1"],
+          "description": "运用体内的气来施展特殊能力：连环拳、疾风步或化劲防御。",
+          "grants": {
+            "narrative_tags": ["气功"],
+            "abilities": ["ki"]
+          }
+        },
+        {
+          "id": "monk_3",
+          "name": "疾风步",
+          "level": 2,
+          "requires": ["monk_2"],
+          "description": "移动速度大幅提升，且可以在垂直表面和水面上奔跑而不坠落。",
+          "grants": {
+            "narrative_tags": ["疾风步"],
+            "abilities": ["unarmored_movement"],
+            "check_modifiers": [{"skill": "athletics", "bonus": 3}]
+          }
+        },
+        {
+          "id": "monk_4",
+          "name": "震山掌",
+          "level": 3,
+          "requires": ["monk_3"],
+          "description": "将气劲集中于一击，可以震慑敌人使其无法行动，对关键目标造成毁灭性打击。",
+          "grants": {
+            "narrative_tags": ["震山掌"],
+            "abilities": ["stunning_strike"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "sorcerer",
+      "name": "术士",
+      "name_en": "Sorcerer",
+      "description": "体内流淌着天生魔力的施法者，魔法源于血脉中的超自然力量。术士不需要像法师那样刻苦研习，他们的魔法与生俱来，并通过意志力加以塑造和释放。他们能够用魔源点改变法术的效果，展现出惊人的施法灵活性。",
+      "hit_die": 6,
+      "primary_attributes": ["CHA", "CON"],
+      "saving_throw_proficiencies": ["CON", "CHA"],
+      "skill_proficiencies_choose": {
+        "count": 2,
+        "from": ["arcana", "deception", "insight", "intimidation", "persuasion", "religion"]
+      },
+      "spellcasting": {"attribute": "CHA", "type": "full"},
+      "attribute_bonuses": {"CHA": 15, "CON": 5},
+      "narrative_tags": ["天赋施法", "魔法起源", "法术塑形"],
+      "initial_inventory": [
+        {"item": "轻弩", "quantity": 1},
+        {"item": "奥术法器", "quantity": 1},
+        {"item": "地下城探索背包", "quantity": 1}
+      ],
+      "skill_tree": [
+        {
+          "id": "sorcerer_1",
+          "name": "魔法起源",
+          "level": 1,
+          "requires": [],
+          "description": "选择你的魔法血脉来源：龙族血脉或狂野魔法，获得对应的天赋能力。",
+          "grants": {
+            "narrative_tags": ["魔法起源"],
+            "check_modifiers": [{"skill": "arcana", "bonus": 2}]
+          }
+        },
+        {
+          "id": "sorcerer_2",
+          "name": "法术位恢复",
+          "level": 1,
+          "requires": ["sorcerer_1"],
+          "description": "将魔源点转化为额外的法术位，或将法术位转化为魔源点，灵活管理魔法资源。",
+          "grants": {
+            "narrative_tags": ["法术位恢复"],
+            "abilities": ["font_of_magic"]
+          }
+        },
+        {
+          "id": "sorcerer_3",
+          "name": "超魔法",
+          "level": 2,
+          "requires": ["sorcerer_2"],
+          "description": "消耗魔源点改变法术的效果：延长持续时间、增加距离、强化威力或微妙施法。",
+          "grants": {
+            "narrative_tags": ["超魔法"],
+            "abilities": ["metamagic"]
+          }
+        },
+        {
+          "id": "sorcerer_4",
+          "name": "法术大师",
+          "level": 3,
+          "requires": ["sorcerer_3"],
+          "description": "对魔法的掌控达到巅峰，可以不消耗法术位施展低环法术，并获得强大的高环法术。",
+          "grants": {
+            "narrative_tags": ["法术大师"],
+            "abilities": ["sorcerous_mastery"],
+            "check_modifiers": [{"skill": "persuasion", "bonus": 3}]
+          }
+        }
+      ]
+    }
+  ]
+}

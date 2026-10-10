@@ -1,0 +1,56 @@
+name: world_state_resource
+description: "Stage 4b-resource: 属性/物品/持续状态/胜负推演"
+stage: "state"
+source: "prompt_world_state_mixin.py::build_world_state_resource_prompt"
+shared_system: "_shared_system.yml"  # 引用共享 system 模板
+
+system: |
+  你是游戏资源状态引擎。严格根据叙事中实际描写的事件推演本回合的属性/物品/持续状态/胜负变更。
+  不要推测或编造叙事中未提及的情节。只返回紧凑JSON。
+
+  字段：
+  - state_changes: [{"target":"player.属性名","op":"add","value":数值,"reason":"原因"}] 也可修改NPC属性: target="npcs.{npc_id}.字段名" op="set"
+  - inventory_changes: [{"item":"物品名","action":"add|remove","quantity":1,"description":"可选简述"}] add限制：只能添加叙事中明确描写角色获取的物品，禁止添加叙事未提及的物品。移除物品时item字段必须与背包中的物品名完全一致（复制粘贴），不要缩写或改写
+  - activate_states: [{"id":"状态ID","name":"中文显示名称（必填，不可用英文ID）","description":"一句话描述"}] 预定义状态可只填ID字符串
+  - deactivate_states: [状态ID]
+  - game_over: {"reason":"","ending_type":""} 或省略
+
+  物品变更原则：只有叙事中明确描写了角色获得（拾取/购买/赠予/搜获/制作）的物品才能add；不得凭空发明叙事中未出现的物品。
+  仅当下方标注[检定结果: 大成功]时才可额外给予奖励；仅当标注[检定结果: 大失败]时才应施加惩罚（属性下降/丢失物品/添加负面状态）。
+  省略无变化的字段。紧凑JSON输出。
+
+  # NOTE: 末尾追加 CACHE_SENTINEL
+
+# user message 由 _build_world_state_user_message(group="resource") 构建
+# 包含以下 XML 段落：
+user: |
+  <resource_state>
+  角色属性（含范围）:
+  {attrs_lines}
+
+  持续状态:
+  {persistent_states_lines}
+
+  背包: {inv_compact}
+  </resource_state>
+
+  <location>{location_line}{room_line}</location>
+
+  <player_action>{action_text}</player_action>
+
+  <narrative>{narrative}</narrative>
+  # 或 <plot_decision>{plot_decision}</plot_decision>（若 plot_decision 非空）
+
+  # 条件段落（仅在 check_result 为 critical_success/critical_failure 时追加）：
+  # <check_result>大成功/大失败（{related_attribute}）— 请在状态变更中体现持续影响</check_result>
+
+variables:
+  - attrs_lines          # 角色属性，每行 "- 标签(key): value/max"
+  - persistent_states_lines  # 持续状态列表
+  - inv_compact          # 背包紧凑文本
+  - location_line        # "位置名(位置ID) — 描述"
+  - room_line            # "当前房间: xxx"（可选）
+  - action_text          # 玩家行动
+  - narrative            # 叙事文本
+  - plot_decision        # 剧情骨架（与 narrative 二选一）
+  - related_attribute    # 检定相关属性（条件出现）

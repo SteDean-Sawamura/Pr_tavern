@@ -1,0 +1,5 @@
+# Vector memory - optional dependencies for long-term RAG
+# Install with: pip install -r requirements-vector.txt
+# Or run: install_vector_memory.bat
+fastembed>=0.3.0
+chromadb>=0.5.0

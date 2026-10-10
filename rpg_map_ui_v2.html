@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>多Agent RPG推演系统</title>
+<link rel="stylesheet" href="/static/css/design-tokens.css">
+<link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body>
+
+<!-- ===== Start Screen ===== -->
+<div id="start-screen">
+  <div class="start-container">
+    <div class="start-hero">
+      <h1>旧版多Agent RPG推演</h1>
+      <p>选择剧本和角色，开始你的故事</p>
+      <p class="legacy-entry">此处使用独立的旧版 RPG 存档；新游戏推荐在<a href="/">主游戏</a>选择「大地图」视图。旧存档不会自动迁移。</p>
+    </div>
+
+    <div class="start-section">
+      <div class="start-section-label">选择剧本</div>
+      <div class="script-select-area">
+        <select class="script-select" id="script-select" onchange="onScriptSelected()">
+          <option value="">-- 加载中 --</option>
+        </select>
+      </div>
+      <div class="script-info" id="script-info">
+        <div class="script-info-name" id="script-info-name"></div>
+        <div class="script-info-desc" id="script-info-desc"></div>
+        <div class="script-info-meta" id="script-info-meta"></div>
+      </div>
+    </div>
+
+    <div class="start-section" id="character-section" style="display:none">
+      <div class="start-section-label">选择角色</div>
+      <div class="preset-cards" id="preset-cards"></div>
+    </div>
+
+    <div class="start-section">
+      <div class="start-section-label">AI 模型（推演引擎）</div>
+      <div class="script-select-area">
+        <select class="script-select" id="ai-profile-select">
+          <option value="">不使用AI（规则模式）</option>
+        </select>
+      </div>
+      <div style="margin-top:6px;font-size:11px;color:var(--text-muted)" id="ai-profile-hint">
+        规则模式：NPC使用预设规则响应，速度快但不智能
+      </div>
+    </div>
+
+    <div class="start-actions">
+      <button class="btn-start-game" id="btn-start-game" disabled onclick="startGame()">开始游戏</button>
+    </div>
+
+    <div class="start-section" style="text-align:center;margin-top:20px">
+      <div style="color:var(--text-muted);font-size:12px;margin-bottom:12px">── 或 ──</div>
+      <button class="btn-start-game" style="background:var(--accent-dark);width:100%" onclick="enterCreateMode()">从零创建新剧本</button>
+      <div style="margin-top:6px;font-size:11px;color:var(--text-muted)">输入一个主旨，AI 帮你逐步构建完整剧本（需要配置 AI 模型）</div>
+    </div>
+
+    <div class="start-section" id="saves-section" style="display:none;margin-top:32px">
+      <div class="start-section-label">已有存档</div>
+      <div id="saves-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Create Screen ===== -->
+<div id="create-screen" style="display:none">
+  <div style="max-width:700px;margin:0 auto;padding:40px 20px;height:100vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
+      <button onclick="exitCreateMode()" style="background:none;border:1px solid var(--border);color:var(--text-muted);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px">返回</button>
+      <h2 style="margin:0;color:var(--text-primary);font-size:20px">创建新剧本</h2>
+    </div>
+    <div id="create-phases" style="display:flex;gap:4px;margin-bottom:16px">
+      <span class="create-phase" data-phase="theme">主旨</span>
+      <span class="create-phase" data-phase="world_and_player">世界观</span>
+      <span class="create-phase" data-phase="npcs">角色</span>
+      <span class="create-phase" data-phase="rules">规则</span>
+      <span class="create-phase" data-phase="review">确认</span>
+    </div>
+    <div id="create-chat" style="flex:1;overflow-y:auto;padding:10px 0;display:flex;flex-direction:column;gap:12px"></div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <textarea id="create-input" rows="2" placeholder="输入你的想法..." style="flex:1;background:var(--bg-card);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:14px;resize:none;font-family:inherit" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();submitCreateInput()}"></textarea>
+      <button onclick="submitCreateInput()" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:0 20px;font-size:14px;cursor:pointer;white-space:nowrap">发送</button>
+    </div>
+  </div>
+</div>
+
+<!-- Opening Text Overlay -->
+<div class="opening-overlay" id="opening-overlay" style="display:none">
+  <div class="opening-box">
+    <div class="opening-text" id="opening-text"></div>
+    <button class="btn-start-game" onclick="dismissOpening()">进入游戏</button>
+  </div>
+</div>
+
+<!-- ===== Game Screen ===== -->
+<div id="game-screen">
+
+<!-- Header -->
+<div class="header">
+  <h1>多Agent RPG推演</h1>
+  <div class="header-info">
+    <div class="item">
+      <span class="label">轮次</span>
+      <span class="value" id="turn-info">0</span>
+    </div>
+    <div class="item">
+      <span class="label">位置</span>
+      <span class="value" id="location-info">--</span>
+    </div>
+    <div class="item">
+      <span class="label">日期</span>
+      <span class="value" id="date-info">--</span>
+    </div>
+    <div class="item">
+      <span class="label">赛季</span>
+      <span class="value" id="season-info">--</span>
+    </div>
+  </div>
+  <button class="btn btn-header" onclick="exitGame()" title="返回开始界面">返回</button>
+</div>
+
+<!-- Phase Bar -->
+<div class="phase-bar" id="phase-bar" style="display:none">
+  <div class="phase-step" id="phase-0"><span>0</span><span>Director</span></div>
+  <span class="phase-arrow">&#9654;</span>
+  <div class="phase-step" id="phase-1"><span>1</span><span>信息收集</span></div>
+  <span class="phase-arrow">&#9654;</span>
+  <div class="phase-step" id="phase-2"><span>2</span><span>NPC推理</span></div>
+  <span class="phase-arrow">&#9654;</span>
+  <div class="phase-step" id="phase-3"><span>3</span><span>综合生成</span></div>
+</div>
+
+<!-- Main -->
+<div class="main-layout">
+
+  <!-- Left: Player + Locations + NPCs -->
+  <div class="left-panel">
+    <div class="player-summary" id="player-summary">
+      <h3>角色状态</h3>
+      <div id="player-mini-stats"></div>
+    </div>
+    <div class="panel-section">
+      <h3>地点</h3>
+      <div id="location-list"></div>
+    </div>
+    <div class="panel-section">
+      <h3>角色</h3>
+      <div id="npc-list"></div>
+    </div>
+  </div>
+
+  <!-- Center: Map -->
+  <div class="center-panel">
+    <div class="map-area" id="map-area">
+      <svg id="map-svg" viewBox="0 0 800 600"></svg>
+      <div class="map-tooltip" id="map-tooltip">
+        <div class="map-tooltip-name" id="tooltip-name"></div>
+        <div class="map-tooltip-title" id="tooltip-title"></div>
+      </div>
+    </div>
+    <div class="status-bar" id="status-bar">
+      <span>准备就绪</span>
+      <span class="turn-indicator" id="status-turn"></span>
+    </div>
+  </div>
+
+  <!-- Right: Tabbed Panel -->
+  <div class="right-panel">
+    <div class="status-tabs">
+      <div class="status-tab active" onclick="switchTab('tab-detail')">详情</div>
+      <div class="status-tab" onclick="switchTab('tab-social')">社交</div>
+      <div class="status-tab" onclick="switchTab('tab-world')">世界</div>
+      <div class="status-tab" onclick="switchTab('tab-history')">历史</div>
+    </div>
+
+    <div class="tab-page active" id="tab-detail">
+      <div id="detail-empty" style="text-align:center;padding:40px 20px;color:var(--text-muted);font-size:12px;">
+        点击地点或角色查看详情
+      </div>
+      <div id="detail-content" style="display:none"></div>
+    </div>
+
+    <div class="tab-page" id="tab-social">
+      <div class="card-label">人际关系</div>
+      <div id="social-content"></div>
+    </div>
+
+    <div class="tab-page" id="tab-world">
+      <div class="card-label">世界状态</div>
+      <div id="world-props-content"></div>
+      <div class="card-label mt-8">游戏变量</div>
+      <div id="world-vars-content"></div>
+    </div>
+
+    <div class="tab-page" id="tab-history">
+      <div class="card-label">推演历史</div>
+      <div id="history-content"></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Bottom -->
+<div class="bottom-bar">
+  <div>
+    <input type="text" id="action-input" placeholder="输入行动..." onkeypress="if(event.key==='Enter')submitAction()">
+    <button class="btn btn-primary" id="btn-submit" onclick="submitAction()">推演</button>
+    <button class="btn btn-confirm" id="btn-confirm" onclick="confirmTurn()" style="display:none">确认</button>
+    <button class="btn btn-secondary" id="btn-save" onclick="saveGame()" style="display:none" title="保存当前进度">保存</button>
+  </div>
+  <div class="action-suggestions" id="action-suggestions"></div>
+</div>
+
+</div>
+
+<!-- Retry Modal -->
+<div class="modal" id="retry-modal">
+  <div class="modal-content">
+    <h3>重新推演: <span id="retry-npc-name"></span></h3>
+    <p style="font-size:11px;color:var(--text-secondary);margin-bottom:10px">输入提示词，引导该NPC重新思考当前局面。</p>
+    <textarea id="retry-hint" placeholder="例如：让他更加谨慎，考虑到当前局势的风险..."></textarea>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeRetryModal()">取消</button>
+      <button class="btn btn-retry" onclick="executeRetry()">重推</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/static/js/rpg_app.js"></script>
+</body>
+</html>
