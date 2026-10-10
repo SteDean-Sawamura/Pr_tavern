@@ -772,11 +772,13 @@ OpenAI 兼容模型的流式工具回合可在参数生成期间发送 `tool_pre
 `peek_upcoming_events` 的 `events` 只包含当前条件满足的计划事件；`conditional_candidates` 单列当前未满足条件但可能在行动中解锁的事件。两者均未发生，也不代表主角知情；工具结果分别给出匹配数和截断标志。
 明确写出“等到明天/次日/翌日 8 点”等数字钟点时，等待按次日时间估算；没有次日标记的已过钟点不会自动推断到次日。明确等待超过 12 小时可结算到玩家请求的时刻，普通行动仍受原有跳时上限约束。`peek_upcoming_events` 最多预览 6 小时，但行动准备仍将整个预估等待窗口内的候选事件交给 Agent 推演；候选事件不等于已发生或角色已知。
 
+公开版的合成 harness 验收使用本地假模型和临时 SQLite，不读取私有剧本，也不调用外部模型。测试连接真实的流式行动路由、计划答复与插话、工具检索、事件结算、保存和重载，并检查同一行动重放不会重复结算、公开进度不会携带工具参数或结果。它证明控制与持久化契约，不代表真实模型的叙事质量或浏览器交互已验收。
+
+从叙事视图切入大地图时，进度列表定位到最新事件，避免停在隐藏期间留下的旧状态；地图已经打开时，不因视图恢复而重置玩家查看历史的位置。
+
 ```powershell
-try {
-    python -m pytest tests/test_agent_harness_execution.py -k retrieval_settlement_stream_and_reload -q
-} finally {
-}
+python -m pytest tests/test_agent_harness_execution.py -k retrieval_settlement_stream_and_reload -q
+node --test tests/main_map_activity_ui.test.cjs
 ```
 
 ## 技术栈

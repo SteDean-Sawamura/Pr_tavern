@@ -296,6 +296,10 @@ function restoreMainMapView() {
     if (typeof _repositionNotifs === 'function') _repositionNotifs();
     document.getElementById('freeform-submit').textContent = enabled && _mainMapPreparedAction ? '确认行动' : '行动';
     _syncMainMapAgentDock();
+    if (enabled && !wasEnabled) {
+        const activity = document.getElementById('main-map-activity');
+        activity.scrollTop = activity.scrollHeight;
+    }
     if (enabled && !wasEnabled && _mainMapAgentAction &&
         _mainMapAgentAction === window._activeGameAction) {
         document.getElementById('main-area').scrollTop = 0;
