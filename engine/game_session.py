@@ -2162,7 +2162,7 @@ class GameSession(
         projected = copy.deepcopy(self.current_state)
         dirty_npc_ids: set[str] = set()
         for update in updates:
-            parsed = self._merge_state_tool_results(self._explode_update_state(update))
+            parsed = self._merge_state_tool_results(self._explode_update_state(update), state=projected)
             changes = parsed.get("state_changes", [])
             for change in changes:
                 if change.get("type") == "variable":
@@ -2227,6 +2227,13 @@ class GameSession(
                     active_states.remove(state_id)
             for prop in parsed.get("world_property_changes", []):
                 projected.setdefault("world_properties", {})[prop["id"]] = prop.get("value")
+            for entry in parsed.get("reveal_locations", []):
+                location_id = entry.get("id", "") if isinstance(entry, dict) else entry
+                if location_id and not self._is_duplicate_location(projected, location_id):
+                    projected = self.state_manager.reveal_location(projected, location_id, inplace=True)
+                    location_name = (entry.get("name", location_id) if isinstance(entry, dict)
+                                     else self._location_by_id.get(location_id, {}).get("name", location_id))
+                    projected.setdefault("display_names", {})[location_id] = location_name
             if parsed.get("location_change"):
                 projected.setdefault("player", {})["location"] = parsed["location_change"]
         self._sync_dirty_npc_attitudes(projected, dirty_npc_ids)
@@ -2320,7 +2327,9 @@ class GameSession(
             issues = []
             loc = args.get("location_change")
             revealed = {entry.get("id") for entry in args.get("reveal_locations", []) if isinstance(entry, dict)}
-            if loc and not self._can_use_location_id(self.current_state, loc, revealed):
+            state = (self._project_state_tool_updates(ctx["_accepted_state_updates"])
+                     if ctx and ctx.get("_accepted_state_updates") else self.current_state)
+            if loc and not self._can_use_location_id(state, loc, revealed):
                 return f"错误: 地点 {loc} 尚未发现；请先揭示地点再移动"
             for rl in args.get("reveal_locations", []):
                 if not isinstance(rl, dict) or not rl.get("id"):
@@ -2384,7 +2393,7 @@ class GameSession(
 
         return f"未知状态工具: {tool_name}"
 
-    def _merge_state_tool_results(self, tool_calls: list[dict]) -> dict:
+    def _merge_state_tool_results(self, tool_calls: list[dict], *, state: dict | None = None) -> dict:
         """Merge state tool call arguments into a parsed dict compatible with parse_split_v3 output.
 
         tool_calls: [{"name": "update_resources", "args": {...}}, ...]
@@ -2392,6 +2401,7 @@ class GameSession(
         """
         parsed = self.response_parser._empty_result()
         MAX_DELTA = 30
+        state = self.current_state if state is None else state
 
         for tc in tool_calls:
             name = tc["name"]
@@ -2426,10 +2436,11 @@ class GameSession(
 
             elif name == "update_spatial":
                 loc = args.get("location_change")
-                revealed = {entry.get("id") for entry in args.get("reveal_locations", []) if isinstance(entry, dict)}
-                if loc and self._can_use_location_id(self.current_state, loc, revealed):
-                    parsed["location_change"] = loc
                 parsed["reveal_locations"].extend(args.get("reveal_locations", []))
+                revealed = {entry.get("id") if isinstance(entry, dict) else entry
+                            for entry in parsed["reveal_locations"]}
+                if loc and self._can_use_location_id(state, loc, revealed):
+                    parsed["location_change"] = loc
                 parsed["npc_location_changes"].extend(args.get("npc_location_changes", []))
                 if args.get("room_changes"):
                     # room_changes is not in _empty_result default, add dynamically

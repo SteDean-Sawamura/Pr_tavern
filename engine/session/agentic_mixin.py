@@ -1934,7 +1934,7 @@ class AgenticMixin:
             results.append(self._run_state_tool("update_resources", res_args))
         sp_args = {k: args[k] for k in self._UPDATE_STATE_SPATIAL_KEYS if k in args}
         if sp_args:
-            spatial_result = self._run_state_tool("update_spatial", sp_args)
+            spatial_result = self._run_state_tool("update_spatial", sp_args, ctx)
             if spatial_result.startswith("错误:"):
                 return spatial_result
             if ctx is not None and ctx.get("old_time") and sp_args.get("location_change") and "end_time" not in args:
