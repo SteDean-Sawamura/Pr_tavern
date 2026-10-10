@@ -28,6 +28,10 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
             {"id": "test_atrium", "name": "Atrium"},
             {"id": "test_archive", "name": "Archive", "travel_time": "PT5M"},
         ],
+        "variables": [{
+            "id": "test_capacity", "type": "number", "default": 4, "min": 0, "max": 9,
+            "description": "SYNTHETIC_MECHANICS_PRIVATE",
+        }],
         "lorebook": [
             {"id": "test_label", "keys": ["shelf label"], "enabled": False,
              "visibility": "world", "content": "The shelf label reads LANTERN."},
@@ -70,6 +74,8 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
         ("submit_plan", {"plan": "Choose a known room, then inspect its contents.",
                          "questions": [{"question": "Which room?", "options": ["Archive", "Atrium"]}]}),
         ("update_state", {"location_change": "test_archive", "end_time": "2030-01-01T09:05:00"}),
+        ("consult_rules", {"category": "variables", "query": "test_capacity"}),
+        ("consult_rules", {"category": "variables", "query": "test_visit_count"}),
         ("query_lorebook", {"entry_id": "test_label"}),
         ("write_narrative", {"text": narrative}),
         ("finalize_turn", {"summary": "Reached the Archive and read the shelf label."}),
@@ -111,6 +117,7 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
         "visible_locations": ["test_atrium", "test_archive"],
         "display_names": {"test_atrium": "Atrium", "test_archive": "Archive"},
     }
+    session.script_variables.init_state(session.current_state)
     root_id = session.world_tree.add_node(
         None, session.current_state["game_time"], 0,
         ai_response="You are in the Atrium. The Archive is accessible.",
@@ -201,12 +208,29 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
                 assert final["state"]["player"]["location"] == "test_archive"
                 assert final["state"]["game_time"] == "2030-01-01T09:05:00"
                 assert "SYNTHETIC_UNREAD_DETAILS" not in response.text
+                assert "SYNTHETIC_MECHANICS_PRIVATE" not in response.text
                 assert "lorebook_entry_overrides" not in response.text
                 assert "mechanics_overrides" not in response.text
                 assert "_dyn_test_visit_hook" not in response.text
                 assert any(event["type"] == "user_inject" and event["message"] == interjection for event in events)
                 assert any({"role": "user", "content": interjection} in messages for messages in requests)
                 assert any("Archive" in message.get("content", "") for message in requests[1] if message["role"] == "user")
+                assert "SYNTHETIC_MECHANICS_PRIVATE" not in json.dumps(requests[0])
+                for index, (name, arguments) in enumerate(operations):
+                    if name != "consult_rules":
+                        continue
+                    rule_messages = [message for messages in requests for message in messages
+                                     if message.get("tool_call_id") == f"synthetic-call-{index}"]
+                    assert rule_messages
+                    result = json.loads(rule_messages[0]["content"])
+                    assert result["source"] == "current_branch"
+                    assert result["game_time"] == "2030-01-01T09:00:00"
+                    if arguments["query"] == "test_capacity":
+                        payload = json.loads(result["entries"][0]["content"])
+                        assert payload["definition"] == script["variables"][0]
+                        assert payload["current_value"] == 4
+                    else:
+                        assert result["entries"] == [] and result["total"] == 0
                 for event in events:
                     if event["type"] in ("tool_started", "tool_call"):
                         assert set(event) <= {"type", "label", "round", "tool_name"}
@@ -239,6 +263,11 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
         assert restored.current_state["player"]["location"] == "test_archive"
         assert restored.current_state["game_time"] == "2030-01-01T09:05:00"
         assert restored.current_state["script_variables"]["test_visit_count"] == 2
+        saved_mechanics = {
+            category: json.loads(restored._handle_consult_rules({"category": category, "query": "test_visit"}))["entries"]
+            for category in ("variables", "triggers", "random_items")
+        }
+        assert all(len(entries) == 1 for entries in saved_mechanics.values())
         assert "_dyn_test_visit_roll" in restored._random_item_by_id
         restored._fire_event_dual("test_visit_tick")
         assert restored.current_state["script_variables"]["test_visit_count"] == 3
@@ -247,6 +276,7 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
         node = restored.world_tree.get_node(final["node_id"])
         assert node["ai_response"] == narrative
         trace = node["agent_trace"]
+        assert "SYNTHETIC_MECHANICS_PRIVATE" not in json.dumps(trace)
         assert [round_record["tool"] for round_record in trace["rounds"]] == [name for name, _ in operations]
         assert trace["plan_waits"] == 1
         assert trace["lore_queries"] == trace["lore_hits"] == trace["lore_entry_reads"] == 1
@@ -265,12 +295,16 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
         assert "test_visit_count" not in restored.script_variables.definitions
         assert not restored.trigger_engine.triggers
         assert not restored._random_item_by_id
+        for category in saved_mechanics:
+            assert json.loads(restored._handle_consult_rules({"category": category, "query": "test_visit"}))["entries"] == []
         previous = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": "test_label"}))
         assert [entry["content"] for entry in previous["entries"]] == (
             ["The shelf label is blank."] if lore_effect == "update_lore" else []
         )
         branch = await restored.branch_to_node(final["node_id"])
         assert branch["node_id"] == final["node_id"]
+        for category, entries in saved_mechanics.items():
+            assert json.loads(restored._handle_consult_rules({"category": category, "query": "test_visit"}))["entries"] == entries
         assert restored.current_state["script_variables"]["test_visit_count"] == 2
         assert "_dyn_test_visit_roll" in restored._random_item_by_id
         restored._fire_event_dual("test_visit_tick")

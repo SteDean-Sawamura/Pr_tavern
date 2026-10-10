@@ -777,11 +777,18 @@ def _unified_tools() -> list[dict]:
         }},
         {"type": "function", "function": {
             "name": "consult_rules",
-            "description": "咨询规则引擎：检查某个NPC此时是否应在场、某个行动是否可行、某个物品是否可用",
+            "description": "只读咨询当前分支规则。指定 category 可检索剧本变量及现值、触发器或随机项；不指定时按 question 检查 NPC 在场和物品持有。不会执行规则或模拟未提交的行动。",
             "parameters": {"type": "object", "properties": {
                 "question": {"type": "string", "description": "要咨询的问题"},
                 "context": {"type": "string", "description": "相关上下文"},
-            }, "required": ["question"]},
+                "category": {"type": "string", "enum": ["variables", "triggers", "random_items"],
+                             "description": "机制类别；指定后无需 question。每次最多返回5条，每条 content 最多2000字符"},
+                "query": {"type": "string", "description": "在定义和变量现值中搜索，不区分大小写；空字符串列出该类别"},
+                "rule_index": {"type": "integer", "minimum": 0,
+                               "description": "读取某条查询结果的完整定义时，传入其 rule_index；不可与 query 混用，切换分支后须重新查询索引"},
+                "offset": {"type": "integer", "minimum": 0, "default": 0,
+                           "description": "未指定 rule_index 时按顶层 next_offset 翻页；指定时按条目 next_offset 续读 content 的后续字符"},
+            }},
         }},
     ]
 

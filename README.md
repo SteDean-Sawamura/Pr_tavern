@@ -789,6 +789,12 @@ node --test tests/main_map_activity_ui.test.cjs
 
 新快照的机制恢复不依赖导演日志是否被裁剪；旧快照兼容仍保留的规则更新日志，但已被裁剪且从未保存的定义无法自动还原。`tests/test_mechanics_persistence.py` 验证变量边界、规则幂等、生命周期触发、SQLite 重载、分支往返和失败回滚；流式 harness 同时验证工具驱动的事件结算、动态机制保存与恢复。这些证据来自合成数据与假模型，不代表真实模型的剧本利用或长期叙事体验已验收。
 
+统一 Agent 的完整推演上下文只提示当前分支有哪些机制类别及其数量，不自动装入全部规则正文。计划阶段结束后，可通过 `consult_rules(category="variables", query="关键词")` 按需查询变量定义与现值；触发器和随机项分别使用 `triggers`、`random_items`。不传 `category` 时保留原有 `question` 问答检查。
+
+查询结果标记 `source="current_branch"`，反映运行时定义和变量现值，不模拟本轮尚未提交的 `update_state` 或未结算事件，也不代表规则已执行、事件已发生或角色知情。每页最多 5 条，按顶层 `next_offset` 翻页；每条 `content` 是含 `definition` 和可选 `current_value` 的 JSON 文本，最多返回 2000 字符，长内容用该条的 `rule_index` 和 `next_offset` 续读后拼接解析。索引只对当前分支有效，切换分支后须重新查询。
+
+上下文压缩省略规则正文时，保留类别、条目索引及阅读位置，并明确提示从 `offset=0` 重新完整读取，避免只保留尾段而漏掉前置约束。`tests/test_mechanics_retrieval.py` 覆盖三类规则、搜索分页、长定义与长变量值续读、旧式无 ID 触发器、参数边界、分支恢复和压缩后的重读指引。流式 harness 验证规则内容真正进入后续模型请求、待结算机制不会提前出现在结果中，以及内部规则标记不进入 SSE 或公开 trace；这些仍是合成数据和假模型证据，不是实际模型叙事质量验收。
+
 ## 技术栈
 
 - **后端**: FastAPI + Uvicorn + aiosqlite (SQLite WAL 模式)

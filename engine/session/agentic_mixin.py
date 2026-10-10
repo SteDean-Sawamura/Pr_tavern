@@ -401,6 +401,23 @@ class AgenticMixin:
                                     + ("本轮状态投影，非已发生或角色已知；" if tool_result.get("projection") else "")
                                     + "可按 entry_id 重查正文，按 next_offset 续读"
                                 )
+                            elif (tool_names.get(m.get("tool_call_id")) == "consult_rules"
+                                  and isinstance(tool_result, dict)
+                                  and tool_result.get("category") in ("variables", "triggers", "random_items")
+                                  and isinstance(entries, list)):
+                                preview = {key: tool_result[key] for key in (
+                                    "category", "source", "game_time", "offset", "next_offset", "total", "notice",
+                                ) if key in tool_result}
+                                preview["entries"] = [
+                                    {key: entry[key] for key in ("rule_index", "offset", "next_offset", "total_chars")
+                                     if key in entry}
+                                    for entry in entries[:5] if isinstance(entry, dict)
+                                ]
+                                summary_parts.append(
+                                    "[剧本机制检索] " + json.dumps(preview, ensure_ascii=False)
+                                    + "；本次匹配的规则正文已省略；用 consult_rules 的 category 和 rule_index "
+                                      "从 offset=0 重新完整读取，不得只续读尾段；切换分支后重查索引。"
+                                )
                             elif (isinstance(tool_result, dict) and isinstance(tool_result.get("events"), list)
                                   and isinstance(tool_result.get("conditional_candidates"), list)):
                                 preview = {
@@ -3125,6 +3142,15 @@ class AgenticMixin:
     def _build_unified_context(self, ctx: dict, player_action: dict) -> str:
         """Build per-turn user message for the unified agent (reuses foreground context)."""
         parts = [self._build_foreground_context(ctx, player_action, unified=True)]
+        mechanics = {category: len(entries) for category, entries in self._mechanics_definitions().items() if entries}
+        if mechanics:
+            parts.append(
+                "<script_mechanics>\n当前分支可查询的剧本机制："
+                + json.dumps(mechanics, ensure_ascii=False)
+                + "。涉及这些规则时，用 consult_rules(category=类别, query=关键词) 按需读取定义和变量现值，"
+                  "不要凭名称猜测规则。查询不会执行机制，也不模拟本轮未提交的行动；"
+                  "幕后规则不等于角色已知事实。\n</script_mechanics>"
+            )
         reply_lore = self._plan_reply_lore_context(ctx)
         if reply_lore:
             parts.append(reply_lore)
@@ -4634,6 +4660,8 @@ class AgenticMixin:
 
     def _handle_consult_rules(self, args: dict) -> str:
         """纯规则检查（不调 LLM）：NPC 在场、物品持有等。"""
+        if "category" in args:
+            return self._handle_mechanics_query(args)
         question = args.get("question", "").lower()
         context_str = args.get("context", "")
 
@@ -4660,6 +4688,51 @@ class AgenticMixin:
             answers.append("无法确定，请根据叙事自行判断")
 
         return json.dumps({"answers": answers}, ensure_ascii=False)
+
+    def _handle_mechanics_query(self, args: dict) -> str:
+        definitions = self._mechanics_definitions()
+        category = args.get("category")
+        if not isinstance(category, str) or category not in definitions:
+            return json.dumps({"error": "category 必须是 variables、triggers 或 random_items"}, ensure_ascii=False)
+        offset = args.get("offset", 0)
+        if type(offset) is not int or offset < 0:
+            return json.dumps({"error": "offset 必须是非负整数"}, ensure_ascii=False)
+        query = args.get("query", "")
+        if not isinstance(query, str):
+            return json.dumps({"error": "query 必须是字符串"}, ensure_ascii=False)
+        detailed = "rule_index" in args
+        rule_index = args.get("rule_index")
+        if detailed and (type(rule_index) is not int or not 0 <= rule_index < len(definitions[category])):
+            return json.dumps({"error": "rule_index 超出当前类别的范围"}, ensure_ascii=False)
+        if detailed and query:
+            return json.dumps({"error": "rule_index 不能与 query 混用；切换分支后请重新查询索引"}, ensure_ascii=False)
+
+        records = []
+        for index, definition in enumerate(definitions[category]):
+            if detailed and index != rule_index:
+                continue
+            payload = {"definition": definition}
+            if category == "variables":
+                payload["current_value"] = self.script_variables.get(self.current_state, definition["id"])
+            content = json.dumps(payload, ensure_ascii=False)
+            if not detailed and query.casefold() not in content.casefold():
+                continue
+            records.append((index, content))
+        page = records if detailed else records[offset:offset + 5]
+        content_offset = offset if detailed else 0
+        if detailed and content_offset > len(page[0][1]):
+            return json.dumps({"error": "offset 超出机制正文长度"}, ensure_ascii=False)
+        entries = [{
+            "rule_index": index, "content": content[content_offset:content_offset + 2000],
+            "offset": content_offset, "total_chars": len(content),
+            "next_offset": content_offset + 2000 if len(content) > content_offset + 2000 else None,
+        } for index, content in page]
+        return json.dumps({
+            "category": category, "source": "current_branch", "game_time": self.current_state.get("game_time"),
+            "notice": "当前分支定义与现值；不模拟未提交的行动，不代表机制已触发或角色已知。",
+            "entries": entries, "total": len(records), "offset": offset,
+            "next_offset": offset + 5 if not detailed and len(records) > offset + 5 else None,
+        }, ensure_ascii=False)
 
     def _handle_peek_upcoming_events(self, args: dict) -> str:
         """预览即将触发的事件（hint 级别，不剧透）。"""
