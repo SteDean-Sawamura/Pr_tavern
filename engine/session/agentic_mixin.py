@@ -358,9 +358,13 @@ class AgenticMixin:
                                         for entry in entries)):
                             latest_exact_lore_result = message
                             break
+                    state_feedback_tools = ("update_state", "undo_my_last_action", "write_narrative")
+                    state_feedback_markers = ("变量候选值", "本轮候选结算", "状态投影显示条件事件可能触发")
                     state_results = [message for message in msgs
                                      if message.get("role") == "tool"
-                                     and tool_names.get(message.get("tool_call_id")) == "update_state"
+                                      and tool_names.get(message.get("tool_call_id")) in state_feedback_tools
+                                      and any(marker in str(message.get("content", ""))
+                                              for marker in state_feedback_markers)
                                      and not _tool_result_failed(message.get("content"))]
                     latest_state_result = state_results[-1] if state_results else None
                     for m in middle:
@@ -445,14 +449,16 @@ class AgenticMixin:
                                     }, ensure_ascii=False))
                                 else:
                                     summary_parts.append(f"[工具结果] {mc[:60]}")
-                            elif tool_names.get(m.get("tool_call_id")) == "update_state" and m is not latest_state_result:
-                                continue
-                            elif m is latest_state_result and (
-                                    "本轮候选结算" in mc or "状态投影显示条件事件可能触发" in mc):
-                                start = mc.find("本轮候选结算")
-                                if start < 0:
-                                    start = mc.find("状态投影显示条件事件可能触发")
-                                summary_parts.append("[状态投影反馈] " + mc[start:])
+                            elif tool_names.get(m.get("tool_call_id")) in state_feedback_tools:
+                                name = tool_names[m.get("tool_call_id")]
+                                if _tool_result_failed(mc):
+                                    summary_parts.append(f"[工具失败] {name}: {mc}")
+                                else:
+                                    receipt = mc.split(" | ", 1)[0]
+                                    summary_parts.append(f"[工具执行记录] {name}: {receipt}")
+                                    if m is latest_state_result:
+                                        start = min(mc.find(marker) for marker in state_feedback_markers if marker in mc)
+                                        summary_parts.append("[状态投影反馈] " + mc[start:].replace("\n", "\\n"))
                             else:
                                 summary_parts.append(f"[工具结果] {mc[:60]}")
                         elif role == "assistant":
@@ -2007,33 +2013,46 @@ class AgenticMixin:
         result = " | ".join(results) if results else "无状态变更"
         if ctx is not None and ctx.get("old_time"):
             ctx.setdefault("_accepted_state_updates", []).append(args)
-            variable_ids = [change["id"] for change in args.get("state_changes", [])
-                            if change.get("type") == "variable"]
-            variable_ids.extend(change["id"] for change in args.get("variable_changes", []))
-            if variable_ids:
-                projected_state = self._project_state_tool_updates(ctx["_accepted_state_updates"])
-                values = {variable_id: self.script_variables.get(projected_state, variable_id)
-                          for variable_id in variable_ids}
-                result += " | 变量候选值（未提交，不含尚未结算的事件效果）: " + json.dumps(values, ensure_ascii=False)
-            if "end_time" in args:
-                projected = self._projected_events(ctx)
-                event_times = ", ".join(
-                    f"{event['event_id']} ({event['fire_time']})" for event in projected[:20]
-                ) or "无"
-                if len(projected) > 20:
-                    event_times += f"；另有 {len(projected) - 20} 项未列出"
-                result += (f" | 本轮候选结算（截至 {args['end_time']}，未提交、非主角知情）："
-                           f"{event_times}；只有推进到触发时间且条件满足时才发生")
-            unlocked = self._projected_conditional_events(ctx)
-            ctx["_conditioned_event_keys"] = [
-                (event["event_id"], event["fire_time"]) for event in unlocked
-            ]
-            if unlocked:
-                event_times = ", ".join(
-                    f"{event['event_id']} ({event['fire_time']})" for event in unlocked
-                )
-                result += (f" | 状态投影显示条件事件可能触发: {event_times}；"
-                           "仅推进到触发时间且条件仍满足时发生，不代表主角知情")
+            result += self._state_projection_feedback(ctx)
+        return result
+
+    def _state_projection_feedback(self, ctx: dict) -> str:
+        if not ctx.get("old_time"):
+            return ""
+        updates = ctx.get("_accepted_state_updates", [])
+        variable_ids = list(ctx.get("_state_feedback_variable_ids", []))
+        for update in updates:
+            variable_ids.extend(change["id"] for change in update.get("state_changes", [])
+                                if change.get("type") == "variable")
+            variable_ids.extend(change["id"] for change in update.get("variable_changes", []))
+        variable_ids = list(dict.fromkeys(variable_ids))
+        ctx["_state_feedback_variable_ids"] = variable_ids
+        result = ""
+        if variable_ids:
+            projected_state = self._project_state_tool_updates(updates)
+            values = {variable_id: self.script_variables.get(projected_state, variable_id)
+                      for variable_id in variable_ids}
+            result += " | 变量候选值（未提交，不含尚未结算的事件效果）: " + json.dumps(values, ensure_ascii=False)
+        end_time = next((update["end_time"] for update in reversed(updates) if update.get("end_time")), None)
+        projected = self._projected_events(ctx) if end_time else []
+        event_times = ", ".join(
+            f"{event['event_id']} ({event['fire_time']})" for event in projected[:20]
+        ) or "无"
+        if len(projected) > 20:
+            event_times += f"；另有 {len(projected) - 20} 项未列出"
+        result += (f" | 本轮候选结算（截至 {end_time or ctx['old_time']}，未提交、非主角知情；"
+                   f"已接受 {len(updates)} 次状态更新）：{event_times}；"
+                   "已接受的更新无需重复调用；只有推进到触发时间且条件满足时才发生")
+        unlocked = self._projected_conditional_events(ctx)
+        ctx["_conditioned_event_keys"] = [
+            (event["event_id"], event["fire_time"]) for event in unlocked
+        ]
+        if unlocked:
+            event_times = ", ".join(
+                f"{event['event_id']} ({event['fire_time']})" for event in unlocked
+            )
+            result += (f" | 状态投影显示条件事件可能触发: {event_times}；"
+                       "仅推进到触发时间且条件仍满足时发生，不代表主角知情")
         return result
 
     # ── manage_npcs: 遍历 operations 分发 ──
@@ -2359,6 +2378,7 @@ class AgenticMixin:
                     ctx["_narrative_conditional_events"] = copy.deepcopy(
                         settlement_snapshot["conditioned_event_keys"] or [])
                     ctx["_settlement_revision_index"] = tool_count
+                    result += self._state_projection_feedback(ctx)
                 return result
             finally:
                 tool_count += 1
@@ -4016,7 +4036,10 @@ class AgenticMixin:
                     self._last_tool_result = None
                     return f"无法撤销上一个工具调用（{undone_name}）：没有可回退的状态"
                 self._last_tool_result = None
-                return f"已撤销上一个工具调用（{undone_name}），状态已还原。原因：{reason}"
+                result = f"已撤销上一个工具调用（{undone_name}），状态已还原。原因：{reason}"
+                if undone_name == "update_state":
+                    result += self._state_projection_feedback(ctx)
+                return result
             return "没有可撤销的操作"
 
         # Plan tool

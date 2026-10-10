@@ -21,7 +21,8 @@ def _stream_events(text):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lore_effect", ["activate_lore", "add_lore", "update_lore"])
-async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lore_effect):
+@pytest.mark.parametrize("compact_history", [False, True])
+async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lore_effect, compact_history):
     script = {
         "script_id": "synthetic-harness", "name": "Synthetic harness", "settings": {},
         "locations": [
@@ -95,16 +96,18 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
 
     async def generate_with_tools(messages, **kwargs):
         requests.append(copy.deepcopy(messages))
-        completed = {message.get("tool_call_id") for message in messages if message["role"] == "tool"}
-        remaining = [(index, operation) for index, operation in enumerate(operations)
-                     if f"synthetic-call-{index}" not in completed]
-        assert remaining, json.dumps(messages[-4:], ensure_ascii=False)
-        index, (name, arguments) = remaining[0]
+        completed = [int(message["tool_call_id"].removeprefix("synthetic-call-"))
+                     for message in messages if message.get("role") == "tool"
+                     and message.get("tool_call_id", "").startswith("synthetic-call-")]
+        index = max(completed, default=-1) + 1
+        assert index < len(operations), json.dumps(messages[-4:], ensure_ascii=False)
+        name, arguments = operations[index]
         assert name in [tool["function"]["name"] for tool in kwargs["tools"]]
         if name == "write_narrative":
             retrieved.set()
             await release_narrative.wait()
-        return {"content": "", "tool_calls": [{
+        content = "Synthetic prior context. " * 1600 if compact_history and index in (2, 5, 8) else ""
+        return {"content": content, "tool_calls": [{
             "id": f"synthetic-call-{index}", "name": name, "arguments": arguments,
         }]}
 
@@ -237,6 +240,15 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lor
                            and message["content"].startswith("已撤销") for request in requests for message in request)
                 assert any(message.get("tool_call_id") == "synthetic-call-5"
                            and message["content"].startswith("错误:") for request in requests for message in request)
+                if compact_history:
+                    summaries = [message["content"] for request in requests for message in request
+                                 if (message.get("content") or "").startswith("[上下文压缩]")]
+                    assert summaries
+                    final_context = json.dumps(requests[-1], ensure_ascii=False)
+                    assert '"test_capacity": 7' in "\n".join(summaries)
+                    assert "已接受 2 次状态更新" in final_context
+                    assert "已撤销上一个工具调用（update_state）" in final_context
+                    assert "[工具失败] update_state:" in final_context
                 for index, (name, arguments) in enumerate(operations):
                     if name != "consult_rules":
                         continue
