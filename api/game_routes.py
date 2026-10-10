@@ -976,7 +976,7 @@ async def game_action_stream(save_id: str, req: ActionRequest):
         )
         previous_blueprint = copy.deepcopy(session.current_state.get("plot_blueprint"))
         previous_node_id = session.world_tree.active_node_id
-    except Exception:
+    except BaseException:
         lock.release()
         raise
 
@@ -1971,12 +1971,9 @@ async def talk_to_npc_stream(save_id: str, npc_id: str, req: NpcTalkRequest):
         if not session:
             session = await _restore_session(save_id)
             if not session:
-                lock.release()
                 raise HTTPException(status_code=404, detail="Game session not found")
         snapshot = None if isinstance(session, GameSession) else _capture_generation_state(session)
-    except HTTPException:
-        raise
-    except Exception:
+    except BaseException:
         lock.release()
         raise
 
@@ -2128,13 +2125,12 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
     if stage not in ("all", "choices", "state"):
         raise HTTPException(status_code=400, detail="stage must be 'all', 'choices', or 'state'")
     lock = _get_session_lock(save_id)
+    await lock.acquire()
     try:
-        await lock.acquire()
         session = _sessions.get(save_id)
         if not session:
             session = await _restore_session(save_id)
             if not session:
-                lock.release()
                 raise HTTPException(status_code=404, detail="Game session not found")
 
         node = session.world_tree.get_node(session.world_tree.active_node_id)
