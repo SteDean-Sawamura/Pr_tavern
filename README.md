@@ -776,9 +776,11 @@ OpenAI 兼容模型的流式工具回合可在参数生成期间发送 `tool_pre
 
 从叙事视图切入大地图时，进度列表定位到最新事件，避免停在隐藏期间留下的旧状态；地图已经打开时，不因视图恢复而重置玩家查看历史的位置。
 
+大地图中，长工具日志溢出时，插话输入与停止按钮吸附在日志区域底部，避免操作入口被挤出可视区；此布局仅作用于地图 Agent 面板。
+
 ```powershell
 python -m pytest tests/test_agent_harness_execution.py -k retrieval_settlement_stream_and_reload -q
-node --test tests/main_map_activity_ui.test.cjs
+node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 ```
 
 事件和剧情树的 `add_lore`、`update_lore`、`remove_lore` 以及事件引擎的词条同步结果，按分支保存在节点快照中；重载、回退和再生时恢复对应版本的正文、关键词和可见性元数据，删除结果不会被动态剧情重新加载覆盖。向量索引随修改和分支恢复顺序更新，查询仍以当前分支词条正文为准；词条覆盖记录与动态剧情原始内容不进入玩家状态或节点响应。

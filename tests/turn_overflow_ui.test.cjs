@@ -78,3 +78,12 @@ test('restoration, pagination, new turns and streaming all refresh overflow', ()
     assert.match(source, /content\.appendChild\(block\);\s*_syncTurnOverflow\(\)/);
     assert.match(streamSource, /if \(b !== block\) b\.classList\.remove\('latest'\);\s*\}\);\s*if \(typeof _syncTurnOverflow === 'function'\) _syncTurnOverflow\(\)/);
 });
+
+test('map interruption controls stay pinned above the scrolling tool log', () => {
+    const controls = styles.match(/#main-map-agent-dock > \.agent-controls\s*\{([^}]+)\}/)?.[1];
+    assert.ok(controls, 'the map dock needs its own persistent interruption surface');
+    assert.match(controls, /position:\s*sticky\s*;/);
+    assert.match(controls, /bottom:\s*0\s*;/);
+    assert.match(controls, /z-index:\s*1\s*;/);
+    assert.match(controls, /background:\s*var\(--bg-inset\)\s*;/);
+});

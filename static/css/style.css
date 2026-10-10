@@ -845,6 +845,12 @@ header h1 {
     background: var(--bg-inset);
 }
 #main-map-agent-dock[hidden] { display: none; }
+#main-map-agent-dock > .agent-controls {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    background: var(--bg-inset);
+}
 #main-map-agent-dock .agent-controls .inject-input { min-width: 0; }
 #main-map-agent-dock.map-plan-active .agent-tools-body { display: flex; flex-direction: column; }
 #main-map-agent-dock.map-plan-active .agent-plan-card { order: -1; }
