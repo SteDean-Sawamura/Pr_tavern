@@ -1421,8 +1421,8 @@ def _player_state(current_state: dict, script: dict | None = None) -> dict:
     }
     for key in ("_pending_world_events", "npc_offscreen_log", "npc_relationships_global",
                 "cyclic_event_trackers", "random_item_state", "fired_one_time_events",
-                "lorebook_enabled_overrides", "dynamic_lorebook", "script_variables",
-                "_npc_autonomy", "_node_context",
+                "lorebook_enabled_overrides", "lorebook_entry_overrides", "dynamic_lorebook", "script_variables",
+                "dynamic_story_content", "_npc_autonomy", "_node_context",
                 "pending_consequences", "events", "shelved_pc_data",
                 "information_network"):
         state.pop(key, None)
@@ -3743,13 +3743,11 @@ async def _restore_session(save_id: str) -> GameSession | None:
         except (KeyError, IndexError, json.JSONDecodeError):
             pass
 
-        # Rebuild runtime caches from the active branch.
-        session._hydrate_branch_runtime(session.current_state)
-
         # Restore dynamic story content (trees, events, lorebook from AI expansion)
         if session.current_state.get("dynamic_story_content"):
             session._restore_dynamic_story()
-            session.prompt_builder.sync_shelved_pc_knowledge(session.current_state)
+
+        session._hydrate_branch_runtime(session.current_state)
 
         # Re-index lorebook entries to VectorMemory (collection may be stale or missing)
         if session.vector_memory:

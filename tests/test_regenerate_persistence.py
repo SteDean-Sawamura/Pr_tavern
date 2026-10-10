@@ -11,7 +11,8 @@ from engine.game_session import GameSession
 
 
 @pytest.mark.asyncio
-async def test_stream_regenerate_preserves_swipes_after_restore(tmp_path, monkeypatch):
+@pytest.mark.parametrize("lore_storage", ["dynamic_lorebook", "lorebook_entry_overrides"])
+async def test_stream_regenerate_preserves_swipes_after_restore(tmp_path, monkeypatch, lore_storage):
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "regen.db")
     monkeypatch.setattr(game_routes, "_sessions", OrderedDict())
     monkeypatch.setattr(game_routes, "_session_locks", {})
@@ -25,8 +26,12 @@ async def test_stream_regenerate_preserves_swipes_after_restore(tmp_path, monkey
     parent_state = {"scene": "before"}
     old_lore = {"id": "scene_fact", "keys": ["OldScene"], "content": "Original scene"}
     new_lore = {"id": "scene_fact", "keys": ["NewScene"], "content": "Replacement scene"}
-    old_state = {"scene": "original", "dynamic_lorebook": [old_lore]}
-    new_state = {"scene": "new", "dynamic_lorebook": [new_lore]}
+    old_state = {"scene": "original", lore_storage: (
+        [old_lore] if lore_storage == "dynamic_lorebook" else {old_lore["id"]: old_lore}
+    )}
+    new_state = {"scene": "new", lore_storage: (
+        [new_lore] if lore_storage == "dynamic_lorebook" else {new_lore["id"]: new_lore}
+    )}
     parent_id = session.world_tree.add_node(
         None, "day 1", 1, ai_response="Before", state_snapshot=copy.deepcopy(parent_state),
     )

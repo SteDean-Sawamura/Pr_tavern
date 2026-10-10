@@ -20,7 +20,8 @@ def _stream_events(text):
 
 
 @pytest.mark.asyncio
-async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch):
+@pytest.mark.parametrize("lore_effect", ["activate_lore", "add_lore", "update_lore"])
+async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch, lore_effect):
     script = {
         "script_id": "synthetic-harness", "name": "Synthetic harness", "settings": {},
         "locations": [
@@ -39,6 +40,15 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch):
             "effects": [{"type": "activate_lore", "id": "test_label"}],
         }],
     }
+    if lore_effect != "activate_lore":
+        revealed_entry = {**script["lorebook"][0], "enabled": True}
+        if lore_effect == "add_lore":
+            script["lorebook"] = script["lorebook"][1:]
+            effect = {"type": "add_lore", "entry": revealed_entry}
+        else:
+            script["lorebook"][0].update({"enabled": True, "content": "The shelf label is blank."})
+            effect = {"type": "update_lore", **revealed_entry}
+        script["one_time_events"][0]["effects"] = [effect]
     narrative = (
         "You leave the Atrium and reach the Archive after five minutes. "
         "Inside, you inspect the shelf without disturbing its contents. "
@@ -125,7 +135,7 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch):
             await db.execute("INSERT INTO saves (id, script_id) VALUES (?, ?)",
                              (session.save_id, script["script_id"]))
             await db.commit()
-        await game_routes._save_node(session, {"node_id": root_id})
+        await game_routes._save_node(session, {"node_id": root_id, "state": session.current_state})
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test",
         ) as client:
@@ -176,6 +186,7 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch):
                 assert final["state"]["player"]["location"] == "test_archive"
                 assert final["state"]["game_time"] == "2030-01-01T09:05:00"
                 assert "SYNTHETIC_UNREAD_DETAILS" not in response.text
+                assert "lorebook_entry_overrides" not in response.text
                 assert any(event["type"] == "user_inject" and event["message"] == interjection for event in events)
                 assert any({"role": "user", "content": interjection} in messages for messages in requests)
                 assert any("Archive" in message.get("content", "") for message in requests[1] if message["role"] == "user")
@@ -222,9 +233,20 @@ async def test_retrieval_settlement_stream_and_reload(tmp_path, monkeypatch):
         ]
         lore = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": "test_label"}))
         assert [entry["id"] for entry in lore["entries"]] == ["test_label"]
+        assert lore["entries"][0]["content"] == "The shelf label reads LANTERN."
         repeated = []
         restored._settle_timed_events("2030-01-01T09:00:00", "2030-01-01T09:05:00", repeated)
         assert repeated == []
+        branch = await restored.branch_to_node(root_id)
+        assert branch["node_id"] == root_id
+        previous = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": "test_label"}))
+        assert [entry["content"] for entry in previous["entries"]] == (
+            ["The shelf label is blank."] if lore_effect == "update_lore" else []
+        )
+        branch = await restored.branch_to_node(final["node_id"])
+        assert branch["node_id"] == final["node_id"]
+        current = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": "test_label"}))
+        assert current["entries"] == lore["entries"]
     finally:
         release_narrative.set()
         await database.close_pool()

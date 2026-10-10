@@ -9,6 +9,7 @@ import re
 import time as _time
 import uuid
 import config
+from dataclasses import asdict
 from datetime import datetime, timedelta
 
 from engine.dice import DiceRoller
@@ -735,22 +736,18 @@ class GameSession(
             elif etype == "add_lore":
                 entry_data = eff.get("entry", {})
                 if entry_data.get("id") and entry_data.get("content"):
-                    entry_data.setdefault("enabled", True)
-                    entry_data.setdefault("position", "after_world")
-                    entry_data.setdefault("priority", 80)
-                    entry_data.setdefault("scan_depth", 3)
-                    entry_data["entry_type"] = "event_generated"
-                    self.prompt_builder.lorebook.add_entries([entry_data])
+                    self._apply_lorebook_changes(
+                        additions=[{**entry_data, "entry_type": "event_generated"}],
+                        entry_type="event_generated",
+                    )
             elif etype == "update_lore":
                 lid = eff.get("id", "")
                 if lid and eff.get("content"):
-                    self.prompt_builder.lorebook.update_entry(
-                        lid, content=eff["content"], keys=eff.get("keys"),
-                    )
+                    self._apply_lorebook_changes(updates=[eff])
             elif etype == "remove_lore":
                 rid = eff.get("id", "")
                 if rid:
-                    self.prompt_builder.lorebook.remove_entry(rid)
+                    self._apply_lorebook_changes(removals=[rid])
             elif etype == "add_random_item":
                 item_data = eff.get("item", {})
                 if item_data.get("id"):
@@ -3505,6 +3502,82 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
                 effects = self.trigger_engine.execute_actions(actions, st)
                 self._apply_trigger_effects(effects, state=st)
 
+    def _apply_lorebook_changes(self, *, additions=(), updates=(), removals=(),
+                               state=None, entry_type=None):
+        target = self.current_state if state is None else state
+        lorebook = self.prompt_builder.lorebook
+        existing_ids = {entry.id for entry in lorebook.entries}
+        changed_ids = set()
+        for original in additions:
+            if not isinstance(original, dict) or not original.get("id"):
+                continue
+            entry_id = original["id"]
+            if entry_id in existing_ids:
+                continue
+            entry_data = copy.deepcopy(original)
+            if entry_type is not None:
+                entry_data.setdefault("enabled", True)
+                entry_data.setdefault("position", "after_world")
+                entry_data.setdefault("priority", 80)
+                entry_data.setdefault("scan_depth", 3)
+                entry_data.setdefault("entry_type", entry_type)
+            lorebook.add_entries([entry_data])
+            existing_ids.add(entry_id)
+            changed_ids.add(entry_id)
+        for update in updates:
+            entry_id = update.get("id", "")
+            if entry_id not in existing_ids:
+                continue
+            lorebook.update_entry(entry_id, content=update.get("content", ""),
+                                  keys=copy.deepcopy(update.get("keys")))
+            changed_ids.add(entry_id)
+        for entry_id in removals:
+            if entry_id:
+                lorebook.remove_entry(entry_id)
+                changed_ids.add(entry_id)
+        if not changed_ids:
+            return
+        entries = {entry.id: entry for entry in lorebook.entries}
+        overrides = target.setdefault("lorebook_entry_overrides", {})
+        for entry_id in changed_ids:
+            entry = entries.get(entry_id)
+            overrides[entry_id] = asdict(entry) if entry is not None else None
+            target.get("lorebook_enabled_overrides", {}).pop(entry_id, None)
+        self.prompt_builder._lorebook_override_ids.update(changed_ids)
+        self._sync_lorebook_vectors(changed_ids)
+
+    def _sync_lorebook_vectors(self, entry_ids):
+        if not self.vector_memory or not entry_ids:
+            return
+        entries = {entry.id: entry for entry in self.prompt_builder.lorebook.entries}
+        batch = [(entry_id, entries[entry_id].content, {
+            "entry_type": entries[entry_id].entry_type, "comment": entries[entry_id].comment,
+        }) for entry_id in sorted(entry_ids)
+            if entry_id in entries and len(entries[entry_id].content) >= 20]
+        removals = sorted(set(entry_ids) - {entry_id for entry_id, _, _ in batch})
+        vector_memory = self.vector_memory
+
+        def sync():
+            for entry_id in removals:
+                vector_memory.remove_lorebook(entry_id)
+            if batch:
+                vector_memory.add_lorebook_batch(batch)
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            sync()
+            return
+        prior_tasks = tuple(self._index_tasks)
+
+        async def sync_after_index():
+            if prior_tasks:
+                await asyncio.gather(*(asyncio.shield(task) for task in prior_tasks),
+                                     return_exceptions=True)
+            await asyncio.to_thread(sync)
+
+        self._schedule_index_task(sync_after_index())
+
     def _set_lore_enabled(self, entry_id: str, enabled: bool, state: dict | None = None):
         entry = next((entry for entry in self.prompt_builder.lorebook.entries
                       if entry.id == entry_id), None)
@@ -3587,13 +3660,11 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
             action = sync.get("action", "")
             entry_id = sync.get("entry_id", "")
             if action == "remove" and entry_id:
-                self.prompt_builder.lorebook.remove_entry(entry_id)
+                self._apply_lorebook_changes(removals=[entry_id], state=target)
             elif action == "add" and sync.get("entry"):
-                self.prompt_builder.lorebook.add_entries([sync["entry"]])
+                self._apply_lorebook_changes(additions=[sync["entry"]], state=target)
             elif action == "update" and entry_id:
-                self.prompt_builder.lorebook.update_entry(
-                    entry_id, content=sync.get("content", ""), keys=sync.get("keys"),
-                )
+                self._apply_lorebook_changes(updates=[{**sync, "id": entry_id}], state=target)
 
         if result.imminent_warnings:
             scene = target.setdefault("scene_details", {})
@@ -3660,7 +3731,7 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
         state_deactivations=(), target=None, entry_type="event_generated",
     ):
         """Shared effect processing for StoryTreeResult and EventResult."""
-        target = target or self.current_state
+        target = self.current_state if target is None else target
         for effect in effects:
             action = effect.get("action", "")
             params = effect.get("params", {})
@@ -3723,35 +3794,10 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
         for eid in lore_deactivations:
             self._set_lore_enabled(eid, False, target)
 
-        if lore_additions:
-            lore_additions = [e for e in lore_additions if isinstance(e, dict)]
-            for entry_data in lore_additions:
-                entry_data.setdefault("enabled", True)
-                entry_data.setdefault("position", "after_world")
-                entry_data.setdefault("priority", 80)
-                entry_data.setdefault("scan_depth", 3)
-                entry_data.setdefault("entry_type", entry_type)
-            self.prompt_builder.lorebook.add_entries(lore_additions)
-            if self.vector_memory:
-                batch = [
-                    (e["id"], e["content"],
-                     {"entry_type": e.get("entry_type", entry_type), "comment": e.get("comment", "")})
-                    for e in lore_additions
-                    if e.get("content") and len(e["content"]) >= 20
-                ]
-                if batch:
-                    self._schedule_index_task(self._async_lorebook_vector_sync(batch))
-
-        for upd in lore_updates:
-            lid = upd.get("id", "")
-            if lid:
-                self.prompt_builder.lorebook.update_entry(
-                    lid, content=upd.get("content", ""), keys=upd.get("keys"),
-                )
-
-        for rid in lore_removals:
-            self.prompt_builder.lorebook.remove_entry(rid)
-            self._remove_lorebook_vector(rid)
+        self._apply_lorebook_changes(
+            additions=lore_additions, updates=lore_updates, removals=lore_removals,
+            state=target, entry_type=entry_type,
+        )
 
         for rid in lore_reveals:
             discovered = target.setdefault("pc_discovered_lore", [])

@@ -1,6 +1,7 @@
 """AI prompt builder: assembles prompts from current game state."""
 
 import re
+from dataclasses import asdict
 
 from engine.lorebook import Lorebook, LorebookEntry
 from engine.event_scheduler import parse_time
@@ -73,6 +74,8 @@ class PromptBuilder(PromptKGMixin, PromptSectionsMixin, PromptNpcMixin, PromptNa
                 if not entry.available_from:
                     entry.available_from = activation_times[entry.id]
         self._static_lore_ids = {entry.id for entry in self.lorebook.entries}
+        self._initial_lore_entries = {entry.id: asdict(entry) for entry in self.lorebook.entries}
+        self._lorebook_override_ids: set[str] = set()
         self._initial_lore_enabled = {entry.id: entry.enabled for entry in self.lorebook.entries}
         self._initial_lore_known_by_npcs = {
             entry.id: tuple(entry.known_by_npcs) for entry in self.lorebook.entries
@@ -553,9 +556,11 @@ class PromptBuilder(PromptKGMixin, PromptSectionsMixin, PromptNpcMixin, PromptNa
         for entry in self.lorebook.entries:
             if entry.visibility != "hidden":
                 continue
-            original = self._initial_lore_known_by_npcs.get(
-                entry.id, dynamic_knowledge.get(entry.id, ()),
-            )
+            override = state.get("lorebook_entry_overrides", {}).get(entry.id)
+            original = (override.get("known_by_npcs", []) if override is not None else
+                        self._initial_lore_known_by_npcs.get(
+                            entry.id, dynamic_knowledge.get(entry.id, ()),
+                        ))
             entry.known_by_npcs = list(dict.fromkeys([
                 *original,
                 *(pc_id for pc_id, data in shelved.items()

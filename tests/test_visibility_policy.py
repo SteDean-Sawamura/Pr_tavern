@@ -70,12 +70,14 @@ def test_player_projection_uses_private_metadata_without_mutating_state():
         "npcs": {"visitor": {"name": "Visitor", "known": True, "bio": "Private detail"}},
         "visible_locations": ["public_room", "restricted_room"],
         "location_descriptions": {"public_room": "Public view", "restricted_room": "Private view"},
+        "lorebook_entry_overrides": {"private_note": {"content": "Synthetic internal note."}, "removed_note": None},
     }
     original = copy.deepcopy(state)
     projected = game_routes._player_state(state, script)
     assert projected["world_properties"] == {"public_counter": 2}
     assert "bio" not in projected["npcs"]["visitor"]
     assert projected["location_descriptions"] == {"public_room": "Public view"}
+    assert "lorebook_entry_overrides" not in projected
     assert game_routes._player_expired_states(["internal_status", "visible_status"], script) == ["visible_status"]
     assert state == original
     script["locations"] = [{"id": "restricted_room", "public_description": "Public outline"}]

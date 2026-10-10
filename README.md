@@ -781,6 +781,10 @@ python -m pytest tests/test_agent_harness_execution.py -k retrieval_settlement_s
 node --test tests/main_map_activity_ui.test.cjs
 ```
 
+事件和剧情树的 `add_lore`、`update_lore`、`remove_lore` 以及事件引擎的词条同步结果，按分支保存在节点快照中；重载、回退和再生时恢复对应版本的正文、关键词和可见性元数据，删除结果不会被动态剧情重新加载覆盖。向量索引随修改和分支恢复顺序更新，查询仍以当前分支词条正文为准；词条覆盖记录与动态剧情原始内容不进入玩家状态或节点响应。
+
+`tests/test_event_lore_persistence.py` 使用合成事件验证静态、动态词条的 SQLite 重载、分支往返、预览隔离、修改顺序和索引同步；流式 harness 另覆盖激活、添加和改写词条的完整工具到存档链路。这些测试不调用外部模型，也不代表真实叙事质量已验收。旧存档在此修复之前未保存的词条变化无法自动还原，不会通过重复触发旧事件补写。
+
 ## 技术栈
 
 - **后端**: FastAPI + Uvicorn + aiosqlite (SQLite WAL 模式)

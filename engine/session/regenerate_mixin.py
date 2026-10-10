@@ -147,17 +147,36 @@ class RegenerateMixin:
                     next_fire = scheduled.isoformat()
             trackers[event_id] = {"last_fired": event_state.get("last_fired"), "next_fire": next_fire}
             state["cyclic_event_trackers"] = trackers
+        overrides = state.get("lorebook_entry_overrides", {})
+        override_ids = self.prompt_builder._lorebook_override_ids | overrides.keys()
+        for entry_id in override_ids:
+            self.prompt_builder.lorebook.remove_entry(entry_id)
+            initial = self.prompt_builder._initial_lore_entries.get(entry_id)
+            if initial is not None:
+                self.prompt_builder.lorebook.add_entries([copy.deepcopy(initial)])
         self._index_dynamic_npcs_from_state(state)
         self.prompt_builder.track_dynamic_lore(state)
         for entry_id, enabled in self.prompt_builder._initial_lore_enabled.items():
             self.prompt_builder.lorebook.update_entry_enabled(entry_id, enabled)
         dynamic_lore = [entry for entry in state.get("dynamic_lorebook", [])
                         if entry.get("id") not in self.prompt_builder._static_lore_ids]
+        dynamic_lore.extend(
+            entry for entry in state.get("dynamic_story_content", {}).get("lorebook", [])
+            if entry.get("id") in override_ids
+            and entry.get("id") not in self.prompt_builder._static_lore_ids
+        )
         if dynamic_lore:
             self.prompt_builder.lorebook.add_entries(dynamic_lore, replace_existing=True)
+        for entry_id, entry in overrides.items():
+            if entry is None:
+                self.prompt_builder.lorebook.remove_entry(entry_id)
+            else:
+                self.prompt_builder.lorebook.add_entries([copy.deepcopy(entry)], replace_existing=True)
         for entry_id, enabled in state.get("lorebook_enabled_overrides", {}).items():
             self.prompt_builder.lorebook.update_entry_enabled(entry_id, enabled)
         self.prompt_builder.sync_shelved_pc_knowledge(state)
+        self.prompt_builder._lorebook_override_ids.update(overrides)
+        self._sync_lorebook_vectors(override_ids)
 
     def _settle_regen_state(self, parsed: dict, baseline: dict,
                             present_npc_ids: list[str], *, action_text: str = "",
