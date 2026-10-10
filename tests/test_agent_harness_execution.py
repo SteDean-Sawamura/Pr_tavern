@@ -20,6 +20,200 @@ def _stream_events(text):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("resume_mode", ["cached", "reload", "branch", "failed"])
+async def test_condition_lifecycle_reaches_next_turn_agent(tmp_path, monkeypatch, resume_mode):
+    guidance = "SYNTHETIC_NEXT_TURN_GUIDANCE"
+    notice = "SYNTHETIC_UNSOURCED_NOTICE"
+    script = {
+        "script_id": "synthetic-lifecycle", "name": "Synthetic lifecycle", "settings": {},
+        "visibility_policy": {"require_notification_source": True},
+        "locations": [{"id": "test_room", "name": "Reading room"}],
+        "variables": [
+            {"id": "test_prepared", "type": "number", "default": 0},
+            {"id": "test_settled", "type": "number", "default": 0},
+        ],
+        "one_time_events": [{
+            "id": "test_enable_hooks", "trigger_time": "2030-01-01T09:01:00",
+            "effects": [{"type": "add_trigger", "trigger": {
+                "id": "test_prepare_hook", "condition": "event.before_generation.fired",
+                "actions": [
+                    {"type": "set_var", "var_id": "test_prepared", "op": "inc", "value": 1},
+                    {"type": "inject_prompt", "text": guidance + " {{var::test_prepared}}"},
+                    {"type": "notify", "message": notice},
+                ],
+            }}, {"type": "add_trigger", "trigger": {
+                "id": "test_settle_hook", "condition": "event.after_ai.fired",
+                "actions": [
+                    {"type": "set_var", "var_id": "test_settled", "op": "inc", "value": 1},
+                    {"type": "notify", "message": notice},
+                ],
+            }}],
+        }],
+    }
+    narrative = (
+        "You remain in the reading room and inspect the empty shelf carefully. "
+        "The shelf is firmly attached to the wall, and there is nothing behind it. "
+        "You leave everything in place and finish your inspection without disturbing the room."
+    )
+    requests = [[], []]
+    turn_index = 0
+
+    async def generate_with_tools(messages, **kwargs):
+        if [tool["function"]["name"] for tool in kwargs["tools"]] == ["extract_notes"]:
+            return {"content": "", "tool_calls": [
+                {"id": "synthetic-notes", "name": "extract_notes", "arguments": {"notes": []}},
+            ]}
+        requests[turn_index].append([{"role": "system", "content": kwargs["system"]}, *copy.deepcopy(messages)])
+        prefix = f"synthetic-lifecycle-{turn_index}-"
+        completed = [int(message["tool_call_id"].removeprefix(prefix))
+                     for message in messages if message.get("role") == "tool"
+                     and message.get("tool_call_id", "").startswith(prefix)]
+        index = max(completed, default=-1) + 1
+        operations = [
+            ("submit_plan", {"plan": "Inspect the shelf, following the active script rules."}),
+            ("consult_rules", {"category": "variables", "query": "test_prepared"}),
+            ("update_state", {"end_time": f"2030-01-01T09:0{turn_index + 1}:00"}),
+            ("write_narrative", {"text": narrative}),
+            ("finalize_turn", {"summary": "Inspected the empty shelf."}),
+        ]
+        assert index < len(operations)
+        name, arguments = operations[index]
+        assert name in [tool["function"]["name"] for tool in kwargs["tools"]]
+        return {"content": "", "tool_calls": [{"id": f"{prefix}{index}", "name": name, "arguments": arguments}]}
+
+    provider = SimpleNamespace(
+        generate_with_tools=AsyncMock(side_effect=generate_with_tools),
+        generate=AsyncMock(return_value=json.dumps({
+            "scene_type": "exploration", "scope": "minor", "systems": ["location"],
+            "focus_npcs": [], "skill_check": {"needed": False}, "expand_story": False,
+            "generate_image": False, "skip_npc_reaction": True, "skip_choices": True,
+            "skip_state_settlement": False, "context_depth": "normal", "recall_hints": [],
+            "pass": True, "violations": [],
+        })),
+    )
+    session = GameSession(script, provider, save_id="synthetic-lifecycle-save")
+    session.current_state = {
+        "_pipeline_mode": "agentic_unified", "game_time": "2030-01-01T09:00:00",
+        "player": {"name": "Visitor", "location": "test_room"},
+        "visible_locations": ["test_room"], "display_names": {"test_room": "Reading room"},
+    }
+    session.script_variables.init_state(session.current_state)
+    root_id = session.world_tree.add_node(
+        None, session.current_state["game_time"], 0, ai_response="You are in the reading room.",
+        state_snapshot=copy.deepcopy(session.current_state),
+    )
+    monkeypatch.setattr(database, "DB_PATH", tmp_path / "lifecycle.db")
+    monkeypatch.setattr(game_routes, "_sessions", OrderedDict([(session.save_id, session)]))
+    monkeypatch.setattr(game_routes, "_session_locks", {})
+    monkeypatch.setattr(game_routes, "_action_streams", {})
+    monkeypatch.setattr(game_routes, "_get_ai_provider_async", AsyncMock(return_value=provider))
+    monkeypatch.setattr(game_routes, "_get_stage_models_async", AsyncMock(return_value={}))
+    monkeypatch.setattr(config_routes, "get_image_provider_instance", AsyncMock(return_value=None))
+    app = FastAPI()
+    app.include_router(game_routes.router, prefix="/api/game")
+    endpoint = f"/api/game/{session.save_id}/action/stream"
+    sessions = [session]
+    await database.init_db()
+    try:
+        async with database.get_db() as db:
+            await db.execute("INSERT INTO scripts (id, name, content) VALUES (?, ?, ?)",
+                             (script["script_id"], script["name"], json.dumps(script)))
+            await db.execute("INSERT INTO saves (id, script_id) VALUES (?, ?)",
+                             (session.save_id, script["script_id"]))
+            await db.commit()
+        await game_routes._save_node(session, {
+            "node_id": root_id, "state": session.current_state, "narrative": "You are in the reading room.",
+        })
+        current = session
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+        ) as client:
+            for turn_index in range(2):
+                action = {
+                    "type": "freeform", "text": "Inspect the empty shelf.", "intent_hint": "explicit_action",
+                    "stream_id": f"synthetic-lifecycle-stream-{turn_index}",
+                    "action_id": f"synthetic-lifecycle-action-{turn_index}",
+                    "expected_node_id": current.world_tree.active_node_id,
+                }
+                if turn_index == 1 and resume_mode == "failed":
+                    before_failure = copy.deepcopy(current.current_state)
+                    provider.generate_with_tools.side_effect = RuntimeError("Synthetic generation failure")
+                    failed = await asyncio.wait_for(client.post(endpoint, json={
+                        **action, "stream_id": "synthetic-failed-stream", "action_id": "synthetic-failed-action",
+                    }), timeout=5)
+                    provider.generate_with_tools.side_effect = generate_with_tools
+                    failed_events = _stream_events(failed.text)
+                    assert any(event["type"] == "error" for event in failed_events)
+                    assert not any(event["type"] == "final" for event in failed_events)
+                    assert current.world_tree.active_node_id == action["expected_node_id"]
+                    assert current.current_state == before_failure
+                response = await asyncio.wait_for(client.post(endpoint, json=action), timeout=5)
+                assert response.status_code == 200
+                assert response.text.endswith("data: [DONE]\n\n")
+                events = _stream_events(response.text)
+                assert not [event for event in events if event["type"] in ("error", "aborted", "agent_max_rounds")]
+                final, = [event for event in events if event["type"] == "final"]
+                assert final["narrative"] == narrative
+                assert current.current_state["script_variables"] == {
+                    "test_prepared": turn_index, "test_settled": turn_index + 1,
+                }
+                assert guidance not in response.text and notice not in response.text
+                assert guidance not in json.dumps(requests[turn_index][0], ensure_ascii=False)
+                context = json.dumps(requests[turn_index][1], ensure_ascii=False)
+                assert (guidance in context) is bool(turn_index)
+                if turn_index:
+                    assert "<turn_instructions>" in context
+                    assert guidance + " 1" in context
+                rule_messages = [message for request in requests[turn_index] for message in request
+                                 if message.get("tool_call_id") == f"synthetic-lifecycle-{turn_index}-1"]
+                rules = json.loads(rule_messages[0]["content"])
+                assert rules["source"] == "current_branch"
+                assert json.loads(rules["entries"][0]["content"])["current_value"] == turn_index
+                await current._drain_background_tasks()
+                calls = provider.generate_with_tools.await_count
+                state = copy.deepcopy(current.current_state)
+                replay = await client.post(endpoint, json=action)
+                assert _stream_events(replay.text) == events
+                assert provider.generate_with_tools.await_count == calls
+                assert current.current_state == state
+                if turn_index == 0 and resume_mode in {"reload", "branch"}:
+                    await current._drain_background_tasks()
+                    game_routes._sessions.clear()
+                    current = await game_routes._restore_session(session.save_id)
+                    assert current is not None and current is not session
+                    sessions.append(current)
+                    game_routes._sessions[session.save_id] = current
+                    if resume_mode == "branch":
+                        await current.branch_to_node(root_id)
+                        assert current.current_state["script_variables"] == {"test_prepared": 0, "test_settled": 0}
+                        assert not current.trigger_engine.triggers
+                        await current.branch_to_node(final["node_id"])
+                    assert current.current_state["script_variables"] == {"test_prepared": 0, "test_settled": 1}
+                    assert len(current.trigger_engine.triggers) == 2
+        await current._drain_background_tasks()
+        game_routes._sessions.clear()
+        restored = await game_routes._restore_session(session.save_id)
+        assert restored is not None and restored is not current
+        assert restored.current_state["script_variables"] == {"test_prepared": 1, "test_settled": 2}
+        assert restored.world_tree.active_node_id == final["node_id"]
+        callbacks = copy.deepcopy(restored.current_state["narrative_callbacks"])
+        assert guidance in json.dumps(callbacks)
+        game_routes._sessions[session.save_id] = restored
+        public_state = await game_routes.get_state(session.save_id)
+        public_node = await game_routes.get_tree_node(session.save_id, final["node_id"])
+        assert guidance not in json.dumps([public_state, public_node])
+        assert notice not in json.dumps([public_state, public_node])
+        assert restored.current_state["narrative_callbacks"] == callbacks
+        async with database.get_db() as db:
+            row = await (await db.execute("SELECT COUNT(*) FROM tree_nodes WHERE save_id = ?", (session.save_id,))).fetchone()
+        assert row[0] == 3
+    finally:
+        for current in sessions:
+            await current._drain_background_tasks()
+        await database.close_pool()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("lore_effect", ["activate_lore", "add_lore", "update_lore"])
 @pytest.mark.parametrize("compact_history", [False, True])
 @pytest.mark.parametrize("interjection_phase", ["model", "tool"])

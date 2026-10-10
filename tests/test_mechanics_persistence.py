@@ -47,6 +47,7 @@ def definitions(session):
 
 @pytest.mark.parametrize("dynamic", [False, True])
 @pytest.mark.parametrize("dispatch", ["_fire_event_dual", "_fire_lifecycle_event"])
+@pytest.mark.parametrize("schema", ["event", "condition"])
 @pytest.mark.parametrize("action, params", [
     ("reveal_lore", {"entry_id": "test_hook_lore"}),
     ("schedule_override", {
@@ -58,8 +59,11 @@ def definitions(session):
     ("activate_persistent_state", {}),
     ("deactivate_persistent_state", {}),
 ])
-def test_lifecycle_action_declarations_preserve_legacy_effects(dynamic, dispatch, action, params):
+def test_lifecycle_action_declarations_preserve_legacy_effects(dynamic, dispatch, schema, action, params):
     trigger = {"id": "test_hook", "event": "test_signal", "action": action, "params": params}
+    if schema == "condition":
+        trigger = {"id": "test_hook", "condition": "event.test_signal.fired",
+                   "actions": [{"type": action, **params}]}
     script = {
         "script_id": "synthetic-hook-actions", "name": "Synthetic hook actions", "settings": {},
         "triggers": [] if dynamic else [trigger],
@@ -118,6 +122,55 @@ def test_lifecycle_action_declarations_preserve_legacy_effects(dynamic, dispatch
     legacy._apply_trigger_effects(legacy.trigger_engine.execute_actions(legacy_actions, legacy.current_state))
     getattr(session, dispatch)("test_signal")
     assert effects(session) == effects(legacy)
+
+
+@pytest.mark.parametrize("event", ["before_generation", "after_ai"])
+@pytest.mark.parametrize("dynamic", [False, True])
+@pytest.mark.parametrize("unified", [False, True])
+@pytest.mark.parametrize("require_source", [False, True])
+def test_condition_lifecycle_preserves_order_instructions_and_visibility(event, dynamic, unified, require_source):
+    triggers = [{
+        "id": "test_event_hook", "event": event, "action": "set_var",
+        "params": {"var_id": "test_count", "op": "inc", "value": 2},
+    }, {
+        "id": "test_condition_hook", "condition": f"event.{event}.fired",
+        "actions": [
+            {"type": "set_var", "var_id": "test_count", "op": "inc", "value": 1},
+            {"type": "deactivate_persistent_state", "target": "test_active"},
+            {"type": "activate_persistent_state", "target": "test_active"},
+            {"type": "inject_prompt", "text": "Synthetic lifecycle guidance."},
+            {"type": "notify", "message": "Synthetic unsourced notice."},
+        ],
+    }]
+    session = GameSession({
+        "script_id": "synthetic-condition-hooks", "name": "Synthetic condition hooks", "settings": {},
+        "visibility_policy": {"require_notification_source": require_source},
+        "variables": [{"id": "test_count", "type": "number", "default": 0}],
+        "triggers": [] if dynamic else triggers,
+    }, None)
+    session.current_state = {"player": {}, "active_persistent_states": ["test_active"]}
+    session.script_variables.init_state(session.current_state)
+    if dynamic:
+        session._apply_trigger_updates({"add": copy.deepcopy(triggers)})
+    if not unified:
+        session.event_engine = None
+
+    prompts, notifications = session._fire_lifecycle_event(event)
+    assert session.current_state["script_variables"]["test_count"] == 3
+    assert session.current_state["active_persistent_states"] == ["test_active"]
+    assert prompts == ["Synthetic lifecycle guidance."]
+    assert notifications == ([] if require_source else ["Synthetic unsourced notice."])
+
+    trigger_id = "_dyn_test_condition_hook" if dynamic else "test_condition_hook"
+    session._apply_trigger_updates({"update": [{"id": trigger_id, "enabled": False}]})
+    prompts, notifications = session._fire_lifecycle_event(event)
+    assert session.current_state["script_variables"]["test_count"] == 5
+    assert prompts == notifications == []
+    session._apply_trigger_updates({"update": [{"id": trigger_id, "enabled": True}]})
+    prompts, notifications = session._fire_lifecycle_event(event)
+    assert session.current_state["script_variables"]["test_count"] == 8
+    assert prompts == ["Synthetic lifecycle guidance."]
+    assert notifications == ([] if require_source else ["Synthetic unsourced notice."])
 
 
 def test_restore_preserves_latest_variable_value_and_bounds():

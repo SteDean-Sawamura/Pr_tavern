@@ -1425,7 +1425,7 @@ def _player_state(current_state: dict, script: dict | None = None) -> dict:
                 "cyclic_event_trackers", "random_item_state", "fired_one_time_events",
                 "lorebook_enabled_overrides", "lorebook_entry_overrides", "dynamic_lorebook", "script_variables",
                 "dynamic_story_content", "mechanics_overrides", "_npc_autonomy", "_node_context",
-                "pending_consequences", "events", "shelved_pc_data",
+                "pending_consequences", "events", "shelved_pc_data", "narrative_callbacks",
                 "information_network"):
         state.pop(key, None)
     private_properties = _private_world_property_names(script)

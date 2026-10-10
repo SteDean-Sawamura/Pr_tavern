@@ -682,7 +682,7 @@ class GameSession(
         return cleaned, warnings
 
     def _fire_lifecycle_event(self, event_name: str) -> tuple[list[str], list[str]]:
-        """Fire story_tree + event_engine for a lifecycle event.
+        """Fire story_tree, event_engine and unmatched legacy lifecycle hooks.
         Returns (inject_prompts, notifications).
         """
         inject_prompts: list[str] = []
@@ -704,6 +704,17 @@ class GameSession(
             self._apply_event_result(ee_res)
             inject_prompts.extend(ee_res.inject_prompts)
             notifications.extend(public_event_notifications(self.script, ee_res))
+        if self.trigger_engine and self.trigger_engine.triggers:
+            actions = self.trigger_engine.fire(
+                event_name, self.current_state, include_event_triggers=self.event_engine is None,
+            )
+            if actions:
+                effects = self.trigger_engine.execute_actions(actions, self.current_state)
+                self._apply_trigger_effects(effects)
+                inject_prompts.extend(effects["inject_prompts"])
+                notifications.extend(public_event_notifications(
+                    self.script, EventResult(notifications=effects["notifications"]),
+                ))
         return inject_prompts, notifications
 
     def _apply_event_def_effects(self, evt_def: dict, event_id: str) -> list:

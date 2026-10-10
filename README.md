@@ -778,12 +778,16 @@ OpenAI 兼容模型的流式工具回合可在参数生成期间发送 `tool_pre
 
 旧式 `event/action/params` 触发器转换为统一事件节点时，也保留 `reveal_lore`、`schedule_override`、`activate_persistent_state` 和 `deactivate_persistent_state` 的效果；静态声明与事件动态添加的声明走同一机制。这里的旧式 `reveal_lore` 保留原有“启用词条”语义，不自动写入玩家已发现词条。合成验收覆盖动态声明经真实 `after_ai` 生命周期结算后影响 NPC 日程和持续状态、保存重载、分支往返与行动重放不重复执行。
 
+条件式 `condition: event.<name>.fired` 与 `actions` 声明也会响应 `before_generation` 和 `after_ai`，沿用旧触发器的动作执行顺序，不重复执行已由统一事件引擎处理的事件型声明。准备阶段的注入指令在公开计划提交后进入统一 Agent 的私有执行上下文，变量宏按当前分支状态展开。无来源通知仍受 `visibility_policy.require_notification_source` 约束；内部 `narrative_callbacks` 保存在存档中，但不进入玩家状态、公开节点或最终 SSE。
+
+两回合合成验收覆盖事件动态声明、下一回合实际模型请求中的指令与变量值、缓存续玩、SQLite 重载、分支往返、生成失败回滚和重试，以及同一行动重放不重复执行；不以手工触发生命周期代替完整回合验证。
+
 从叙事视图切入大地图时，进度列表定位到最新事件，避免停在隐藏期间留下的旧状态；地图已经打开时，不因视图恢复而重置玩家查看历史的位置。
 
 大地图中，长工具日志溢出时，插话输入与停止按钮吸附在日志区域底部，避免操作入口被挤出可视区；此布局仅作用于地图 Agent 面板。
 
 ```powershell
-python -m pytest tests/test_agent_harness_execution.py -k retrieval_settlement_stream_and_reload -q
+python -m pytest tests/test_agent_harness_execution.py -q
 node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 ```
 
