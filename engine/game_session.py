@@ -2196,8 +2196,12 @@ class GameSession(
     def _project_state_tool_updates(self, updates: list[dict]) -> dict:
         projected = copy.deepcopy(self.current_state)
         dirty_npc_ids: set[str] = set()
+        resource_log = []
+        spatial_changes = {"npc_location_changes": [], "room_changes": []}
         for update in updates:
             parsed = self._merge_state_tool_results(self._explode_update_state(update), state=projected)
+            for key in spatial_changes:
+                spatial_changes[key].extend(parsed.get(key, []))
             changes = parsed.get("state_changes", [])
             for change in changes:
                 if change.get("type") == "variable":
@@ -2220,7 +2224,8 @@ class GameSession(
                 elif target.startswith("npcs."):
                     dirty_npc_ids.add(target.split(".")[1])
             if regular:
-                projected, _ = self._apply_resource_state_changes(projected, regular, inplace=True)
+                projected, log = self._apply_resource_state_changes(projected, regular, inplace=True)
+                resource_log.extend(log)
                 if any(change.get("target") == "player.relationships" for change in regular):
                     dirty_npc_ids.update(projected.get("player", {}).get("relationships", {}))
             for change in parsed.get("inventory_changes", []):
@@ -2265,6 +2270,8 @@ class GameSession(
                 projected.setdefault("player", {})["location"] = parsed["location_change"]
             if parsed.get("world_property_changes"):
                 self._update_dynamic_connections(projected)
+        self._clear_derived_npc_positions(projected, resource_log)
+        self._apply_entity_spatial_changes(projected, spatial_changes)
         self._sync_dirty_npc_attitudes(projected, dirty_npc_ids)
         return projected
 

@@ -909,6 +909,53 @@ class StateApplyMixin:
             all_changes.extend(log)
         return state, all_changes
 
+    @staticmethod
+    def _clear_derived_npc_positions(state: dict, changes: list[dict]) -> None:
+        for change in changes:
+            parts = change.get("target", "").split(".", 2)
+            if len(parts) != 3 or parts[0] != "npcs":
+                continue
+            npc_state = state.get("npcs", {}).get(parts[1])
+            if not isinstance(npc_state, dict):
+                continue
+            if parts[2] == "current_location":
+                npc_state.pop("_derived_location", None)
+                if npc_state.get("current_room") == npc_state.get("_derived_room"):
+                    npc_state.pop("current_room", None)
+                npc_state.pop("_derived_room", None)
+            elif parts[2] == "current_room":
+                npc_state.pop("_derived_room", None)
+
+    def _apply_entity_spatial_changes(self, state: dict, parsed: dict) -> None:
+        for change in parsed.get("npc_location_changes", []):
+            npc_id = change.get("npc_id", "")
+            new_loc = change.get("new_location", "")
+            if not npc_id or not new_loc:
+                continue
+            if new_loc not in self._location_by_id and new_loc not in state.get("visible_locations", []):
+                logger.warning("AI npc_location_changes: new_location=%r 不在合法地点列表中，跳过", new_loc)
+                continue
+            npc_st = state.get("npcs", {}).get(npc_id)
+            if isinstance(npc_st, dict):
+                npc_st.pop("_derived_location", None)
+                if npc_st.get("current_room") == npc_st.get("_derived_room"):
+                    npc_st.pop("current_room", None)
+                npc_st.pop("_derived_room", None)
+                npc_st["current_location"] = new_loc
+
+        for change in parsed.get("room_changes", []):
+            target_id = change.get("id", "")
+            new_room = change.get("new_room", "")
+            if not target_id or not new_room:
+                continue
+            if target_id == "player":
+                state.setdefault("player", {})["current_room"] = new_room
+            else:
+                npc_st = state.get("npcs", {}).get(target_id)
+                if isinstance(npc_st, dict):
+                    npc_st.pop("_derived_room", None)
+                    npc_st["current_room"] = new_room
+
     def _apply_common_parsed_changes(
         self: GameSession, state: dict, parsed: dict, *, inplace: bool = False,
         present_npc_ids: list[str] | None = None,
@@ -953,6 +1000,7 @@ class StateApplyMixin:
                 )
                 all_changes.extend(log)
                 self._apply_org_changes_to_script(log)
+                self._clear_derived_npc_positions(state, log)
                 for sc in log:
                     t = sc.get("target", "")
                     if t == "player.relationships":
@@ -963,17 +1011,6 @@ class StateApplyMixin:
                         parts = t.split(".", 2)
                         if len(parts) >= 2:
                             dirty_npc_ids.add(parts[1])
-                        if len(parts) == 3 and parts[2] == "current_location":
-                            npc_state = state.get("npcs", {}).get(parts[1])
-                            if isinstance(npc_state, dict):
-                                npc_state.pop("_derived_location", None)
-                                if npc_state.get("current_room") == npc_state.get("_derived_room"):
-                                    npc_state.pop("current_room", None)
-                                npc_state.pop("_derived_room", None)
-                        elif len(parts) == 3 and parts[2] == "current_room":
-                            npc_state = state.get("npcs", {}).get(parts[1])
-                            if isinstance(npc_state, dict):
-                                npc_state.pop("_derived_room", None)
 
         npc_att = parsed.get("npc_attitude_changes", [])
         if npc_att:
@@ -1183,36 +1220,7 @@ class StateApplyMixin:
                     npc_st["current_location"] = new_loc
             self._sync_offscreen_to_lorebook(npc_id, log.get(npc_id, []))
 
-        # NPC location changes (in-scene departures/arrivals)
-        for change in parsed.get("npc_location_changes", []):
-            npc_id = change.get("npc_id", "")
-            new_loc = change.get("new_location", "")
-            if not npc_id or not new_loc:
-                continue
-            if new_loc not in self._location_by_id and new_loc not in state.get("visible_locations", []):
-                logger.warning("AI npc_location_changes: new_location=%r 不在合法地点列表中，跳过", new_loc)
-                continue
-            npc_st = state.get("npcs", {}).get(npc_id)
-            if isinstance(npc_st, dict):
-                npc_st.pop("_derived_location", None)
-                if npc_st.get("current_room") == npc_st.get("_derived_room"):
-                    npc_st.pop("current_room", None)
-                npc_st.pop("_derived_room", None)
-                npc_st["current_location"] = new_loc
-
-        # Room-level changes (within same building)
-        for change in parsed.get("room_changes", []):
-            target_id = change.get("id", "")
-            new_room = change.get("new_room", "")
-            if not target_id or not new_room:
-                continue
-            if target_id == "player":
-                state.setdefault("player", {})["current_room"] = new_room
-            else:
-                npc_st = state.get("npcs", {}).get(target_id)
-                if isinstance(npc_st, dict):
-                    npc_st.pop("_derived_room", None)
-                    npc_st["current_room"] = new_room
+        self._apply_entity_spatial_changes(state, parsed)
 
         # Dynamic new NPCs
         script_npc_ids = {n["id"] for n in self.script.get("npcs", []) if n.get("id")}
