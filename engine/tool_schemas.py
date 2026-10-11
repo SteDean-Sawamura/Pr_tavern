@@ -790,11 +790,11 @@ def _unified_tools() -> list[dict]:
         }},
         {"type": "function", "function": {
             "name": "consult_rules",
-            "description": "只读咨询当前分支规则。指定 category 可检索八类完整声明；story_nodes 默认返回 tree 元数据和完整 node。先用 view=runtime、node_status=active 分页发现当前节点与选项身份/可选性，再用定义视图 query=node_id 查规则，用 preview_choice_outcome 查后果。运行态不激活或结算节点，unlocked 不等于可提交。不指定类别时只检查 NPC 在场和物品持有。幕后信息不是角色已知。",
+            "description": "只读咨询当前分支规则。指定 category 可检索完整声明；locations 包含通行条件、阻止原因和默认房间，不揭示地点或执行移动。story_nodes 默认返回 tree 元数据和完整 node。先用 view=runtime、node_status=active 分页发现当前节点与选项身份/可选性，再用定义视图 query=node_id 查规则，用 preview_choice_outcome 查后果。运行态不激活或结算节点，unlocked 不等于可提交。不指定类别时只检查 NPC 在场和物品持有。幕后信息不是角色已知。",
             "parameters": {"type": "object", "properties": {
                 "question": {"type": "string", "description": "要咨询的问题"},
                 "context": {"type": "string", "description": "相关上下文"},
-                "category": {"type": "string", "enum": ["variables", "triggers", "random_items", "one_time_events", "cyclic_events", "persistent_states", "world_properties", "story_nodes"],
+                "category": {"type": "string", "enum": ["variables", "triggers", "random_items", "one_time_events", "cyclic_events", "persistent_states", "world_properties", "story_nodes", "locations"],
                              "description": "机制类别；指定后无需 question。每次最多返回5条，每条 content 最多2000字符"},
                 "view": {"type": "string", "enum": ["definition", "runtime"], "default": "definition",
                          "description": "runtime 仅用于 story_nodes，返回紧凑的节点身份、状态、choices 中的 choice_id/available/reason、已选项和计时/冷却信息；无规则正文。available 只检查激活和选项条件，不模拟效果。默认 definition 保持完整规则查询。切换视图须重新查列表，不能复用 snapshot"},

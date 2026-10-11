@@ -801,7 +801,7 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 新快照的机制恢复不依赖导演日志是否被裁剪；旧快照兼容仍保留的规则更新日志，但已被裁剪且从未保存的定义无法自动还原。`tests/test_mechanics_persistence.py` 验证变量边界、规则幂等、生命周期触发、SQLite 重载、分支往返和失败回滚；流式 harness 同时验证工具驱动的事件结算、动态机制保存与恢复。这些证据来自合成数据与假模型，不代表真实模型的剧本利用或长期叙事体验已验收。
 
-统一 Agent 的完整推演上下文只提示当前分支有哪些机制类别及其数量，不自动装入全部规则正文。计划阶段结束后，可通过 `consult_rules(category="variables", query="关键词")` 按需查询变量定义与现值；另支持 `world_properties`（世界属性及现值）、`triggers`（触发器）、`random_items`（随机项）、`one_time_events`（一次性事件）、`cyclic_events`（周期事件）、`persistent_states`（持续状态）、`story_nodes`（剧情节点）。事件预览只有简短提示，需核对完整条件、效果和规则说明时，可按事件或节点 ID 搜索对应类别，不必重复把规则写进世界书。不传 `category` 时保留原有 `question` 问答检查。
+统一 Agent 的完整推演上下文只提示当前分支有哪些机制类别及其数量，不自动装入全部规则正文。计划阶段结束后，可通过 `consult_rules(category="variables", query="关键词")` 按需查询变量定义与现值；另支持 `world_properties`（世界属性及现值）、`triggers`（触发器）、`random_items`（随机项）、`one_time_events`（一次性事件）、`cyclic_events`（周期事件）、`persistent_states`（持续状态）、`story_nodes`（剧情节点）、`locations`（地点完整声明）。事件预览只有简短提示，需核对完整条件、效果和规则说明时，可按事件、节点或地点 ID 搜索对应类别，不必重复把规则写进世界书。不传 `category` 时保留原有 `question` 问答检查。
 
 世界属性以剧本 `world_properties` 的精确 ID 声明为准；工具反馈、候选更新与最终结算均允许已声明的物件机制，或仅在 ID 中包含物件词的属性。未声明的物件属性仍被过滤，已有宏观属性更新方式保留。`consult_rules(category="world_properties")` 返回完整定义及当前分支已提交值，支持搜索、分页和长正文续读，不把候选更新当作已提交。世界属性更新引起的 `conditional_connections` 使用对应的候选或结算快照重新计算，不提前改动正式地图。`tests/test_world_property_declarations.py` 使用合成声明和假模型验证规则读取、条件事件、地图连接、流式回合、SQLite 重载、分支往返、请求重放和公开 trace 裁剪，不代表实际模型体验已验收。
 
@@ -814,6 +814,12 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 `npc_location_changes` 与 `room_changes`（含玩家房间）的候选投影和正式结算复用空间状态应用逻辑，普通属性路径显式覆盖 NPC 位置或房间时也同步清理日程派生标记。跨工具累计变更保持正式结算的类别顺序：普通属性、NPC 地点、房间；不是按每次调用逐步推进世界时间。非法地点、未知 NPC 和空房间更新仍按原规则忽略，不创建新实体。`tests/test_spatial_state_projection.py` 覆盖单次/分次更新、混合属性路径、派生位置、被排除记录、实际撤销后的资料重新锁定及重生成结算；两组完整合成流式回合读取声明中的地点和房间，验证候选资料解锁、正式事件、SQLite 重载、分支、重放和正文脱敏。离场 NPC 的空间信息仍不向玩家公开。本轮不扩展接触状态、场外 NPC 更新或日程推演；合成测试不代表真实模型或在线体验已验收。
 
 玩家 `location_change` 的候选投影与正式结算也复用移动逻辑：按正在结算的状态检查地点声明中的 `access_condition`，拒绝进入时保留原地点和房间；跨地点成功移动才重设 `default_room`，同地点保留房间，成功后清除旧的通行阻止信息。多次移动取最后一个通过地点发现校验的目的地，不把中间地点当作已经到达；既有的先揭示后移动校验顺序不变。变量、普通属性、持续状态和世界属性先于通行检查，专用 `inventory_changes` 仍在通行检查之后，显式 `room_changes` 最后应用。重生成和副本结算使用传入状态，不借用当前分支的门槛值。`tests/test_player_location_access.py` 用合成声明验证允许与拒绝进入、默认房间、累计更新、实际撤销、重生成结算，以及两组完整流式回合中的规则读取、候选资料、正式事件、SQLite 重载、分支往返、行动重放和正文脱敏；不代表真实模型、在线服务或完整重生成流式接口已验收。
+
+玩家移动或房间更新被接受后，工具反馈候选地点、房间和 `movement_status`：`blocked` 表示本次通行受阻，`ready` 仅表示候选可通行、不是已经抵达，`none` 表示无待处理移动，`not_applied` 表示请求未应用。反馈直接读取同一投影的有效目的地和结果，不另做一套通行模拟，不把基线中的旧拒绝信息当成新阻止。后续变量、普通属性、持续状态或世界属性更新会重算原待移动，无需再次提交 `location_change`；撤销和上下文压缩保留最新候选，不保留被撤销的成功或失败。候选不包含尚未结算的事件效果，也不等于主角已知。
+
+`consult_rules(category="locations", query="地点ID")` 可读取完整 `access_condition`、`access_blocked_reason`、`default_room` 和自定义声明，即使地点没有描述或尚未被玩家发现。查询只用于 Agent 核对规则，不揭示地点、不移动玩家、不结算效果，也不新增地点的 `runtime` 或 `include_candidates` 视图。长声明复用规则分页、字段读取和快照失效机制。空间反馈附带 `rule_query`，原因过长时用 `reason_truncated=true` 标记；可按条目快照和 `result_path=["definition", "access_blocked_reason"]` 完整续读。工具结果裁剪保留完整空间 JSON，必要时省略原因并标记；极小预算放不下身份字段时用 `feedback_omitted=true` 明确说明不可据此判断通行成功，而不是留下半截 JSON。
+
+`tests/test_player_spatial_feedback.py` 和 `tests/test_player_access_recovery.py` 使用合成声明与假模型，验证候选反馈、累计补条件、撤销、裁剪及规则续读，并以变量和世界属性两种门槛跑通“尝试受阻 → 根据反馈查询地点完整声明 → 读取声明指定的操作词条 → 补条件 → 原待移动可行 → 候选资料解锁 → 正式结算”。完整流式回合另检查 SQLite 重载、分支往返、请求重放与公开 SSE/trace 正文脱敏。已正式结算的拒绝原因仍可作为既有玩家提示，本轮不改变这一行为；合成测试不代表真实模型自主纠错、叙事质量或在线体验已验收。
 
 `story_nodes` 直接读取当前剧情树运行时已接受的定义，覆盖静态节点、当前分支动态节点及兼容转换的系统节点；不会旁路读取已被拒绝、未规范化或已离开分支的声明。每条 `definition` 含 `tree`（除节点列表外的树元数据）与 `node`（完整节点），保留前置、条件、选项、效果及作者自定义字段，不重复装入兄弟节点正文。这是现有引擎规则的只读视图，不是额外执行一次系统触发器或剧情效果的授权。
 

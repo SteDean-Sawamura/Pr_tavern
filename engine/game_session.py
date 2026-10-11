@@ -2193,14 +2193,16 @@ class GameSession(
         identifier = (state_id + state_name).lower()
         return any(pattern in identifier for pattern in self._REJECT_STATE_PATTERNS_TOOL)
 
-    def _project_state_tool_updates(self, updates: list[dict]) -> dict:
+    def _project_state_tool_updates(self, updates: list[dict], *, spatial_feedback: dict | None = None) -> dict:
         projected = copy.deepcopy(self.current_state)
         dirty_npc_ids: set[str] = set()
         resource_log = []
         spatial_changes = {"npc_location_changes": [], "room_changes": []}
         location_change = None
+        requested_location = None
         inventory_changes = []
         for update in updates:
+            requested_location = update.get("location_change") or requested_location
             parsed = self._merge_state_tool_results(self._explode_update_state(update), state=projected)
             if parsed.get("location_change"):
                 location_change = parsed["location_change"]
@@ -2277,6 +2279,22 @@ class GameSession(
                     inventory.remove(entry)
         self._apply_entity_spatial_changes(projected, spatial_changes)
         self._sync_dirty_npc_attitudes(projected, dirty_npc_ids)
+        if spatial_feedback is not None:
+            destination = location_change or requested_location
+            player = projected.get("player", {})
+            blocked = projected.get("location_access_blocked", {})
+            status = "not_applied" if destination else "none"
+            if location_change and self._can_use_location_id(projected, location_change):
+                status = "blocked" if blocked.get("location_id") == location_change else "ready"
+            spatial_feedback.update({
+                "requested_location_id": destination, "location_id": player.get("location", ""),
+                "room_id": player.get("current_room", ""), "movement_status": status,
+            })
+            if destination:
+                spatial_feedback["rule_query"] = {"category": "locations", "query": destination}
+            if status == "blocked":
+                reason = str(blocked.get("reason", ""))
+                spatial_feedback.update({"reason": reason[:500], "reason_truncated": len(reason) > 500})
         return projected
 
     def _validate_end_time(self, end_time: str, ctx: dict, location_change: str | None = None,

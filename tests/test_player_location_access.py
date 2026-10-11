@@ -222,6 +222,8 @@ async def test_undo_revokes_access_and_location_unlocked_lore():
     assert [entry["id"] for entry in before["entries"]] == ["test_notice"]
     assert before["projection"]["provisional"] is True
     assert results["synthetic-access-undo-3"].startswith("已撤销上一个工具调用（update_state）")
+    assert '"movement_status": "ready"' in results["synthetic-access-undo-1"]
+    assert '"movement_status": "none"' in results["synthetic-access-undo-3"]
     assert after["entries"] == []
     assert context.get("_accepted_state_updates", []) == []
     assert session.current_state == baseline

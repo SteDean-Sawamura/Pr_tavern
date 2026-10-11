@@ -257,16 +257,18 @@ def test_full_context_advertises_rules_without_dumping_private_definitions(monke
 
 def test_consult_rules_schema_exposes_structured_retrieval_and_keeps_legacy_queries():
     schema = next(tool["function"]["parameters"] for tool in _unified_tools() if tool["function"]["name"] == "consult_rules")
-    assert set(schema["properties"]["category"]["enum"]) == set(RULE_CATEGORIES) | {"story_nodes"}
+    assert set(schema["properties"]["category"]["enum"]) == set(RULE_CATEGORIES) | {"story_nodes", "locations"}
     assert {"query", "rule_index", "offset", "snapshot"} <= schema["properties"].keys()
     assert "question" not in schema.get("required", [])
     session, _ = make_session()
     assert json.loads(session._handle_consult_rules({"question": "有没有test token"}))["answers"] == ["持有 test token"]
 
 
-@pytest.mark.parametrize("category", RULE_CATEGORIES[3:])
+@pytest.mark.parametrize("category", RULE_CATEGORIES[3:] + ["locations"])
 def test_event_and_state_rules_support_search_pages_and_complete_rereads(category):
     session, _ = make_session()
+    if category == "locations":
+        session.script[category] = [{"id": "test_catalog", "default_room": "desk", "access_condition": "test_capacity >= 2"}]
     entries = session.script[category]
     entries.extend({
         **copy.deepcopy(entries[0]), "id": f"test_detail_{index}",

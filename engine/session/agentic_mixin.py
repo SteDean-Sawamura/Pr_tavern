@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _MODEL_WAIT_HEARTBEAT_SECONDS = 10
+_PLAYER_SPATIAL_FEEDBACK_LABEL = "玩家空间候选值（未提交，不含尚未结算的事件效果，非主角知情）: "
 _PRE_PLAN_READ_TOOLS = frozenset({
     "recall_history", "query_lorebook", "query_npc_history",
     "check_inventory", "get_npc_attitude", "peek_upcoming_events",
@@ -150,6 +151,28 @@ def _json_result_section(result: dict, result_path: list, offset: int, summary_k
 
 
 def _bounded_tool_content(content: str, name: str, limit: int) -> str:
+    if name in ("update_state", "undo_my_last_action", "write_narrative") and _PLAYER_SPATIAL_FEEDBACK_LABEL in content:
+        prefix, spatial_content = content.split(_PLAYER_SPATIAL_FEEDBACK_LABEL, 1)
+        try:
+            feedback, end = json.JSONDecoder().raw_decode(spatial_content)
+        except ValueError:
+            feedback = None
+        if isinstance(feedback, dict):
+            remainder = prefix + spatial_content[end:]
+            for omit_reason in (False, True):
+                if omit_reason and "reason" in feedback:
+                    feedback.update({"reason": "", "reason_truncated": True})
+                encoded = _PLAYER_SPATIAL_FEEDBACK_LABEL + json.dumps(feedback, ensure_ascii=False, separators=(",", ":"))
+                available = limit - len(encoded) - 1
+                if available < 160:
+                    continue
+                if len(remainder) <= available:
+                    return encoded + "\n" + remainder
+                if available >= 400:
+                    return encoded + "\n" + _bounded_tool_content(remainder, name, available)
+                return encoded + "\n[其余工具反馈已省略；按 rule_query 核对完整声明，不能把候选可通行当作已抵达]"
+            return (_PLAYER_SPATIAL_FEEDBACK_LABEL + '{"feedback_omitted":true}'
+                    + "；空间候选详情因预算不足已省略，不能据此判断通行成功；须重新核对候选状态和地点声明。")
     if name == "query_lorebook":
         try:
             result = json.loads(content)
@@ -553,7 +576,7 @@ class AgenticMixin:
                             latest_exact_lore_result = message
                             break
                     state_feedback_tools = ("update_state", "undo_my_last_action", "write_narrative")
-                    state_feedback_markers = ("变量候选值", "世界属性候选值", "本轮候选结算", "状态投影显示条件事件可能触发")
+                    state_feedback_markers = ("玩家空间候选值", "变量候选值", "世界属性候选值", "本轮候选结算", "状态投影显示条件事件可能触发")
                     state_results = [message for message in msgs
                                      if message.get("role") == "tool"
                                       and tool_names.get(message.get("tool_call_id")) in state_feedback_tools
@@ -2330,7 +2353,14 @@ class AgenticMixin:
         updates = ctx.get("_accepted_state_updates", [])
         variable_ids = list(ctx.get("_state_feedback_variable_ids", []))
         property_ids = list(ctx.get("_state_feedback_world_property_ids", []))
+        player_spatial = ctx.get("_state_feedback_player_spatial", False)
         for update in updates:
+            player_spatial = player_spatial or bool(
+                update.get("location_change")
+                or any(change.get("id") == "player" for change in update.get("room_changes", []))
+                or any(change.get("target") in ("player.location", "player.current_room")
+                       for change in update.get("state_changes", []))
+            )
             variable_ids.extend(change["id"] for change in update.get("state_changes", [])
                                 if change.get("type") == "variable")
             variable_ids.extend(change["id"] for change in update.get("variable_changes", []))
@@ -2340,9 +2370,18 @@ class AgenticMixin:
         property_ids = list(dict.fromkeys(property_ids))
         ctx["_state_feedback_variable_ids"] = variable_ids
         ctx["_state_feedback_world_property_ids"] = property_ids
+        ctx["_state_feedback_player_spatial"] = player_spatial
         result = ""
-        if variable_ids or property_ids:
-            projected_state = self._project_state_tool_updates(updates)
+        spatial = {} if player_spatial else None
+        if variable_ids or property_ids or player_spatial:
+            projected_state = self._project_state_tool_updates(updates, spatial_feedback=spatial)
+        if player_spatial:
+            result += (" | " + _PLAYER_SPATIAL_FEEDBACK_LABEL
+                       + json.dumps(spatial, ensure_ascii=False)
+                       + "；ready 仅表示当前候选可通行，不代表已抵达；blocked 表示本次通行受阻；"
+                         "none 表示无待处理移动，not_applied 表示移动未应用；"
+                         "可按 rule_query 查完整地点声明，reason_truncated=true 时须续读完整原因；"
+                         "补足条件后会重算原待移动，无需重复提交 location_change")
         if variable_ids:
             values = {variable_id: self.script_variables.get(projected_state, variable_id)
                       for variable_id in variable_ids}
@@ -5343,6 +5382,7 @@ class AgenticMixin:
             "cyclic_events": self.script.get("cyclic_events", []),
             "persistent_states": self.script.get("persistent_states", []),
             "world_properties": self.script.get("world_properties", []),
+            "locations": self.script.get("locations", []),
             "story_nodes": [
                 {"tree": {key: value for key, value in tree.items() if key != "nodes"}, "node": node}
                 for tree in (self.story_tree_engine.trees if self.story_tree_engine else [])
