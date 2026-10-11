@@ -17,12 +17,13 @@ from test_agent_rule_context import model_call
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("compact_after_search", [False, True])
 @pytest.mark.parametrize("value,subject,topic", [
     (4, "synthetic_archive", "filing"),
     (9, "合成资料索引", "存放"),
 ])
 async def test_focused_current_message_chain_settles_and_restores_without_collecting_body(
-    tmp_path, monkeypatch, value, subject, topic,
+    tmp_path, monkeypatch, value, subject, topic, compact_after_search,
 ):
     declaration_id = f"test_focus_declaration_{value}"
     filler = "SYNTHETIC_FOCUS_BODY unrelated inventory record.\n" * 1000
@@ -30,6 +31,8 @@ async def test_focused_current_message_chain_settles_and_restores_without_collec
     content += f"{subject} {topic}: relevant procedure.\n" + "Synthetic section detail.\n" * 24
     content += f"FOLLOW_UP_ENTRY={declaration_id}\n" + "Synthetic appendix.\n" * 100
     assert len(content) > 60000
+    noise_entries = [{"id": f"test_noise_{index}", "keys": [f"test_noise_{index}"], "visibility": "hidden",
+                      "content": "SYNTHETIC_COMPACTION_NOISE " * 120} for index in range(18)] if compact_after_search else []
     session = GameSession({
         "script_id": "synthetic-lore-focus", "name": "Synthetic lore focus", "settings": {},
         "variables": [{"id": "test_counter", "type": "number", "default": 0}],
@@ -39,7 +42,7 @@ async def test_focused_current_message_chain_settles_and_restores_without_collec
             {"id": declaration_id, "keys": [declaration_id], "visibility": "hidden", "content": json.dumps({
                 "variable_changes": [{"id": "test_counter", "op": "inc", "value": value}],
             })},
-        ],
+        ] + noise_entries,
     }, None)
     session.save_id = "synthetic-lore-focus-save"
     session.current_state = {
@@ -69,10 +72,23 @@ async def test_focused_current_message_chain_settles_and_restores_without_collec
             user_text = "\n".join(message["content"] for message in messages if message["role"] == "user")
             keyword = re.search(r"SEARCH_TERMS=([^\n]+)", user_text).group(1).strip()
             name, arguments, call_id = "query_lorebook", {"keyword": keyword}, "test_focus_search"
-        elif previous["tool_call_id"] == "test_focus_search":
-            entry, = json.loads(previous["content"])["entries"]
+        elif previous["tool_call_id"] == "test_focus_search" and compact_after_search:
+            return {"content": "", "tool_calls": [model_call("query_lorebook", {
+                "entry_ids": [f"test_noise_{index}" for index in range(start, start + 3)],
+            }, f"test_focus_noise_{start // 3}") for start in range(0, 18, 3)]}
+        elif previous["tool_call_id"] in {"test_focus_search", "test_focus_noise_5"}:
+            if previous["tool_call_id"] == "test_focus_noise_5":
+                assert not any(message.get("tool_call_id") == "test_focus_search" for message in messages)
+                prefix = "[世界书搜索进度] "
+                progress, = [json.loads(line.removeprefix(prefix)) for message in messages
+                             if message["role"] == "user" for line in message["content"].splitlines()
+                             if line.startswith(prefix)]
+                entry, = progress["entries"]
+                assert progress["content_omitted"] is True and "content" not in entry
+            else:
+                entry, = json.loads(previous["content"])["entries"]
             assert entry["offset"] > 40000 and entry["total_length"] > 2 * budget
-            assert "FOLLOW_UP_ENTRY=" not in entry["content"]
+            assert "FOLLOW_UP_ENTRY=" not in entry.get("content", "")
             name, call_id = "query_lorebook", "test_focus_read"
             arguments = {"entry_id": entry["id"], "offset": entry["offset"], "snapshot": entry["snapshot"]}
         elif previous["tool_call_id"] == "test_focus_read":
@@ -136,7 +152,7 @@ async def test_focused_current_message_chain_settles_and_restores_without_collec
                       if line.startswith("data: ") and line != "data: [DONE]"]
             assert not [event for event in events if event["type"] in {"error", "aborted", "agent_max_rounds"}], events
             final, = [event for event in events if event["type"] == "final"]
-            assert final["narrative"] == narrative and len(requests) == 7
+            assert final["narrative"] == narrative and len(requests) == 7 + int(compact_after_search)
             assert session.current_state["script_variables"]["test_counter"] == value
             observed = {message["tool_call_id"]: json.loads(message["content"])
                         for messages in requests for message in messages
@@ -146,6 +162,7 @@ async def test_focused_current_message_chain_settles_and_restores_without_collec
             assert sum(len(entry["content"]) for entry in entries) < 3000
             assert "FOLLOW_UP_ENTRY=" in json.dumps(requests)
             assert "FOLLOW_UP_ENTRY=" not in response.text and "SYNTHETIC_FOCUS_BODY" not in response.text
+            assert "SYNTHETIC_COMPACTION_NOISE" not in response.text
             assert all(entry["snapshot"] not in response.text for entry in entries)
             await session._drain_background_tasks()
             calls = provider.generate_with_tools.await_count
@@ -158,6 +175,7 @@ async def test_focused_current_message_chain_settles_and_restores_without_collec
             trace = restored.world_tree.get_node(final["node_id"])["agent_trace"]
             assert sum(record["tool"] == "update_state" for record in trace["rounds"]) == 1
             assert "FOLLOW_UP_ENTRY=" not in json.dumps(trace) and "SYNTHETIC_FOCUS_BODY" not in json.dumps(trace)
+            assert "SYNTHETIC_COMPACTION_NOISE" not in json.dumps(trace)
             assert all(entry["snapshot"] not in json.dumps(trace) for entry in entries)
             await restored.branch_to_node(root_id)
             assert restored.current_state["script_variables"]["test_counter"] == 0

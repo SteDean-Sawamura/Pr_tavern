@@ -582,7 +582,19 @@ class AgenticMixin:
                                     and not _tool_result_failed(tool_result)):
                                 summary_parts.append("[世界书搜索进度] " + json.dumps({
                                     "query": lore_queries.get(m.get("tool_call_id"), {}),
-                                    **{key: tool_result[key] for key in ("snapshot", "next_page", "total_matches") if key in tool_result},
+                                    **{key: tool_result[key] for key in (
+                                        "snapshot", "next_page", "total_matches", "approximate", "projection",
+                                    ) if key in tool_result},
+                                    "entries": [
+                                        {key: entry[key] for key in (
+                                            "id", "snapshot", "offset", "next_offset", "total_length", "truncated", "visibility", "related_entries",
+                                        ) if key in entry}
+                                        for entry in entries if isinstance(entry, dict)
+                                    ] if isinstance(entries, list) else [],
+                                    "content_omitted": True,
+                                    "notice": "正文已省略；条目 offset 是搜索定位，不是完整阅读进度；按 entry_id、该 offset 和条目 snapshot 重读定位段，"
+                                              "完整阅读须从 offset=0 开始。保留当前候选视图；快照失效按 query 从 page=0 重查，不携带旧 snapshot。"
+                                              "资料仅供推演，非角色已知。",
                                 }, ensure_ascii=False))
                             if lore_arguments and isinstance(entries, list) and not _tool_result_failed(tool_result):
                                 requested_ids = lore_arguments.get("entry_ids") or [lore_arguments["entry_id"]]
