@@ -509,12 +509,18 @@ class EventEngine:
         self, state: dict, es: dict,
         old_time: str, new_time: str,
         condition_eval: Callable | None,
+        *, condition_eval_at_time: Callable[[str, str], bool] | None = None,
     ) -> EventResult:
         result = EventResult()
         t_old = _parse_time(old_time)
         t_new = _parse_time(new_time)
         if not t_old or not t_new or t_new <= t_old:
             return result
+
+        def matches_at(condition, fire_time):
+            if condition_eval_at_time is not None:
+                return condition_eval_at_time(fire_time.isoformat(), condition)
+            return condition_eval is None or condition_eval(condition)
 
         for eid, ev in list(self.events.items()):
             if ev.category != "scheduled":
@@ -543,7 +549,7 @@ class EventEngine:
                 while next_fire and next_fire <= effective_end and iterations < 1000:
                     iterations += 1
                     if next_fire >= t_old:
-                        if condition_eval is not None and not condition_eval(ev.condition):
+                        if not matches_at(ev.condition, next_fire):
                             prev = next_fire
                             next_fire = _advance_time(next_fire, freq_val, freq_unit)
                             if next_fire and next_fire <= prev:
@@ -572,7 +578,7 @@ class EventEngine:
                     continue
                 trigger = _parse_time(ev.trigger_time)
                 if trigger and t_old <= trigger <= t_new:
-                    if condition_eval is not None and not condition_eval(ev.condition):
+                    if not matches_at(ev.condition, trigger):
                         continue
                     result.scheduled_events.append({
                         "type": "one_time", "event_id": eid,

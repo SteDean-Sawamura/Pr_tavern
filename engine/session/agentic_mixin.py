@@ -14,6 +14,7 @@ import asyncio
 import base64
 import copy
 from difflib import SequenceMatcher
+from functools import partial
 import hashlib
 import json
 import logging
@@ -4889,6 +4890,7 @@ class AgenticMixin:
                     firing = [event for event in self.event_engine._tick_scheduled(
                         self.current_state, self.current_state.setdefault("events", {}),
                         start_time, fire_time, self._evaluate_condition,
+                        condition_eval_at_time=self._evaluate_condition_at_time,
                     ).scheduled_events if event["fire_time"] == fire_time]
                     if not firing:
                         break
@@ -4929,7 +4931,7 @@ class AgenticMixin:
                                     self._persist_mechanics_runtime()
                         trigger_actions = self.trigger_engine.fire(
                             event["event_id"], self.current_state,
-                            condition_eval=self._evaluate_condition,
+                            condition_eval=partial(self._evaluate_condition_at_time, event["fire_time"]),
                         )
                         if trigger_actions:
                             trigger_effects = self.trigger_engine.execute_actions(

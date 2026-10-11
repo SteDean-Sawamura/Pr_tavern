@@ -931,6 +931,10 @@ class PrepareMixin:
 
         self.current_state["active_tone"] = tone_parts if tone_parts else []
 
+    def _evaluate_condition_at_time(self, game_time: str, condition: str, state: dict | None = None) -> bool:
+        state = self.current_state if state is None else state
+        return self._evaluate_condition(condition, {**state, "game_time": game_time})
+
     def _evaluate_condition(self, condition: str, state: dict | None = None) -> bool:
         """Evaluate a simple condition string against the supplied or current state.
 

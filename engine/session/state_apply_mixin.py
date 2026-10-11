@@ -8,6 +8,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta
+from functools import partial
 from itertools import chain
 
 from typing import TYPE_CHECKING
@@ -690,12 +691,14 @@ class StateApplyMixin:
                 segment = self.event_engine._tick_scheduled(
                     self.current_state, self.current_state.setdefault("events", {}),
                     segment_start, fire_time, self._evaluate_condition,
+                    condition_eval_at_time=self._evaluate_condition_at_time,
                 )
                 scheduled_result.merge(segment)
                 if not segment.scheduled_events:
                     break
                 for evt in segment.scheduled_events:
                     event_id = evt["event_id"]
+                    event_condition = partial(self._evaluate_condition_at_time, evt["fire_time"])
                     if on_event:
                         on_event(event_id)
                     event_def = self._event_def_by_id.get(event_id)
@@ -724,7 +727,7 @@ class StateApplyMixin:
                             if len(network) > 30:
                                 self.current_state["information_network"] = network[-30:]
                     trigger_actions = self.trigger_engine.fire(
-                        event_id, self.current_state, condition_eval=self._evaluate_condition,
+                        event_id, self.current_state, condition_eval=event_condition,
                     )
                     if trigger_actions:
                         trigger_effects = self.trigger_engine.execute_actions(
@@ -737,12 +740,12 @@ class StateApplyMixin:
                     if isinstance(event_def, dict) and self.story_tree_engine:
                         self.story_tree_engine.fire_event(
                             f"event.{event_id}", self.current_state,
-                            condition_eval=self._evaluate_condition,
+                            condition_eval=event_condition,
                         )
                         for fire_event in event_def.get("fire_events", []):
                             self.story_tree_engine.fire_event(
                                 fire_event, self.current_state,
-                                condition_eval=self._evaluate_condition,
+                                condition_eval=event_condition,
                             )
                 fired_events.extend(segment.scheduled_events)
                 segment_start = (boundary - timedelta(microseconds=1)).isoformat()
