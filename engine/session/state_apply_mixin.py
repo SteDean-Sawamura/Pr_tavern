@@ -287,7 +287,7 @@ class StateApplyMixin:
         )
         self.current_state["game_time"] = new_time
         if hasattr(self, 'npc_autonomy'):
-            self.npc_autonomy.tick(new_time, self.current_state)
+            self.npc_autonomy.tick(new_time, self.current_state, resolve_npc=self._get_npc_autonomy_info)
 
         # G3: 世界时钟推进 — NPC 后台日程事件
         if ctx.get("old_time") and new_time and hasattr(self, 'world_clock'):

@@ -256,6 +256,12 @@ class GameSession(
             model = routes.get(stage)
         return {"model": model} if model else {}
 
+    def _restore_npc_autonomy_from_state(self):
+        self.npc_autonomy = NPCAutonomy.from_snapshot(
+            self.script.get("npcs", []), self.script.get("locations", []),
+            copy.deepcopy(self.current_state.get("_npc_autonomy") or {}),
+        )
+
     def _restore_session_models_from_state(self):
         """Restore narrative_graph and player_model from current_state snapshot."""
         ng_data = self.current_state.pop("_narrative_graph", None)
@@ -264,11 +270,8 @@ class GameSession(
         pm_data = self.current_state.pop("_player_model", None)
         if pm_data:
             self.player_model = PlayerModel.from_snapshot(pm_data)
-        na_data = self.current_state.pop("_npc_autonomy", None)
-        if na_data:
-            self.npc_autonomy = NPCAutonomy.from_snapshot(
-                self.script.get("npcs", []), self.script.get("locations", []), na_data
-            )
+        self._restore_npc_autonomy_from_state()
+        self.current_state.pop("_npc_autonomy", None)
         dn_data = self.current_state.pop("_director_notes", None)
         if dn_data:
             self.director_notes = DirectorNotes.from_snapshot(dn_data)
@@ -3274,6 +3277,14 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
         if npc_def:
             return npc_def.get("default_location", npc_def.get("initial_location", ""))
         return ""
+
+    def _get_npc_autonomy_info(self, npc_id: str, state: dict) -> dict:
+        location = self._get_npc_location(npc_id, state)
+        if not location:
+            return {}
+        info = self.prompt_builder.get_npc_current_info(npc_id, state.get("game_time", ""), state=state)
+        activity = info.get("activity", "") if info and info.get("location") == location else ""
+        return {"location": location, "activity": activity}
 
     def _ensure_rooms_initialized(self, state: dict | None = None):
         """刷新日程推断的房间，保留显式指定的房间。"""

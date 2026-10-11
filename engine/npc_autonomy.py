@@ -11,39 +11,22 @@ class NPCAutonomy:
         self.locations = {l["id"]: l for l in script_locations}
         self.npc_states = {}  # npc_id → {location, activity, mood, last_updated}
 
-    def tick(self, game_time: str, current_state: dict) -> list[dict]:
+    def tick(self, game_time: str, current_state: dict, *, resolve_npc) -> list[dict]:
         """每轮推进 NPC 的自主行为。返回行为事件列表。"""
         events = []
         try:
-            current_dt = datetime.fromisoformat(game_time.replace("Z", "+00:00"))
+            datetime.fromisoformat(game_time.replace("Z", "+00:00"))
         except Exception:
             return events
 
-        hour = current_dt.hour
-
+        query_state = {**current_state, "game_time": game_time}
         for npc_id, npc_data in self.npcs.items():
-            schedule = npc_data.get("schedule", [])
-            if not schedule:
+            resolved = resolve_npc(npc_id, query_state)
+            current_location = resolved.get("location", "")
+            if not current_location:
+                self.npc_states.pop(npc_id, None)
                 continue
-
-            # 找到当前时间段的活动
-            current_activity = None
-            current_location = npc_data.get("default_location", "")
-            for slot in schedule:
-                time_range = slot.get("time_range", "")
-                if "-" not in time_range:
-                    continue
-                start_str, end_str = time_range.split("-")
-                try:
-                    start_h = int(start_str.split(":")[0])
-                    end_h = int(end_str.split(":")[0])
-                    if start_h <= hour < end_h:
-                        current_activity = slot.get("activity", "")
-                        current_location = slot.get("location", current_location)
-                        break
-                except ValueError:
-                    continue
-
+            current_activity = resolved.get("activity", "")
             old_state = self.npc_states.get(npc_id, {})
             new_state = {
                 "location": current_location,
@@ -53,7 +36,7 @@ class NPCAutonomy:
             }
 
             # 检测变化
-            if old_state.get("location") != current_location:
+            if old_state.get("location") and old_state["location"] != current_location:
                 events.append({
                     "type": "npc_move",
                     "npc_id": npc_id,

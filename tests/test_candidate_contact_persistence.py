@@ -54,6 +54,7 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
                      and str(message.get("tool_call_id", "")).startswith("synthetic-contact-")]
         index = len(completed)
         if index == 0:
+            assert "<npc_movements>" not in json.dumps(messages, ensure_ascii=False)
             name, arguments = "submit_plan", {"plan": "Check the guide before attempting an introduction."}
         elif index == 1:
             name, arguments = "update_state", copy.deepcopy(CONTACT)
@@ -99,6 +100,7 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
     )
     session.ai_provider = provider
     baseline = copy.deepcopy(session.current_state)
+    initial_autonomy = copy.deepcopy(session.npc_autonomy.snapshot())
     root_id = session.world_tree.add_node(None, script["start_time"], 0,
                                          ai_response="You are seated at the practice area.", state_snapshot=baseline)
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "candidate-contact.db")
@@ -133,6 +135,7 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
                     assert current._npc_contact_is_current("test_guide", current.current_state) is expected_contact
                     assert current.current_state["npcs"]["test_guide"]["met"] is expected_contact
                     assert current.world_tree.active_node_id != root_id
+                    assert current.npc_autonomy.get_npc_status("test_guide")["location"] == current._get_npc_location("test_guide")
                     save_failures.append(action_id)
                     raise RuntimeError("Synthetic contact save interruption")
 
@@ -142,6 +145,7 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
                 assert error["discard_partial"] is True
                 assert save_failures == [action["action_id"]]
                 assert session.current_state == baseline
+                assert session.npc_autonomy.snapshot() == initial_autonomy
                 assert session.world_tree.active_node_id == root_id
                 requests.clear()
                 monkeypatch.setattr(game_routes, "_save_node", save_node)
@@ -154,17 +158,27 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
             assert session._npc_contact_is_current("test_guide", session.current_state) is expected_contact
             assert session.current_state["npcs"]["test_guide"]["met"] is expected_contact
             settled = copy.deepcopy(session.current_state)
+            autonomy = copy.deepcopy(session.npc_autonomy.snapshot())
+            assert autonomy["npc_states"]["test_guide"]["location"] == session._get_npc_location("test_guide")
+            assert settled["_npc_autonomy"] == autonomy
             if gate:
                 assert settled["npc_schedule_overrides"]["test_guide"][0]["condition"] == gate
                 assert "test_shift" in settled["fired_one_time_events"]
             calls = provider.generate_with_tools.await_count
             assert (await client.post(endpoint, json=action)).text == response.text
             assert provider.generate_with_tools.await_count == calls and session.current_state == settled
+            assert session.npc_autonomy.snapshot() == autonomy
             game_routes._sessions.clear()
             restored = await game_routes._restore_session(session.save_id)
             assert restored is not None and restored is not session
             sessions.append(restored)
             assert restored.current_state == settled
+            assert restored.npc_autonomy.snapshot() == autonomy
+            assert restored.npc_autonomy.npc_states is not restored.current_state["_npc_autonomy"]["npc_states"]
+            inspect_action = {"type": "system", "text": "Inspect the saved position."}
+            context = restored._prepare_turn(inspect_action)
+            assert context["npc_autonomy_events"] == []
+            assert "<npc_movements>" not in restored._build_unified_context(context, inspect_action)
             assert consult_contacts(restored)["contacts"]["test_guide"]["in_contact"] is expected_contact
             game_routes._sessions[session.save_id] = restored
             node = await game_routes.get_tree_node(session.save_id, final["node_id"])
@@ -173,9 +187,12 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
                 assert marker not in response.text
                 assert marker not in json.dumps(node["agent_trace"], ensure_ascii=False)
             await restored.branch_to_node(root_id)
+            assert restored.npc_autonomy.snapshot() == initial_autonomy
             assert consult_contacts(restored)["contacts"]["test_guide"]["in_contact"] is False
             assert restored.current_state["npcs"]["test_guide"]["met"] is False
             await restored.branch_to_node(final["node_id"])
+            assert restored.npc_autonomy.snapshot() == autonomy
+            assert restored._prepare_turn(inspect_action)["npc_autonomy_events"] == []
             assert consult_contacts(restored)["contacts"]["test_guide"]["in_contact"] is expected_contact
             assert restored.current_state["npcs"]["test_guide"]["met"] is expected_contact
         async with database.get_db() as db:

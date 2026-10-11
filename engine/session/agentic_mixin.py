@@ -3753,8 +3753,9 @@ class AgenticMixin:
         # C1: NPC 自主行为事件
         npc_events = ctx.get("npc_autonomy_events", [])
         if npc_events:
-            event_lines = [f"- {e['npc_name']}移动到{e['to']}（{e.get('activity', '')}）" for e in npc_events[:5]]
-            parts.append("<npc_movements>\n" + "\n".join(event_lines) + "\n</npc_movements>")
+            event_lines = [f"- {e['npc_name']}位置由{e['from']}变为{e['to']}（{e.get('activity', '')}）" for e in npc_events[:5]]
+            parts.append("<npc_movements>\n按当前状态与日程核对的位置变化；不代表目击移动或主角知情。\n"
+                         + "\n".join(event_lines) + "\n</npc_movements>")
 
         candidate_npc_events = ctx.get("candidate_npc_autonomy_events", [])
         if candidate_npc_events:

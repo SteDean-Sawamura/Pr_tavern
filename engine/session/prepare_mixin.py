@@ -371,10 +371,12 @@ class PrepareMixin:
         npc_autonomy_events = []
         candidate_npc_autonomy_events = []
         if hasattr(self, 'npc_autonomy'):
-            npc_autonomy_events = self.npc_autonomy.tick(old_time, self.current_state)
+            npc_autonomy_events = self.npc_autonomy.tick(
+                old_time, self.current_state, resolve_npc=self._get_npc_autonomy_info,
+            )
             if new_time != old_time:
                 candidate_npc_autonomy_events = copy.deepcopy(self.npc_autonomy).tick(
-                    new_time, self.current_state,
+                    new_time, self.current_state, resolve_npc=self._get_npc_autonomy_info,
                 )
 
         # Roll dice

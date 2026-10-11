@@ -3733,6 +3733,7 @@ async def _restore_session(save_id: str) -> GameSession | None:
             session._restore_dynamic_story()
 
         session._hydrate_branch_runtime(session.current_state)
+        session._restore_npc_autonomy_from_state()
 
         # Re-index lorebook entries to VectorMemory (collection may be stale or missing)
         if session.vector_memory:
