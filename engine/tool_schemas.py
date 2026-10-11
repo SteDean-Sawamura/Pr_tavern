@@ -836,11 +836,14 @@ def _unified_tools() -> list[dict]:
         }},
         {"type": "function", "function": {
             "name": "preview_choice_outcome",
-            "description": "预估选项风险供 GM 内部参考；不得预告 NPC 回应或确定结果，不得把预演后果写入玩家 hint",
+            "description": "GM 内部只读预检：用 consult_rules 的 story_nodes 声明中的 node_id、choice_id 检查当前激活节点的选择条件和待执行效果；可查看本轮候选状态，不运行效果或后续事件结算。无节点ID时只按 choice_text 粗略估计风险。不得预告 NPC 回应或确定结果，不得把预演后果写入玩家 hint。",
             "parameters": {"type": "object", "properties": {
-                "choice_text": {"type": "string", "description": "选项文本"},
+                "node_id": {"type": "string", "description": "当前分支剧情树选择节点ID；与 choice_id 同时提供"},
+                "choice_id": {"type": "string", "description": "节点中已声明的选项ID；不是面向玩家的生成选项ID"},
+                "include_candidates": {"type": "boolean", "description": "仅声明预检：使用本轮已接收但未提交的 update_state 候选，不含未结算事件效果", "default": False},
+                "choice_text": {"type": "string", "description": "无节点ID时用于旧式粗略风险估计的文本；不会执行剧本声明"},
                 "context": {"type": "string", "description": "当前场景摘要"},
-            }, "required": ["choice_text"]},
+            }},
         }},
         {"type": "function", "function": {
             "name": "read_director_notes",

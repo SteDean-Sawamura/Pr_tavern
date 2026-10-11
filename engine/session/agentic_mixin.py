@@ -19,7 +19,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from uuid import uuid4
 
 from typing import TYPE_CHECKING, Callable
@@ -134,6 +134,26 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
             return json.dumps({
                 "truncated": True, "metadata_omitted": True,
                 "notice": "正文与坐标省略；按原查询类别和候选视图从 offset=0 重查列表，不传 rule_index/snapshot，再携带新快照重读。非已发生或角色已知。",
+            }, ensure_ascii=False, separators=(",", ":"))
+    if name == "preview_choice_outcome":
+        try:
+            result = json.loads(content)
+        except ValueError:
+            result = None
+        if isinstance(result, dict) and result.get("mode") == "declared_choice":
+            preview = {key: result[key] for key in (
+                "mode", "source", "node_id", "choice_id", "available", "projection", "reason", "condition_error",
+            ) if key in result}
+            preview.update(content_omitted=True, notice=(
+                "待执行效果正文已省略，不表示没有效果或已经执行；"
+                "用 consult_rules(category=story_nodes) 按节点ID完整读取声明；状态变化后重新预检。"
+            ))
+            encoded = json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
+            if len(encoded) <= limit:
+                return encoded
+            return json.dumps({
+                "content_omitted": True, "metadata_omitted": True,
+                "notice": "预检结果过长已省略；不是空效果或已结算。按原参数重查，并用 consult_rules 读取声明。",
             }, ensure_ascii=False, separators=(",", ":"))
     if name == "read_director_notes":
         try:
@@ -4344,7 +4364,13 @@ class AgenticMixin:
 
         # --- C3 分支预演 ---
         if name == "preview_choice_outcome":
+            if any(key in args for key in ("node_id", "choice_id")):
+                return self._preview_declared_choice(args, ctx)
+            if args.get("include_candidates", False) is not False:
+                return json.dumps({"error": "候选视图仅支持同时提供 node_id 和 choice_id 的声明预检"}, ensure_ascii=False)
             choice = args.get("choice_text", "")
+            if not isinstance(choice, str) or not choice.strip():
+                return json.dumps({"error": "请提供 node_id 和 choice_id，或非空 choice_text"}, ensure_ascii=False)
             # 规则推测风险
             risk_words = {"冒险": "risky", "直接": "moderate", "等待": "safe", "观察": "safe",
                           "追": "risky", "逃": "moderate", "询问": "moderate", "忽略": "safe"}
@@ -4395,6 +4421,55 @@ class AgenticMixin:
             return json.dumps(result, ensure_ascii=False)
 
         return json.dumps({"error": f"未知工具: {name}"})
+
+    def _preview_declared_choice(self, args: dict, ctx: dict) -> str:
+        node_id, choice_id = args.get("node_id"), args.get("choice_id")
+        if not all(isinstance(value, str) and value.strip() for value in (node_id, choice_id)):
+            return json.dumps({"error": "node_id 和 choice_id 必须同时提供非空字符串"}, ensure_ascii=False)
+        include_candidates = args.get("include_candidates", False)
+        if type(include_candidates) is not bool:
+            return json.dumps({"error": "include_candidates 必须是布尔值"}, ensure_ascii=False)
+        if include_candidates and not ctx.get("old_time"):
+            return json.dumps({"error": "候选预检仅支持进行中的回合"}, ensure_ascii=False)
+        engine = self.story_tree_engine
+        node = engine._nodes.get(node_id) if engine else None
+        if node is None or node.get("type") != "choice":
+            return json.dumps({"error": "当前分支没有此剧情树选择节点；请用 consult_rules 查询 story_nodes"}, ensure_ascii=False)
+        choice = next((item for item in node.get("choices", []) if item.get("id") == choice_id), None)
+        if choice is None:
+            return json.dumps({"error": "此节点没有该 choice_id；请重新读取当前分支的 story_nodes 声明"}, ensure_ascii=False)
+
+        state = (self._project_state_tool_updates(ctx.get("_accepted_state_updates", []))
+                 if include_candidates else copy.deepcopy(self.current_state))
+        story_state = state.get("story_tree_state", {})
+        was_active = node_id in story_state.get("active", [])
+        previously_unlocked = set(story_state.get("unlocked", []))
+        result = copy.deepcopy(engine).make_choice(
+            state, node_id, choice_id, lambda condition: self._evaluate_condition(condition, state),
+        )
+        available = bool(result.newly_completed)
+        response = {
+            "mode": "declared_choice", "source": "runtime_story_tree",
+            "node_id": node_id, "choice_id": choice_id, "available": available,
+            "projection": {
+                "state_view": "candidate" if include_candidates else "committed",
+                "effects_applied": False, "excludes_unsettled_events": True,
+            },
+            "completed": [entry["id"] for entry in result.newly_completed],
+            "unlocked": sorted(set(state["story_tree_state"].get("unlocked", [])) - previously_unlocked),
+            "pending_effects": {
+                key: value for key, value in asdict(result).items()
+                if value and key not in {"newly_completed", "newly_active"}
+            },
+            "note": "仅预检当前激活剧情树节点的选择条件与声明效果；未执行效果、词条写入或后续事件结算。"
+                    "不是最终状态、NPC回应或玩家已知信息；不得写入玩家 hint。状态变化后须重新预检。",
+        }
+        if not available:
+            response["reason"] = "node_not_active" if not was_active else "condition_not_met"
+        error = condition_error(choice.get("condition", ""))
+        if error:
+            response["condition_error"] = error
+        return json.dumps(response, ensure_ascii=False)
 
     def _projected_events(self, ctx: dict, *, with_state: bool = False,
                           base_state: dict | None = None) -> list[dict] | tuple[list[dict], dict]:

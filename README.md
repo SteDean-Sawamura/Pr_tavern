@@ -841,6 +841,14 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 `tests/test_agent_variable_updates.py` 验证字段契约、边界与零增量、类型校验、错误恢复、投影和结算一致性、最终提交修订回滚及分支定义隔离。流式 harness 通过假模型和临时 SQLite 验证规则读取、变量操作、撤销、错误恢复、条件事件、重放去重、保存恢复和分支往返；不调用外部模型、不包含真实剧本，也不代表实际推演流畅性或叙事质量已验收。
 
+### 声明式选择预检
+
+计划提交后，GM 可以先用 `consult_rules(category="story_nodes")` 读取当前分支的节点与选项身份，再调用 `preview_choice_outcome(node_id="test_decision", choice_id="test_open")`。预检使用剧情树运行时定义与现有 `make_choice` 条件判定，在副本上检查当前激活的选择节点；不按选项文本猜测声明效果，也不执行真实选择。`include_candidates=true` 仅在进行中的回合可用，使用累计接收但未提交的 `update_state` 候选，不包含未结算事件效果，不会提前激活仍待决的节点。
+
+结果包括 `available`、未满足原因、直接完成/解锁的节点ID及 `pending_effects`。`projection.effects_applied=false` 明确表示这些效果尚未应用：变量效果、词条变更、事件派发和后续生命周期结算仍未执行，因此不是最终状态差异，也不预测 NPC 回应、随机后续或玩家已知信息。此阶段只预检 `story_nodes` 的剧情树声明，不承诺独立 EventEngine 选择 API 的最终结算结果；影子事件引擎不会参与本次预检。状态更新、撤销或切换分支后必须重查，不复用旧结果。超长结果裁剪时明确标记正文省略，不能把省略误认为没有待执行效果。
+
+只提供 `choice_text` 时保留旧式粗略风险估计；节点身份不完整或失效会返回错误，不静默降级为文本猜测。预检是只读工具，不覆盖最近一次可撤销操作，结果不应进入玩家 hint。`tests/test_declared_choice_preview.py` 使用合成声明、假模型及隔离 SQLite，覆盖两组声明门槛、候选/已提交值隔离、撤销、故障时对象保持不变、剧情树结算结果一致性、流式调用、持久化重载、分支往返、请求重放与公开 SSE/trace 脱敏。这些证据不代表完整候选结算、真实模型自主推演或在线体验已验收。
+
 ### 声明式条件一致性
 
 布尔变量可在规则中使用 `script_variables.test_ready == true` 或 `!= false`；布尔字面量不区分大小写，并兼容 `1/0`、`yes/no` 和带引号的写法。归一化仅作用于实际布尔值，不会把字符串变量中的 `"true"` 当作布尔值，也不会把无法识别的布尔字面量当作 false。节点完成、里程碑与事件完成条件同样拒绝未知布尔字面量。
