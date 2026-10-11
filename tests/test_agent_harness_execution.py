@@ -217,8 +217,9 @@ async def test_condition_lifecycle_reaches_next_turn_agent(tmp_path, monkeypatch
 @pytest.mark.parametrize("lore_effect", ["activate_lore", "add_lore", "update_lore"])
 @pytest.mark.parametrize("compact_history", [False, True])
 @pytest.mark.parametrize("interjection_phase", ["model", "tool"])
+@pytest.mark.parametrize("chained_mechanics", [False, True])
 async def test_retrieval_settlement_stream_and_reload(
-    tmp_path, monkeypatch, lore_effect, compact_history, interjection_phase,
+    tmp_path, monkeypatch, lore_effect, compact_history, interjection_phase, chained_mechanics,
 ):
     script = {
         "script_id": "synthetic-harness", "name": "Synthetic harness", "settings": {},
@@ -283,6 +284,26 @@ async def test_retrieval_settlement_stream_and_reload(
         script["one_time_events"][0]["effects"].append({"type": "add_trigger", "trigger": {
             "id": f"test_after_{action_name}", "event": "after_ai", "action": action_name, "params": params,
         }})
+
+    expected_events = ["test_arrival"]
+    if chained_mechanics:
+        arrival_effects = script["one_time_events"][0]["effects"]
+        label_effect = arrival_effects.pop(0)
+        arrival_effects.extend([
+            {"type": "add_variable", "variable": {
+                "id": "test_gate", "type": "number", "default": 0, "min": 0, "max": 1,
+            }},
+            {"type": "add_trigger", "trigger": {
+                "id": "test_gate_hook", "event": "test_arrival", "action": "set_var",
+                "params": {"var_id": "test_gate", "op": "set", "value": 1},
+            }},
+        ])
+        script["one_time_events"].append({
+            "id": "test_label_ready", "trigger_time": "2030-01-01T09:05:00",
+            "condition": "script_variables.test_gate == 1 AND script_variables.test_visit_count == 2",
+            "effects": [label_effect],
+        })
+        expected_events.append("test_label_ready")
 
     def assert_lifecycle_state(current, *, settled):
         state = current.current_state
@@ -534,7 +555,7 @@ async def test_retrieval_settlement_stream_and_reload(
                 tool_results = [json.loads(message["content"]) for messages in requests for message in messages
                                 if message["role"] == "tool" and message.get("content", "").startswith('{"entries"')]
                 assert any(result["entries"][0]["id"] == "test_label"
-                           and result["projection"]["event_ids"] == ["test_arrival"]
+                           and result["projection"]["event_ids"] == expected_events
                            and result["projection"]["provisional"] for result in tool_results if result["entries"])
                 calls_before_replay = provider.generate_with_tools.await_count
                 replay = await client.post(f"{endpoint}/action/stream", json=action)

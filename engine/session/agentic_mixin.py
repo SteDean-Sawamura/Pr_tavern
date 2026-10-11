@@ -4249,7 +4249,9 @@ class AgenticMixin:
         if not parse_time(end_time):
             return ([], copy.deepcopy(base_state if base_state is not None else self.current_state)) if with_state else []
         original_state = self.current_state
+        original_mechanics = self.script_variables, self.trigger_engine
         try:
+            self.script_variables, self.trigger_engine = copy.deepcopy(original_mechanics)
             self.current_state = (copy.deepcopy(base_state) if base_state is not None else
                                   self._project_state_tool_updates(updates) if updates else copy.deepcopy(original_state))
             event_times = self.event_scheduler.iter_event_times(
@@ -4290,6 +4292,18 @@ class AgenticMixin:
                                 active = self.current_state.get("active_persistent_states", [])
                                 if effect.get("id") in active:
                                     active.remove(effect["id"])
+                            elif effect.get("type") == "add_variable":
+                                variable = effect.get("variable", {})
+                                if variable.get("id"):
+                                    self._apply_variable_updates({"add": [variable]})
+                            elif effect.get("type") in ("add_trigger", "update_trigger"):
+                                adding = effect["type"] == "add_trigger"
+                                trigger = effect.get("trigger" if adding else "update", {})
+                                if trigger.get("id"):
+                                    self._apply_trigger_updates(
+                                        {"add" if adding else "update": [trigger]}, persist=False,
+                                    )
+                                    self._persist_mechanics_runtime()
                         trigger_actions = self.trigger_engine.fire(
                             event["event_id"], self.current_state,
                         )
@@ -4314,6 +4328,7 @@ class AgenticMixin:
                 return eligible, self.current_state
         finally:
             self.current_state = original_state
+            self.script_variables, self.trigger_engine = original_mechanics
         return eligible
 
     def _projected_conditional_events(self, ctx: dict) -> list[dict]:
