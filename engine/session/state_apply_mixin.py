@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -365,11 +366,6 @@ class StateApplyMixin:
             triggered_events=[e["event_id"] for e in triggered_events],
             state_snapshot=self.current_state,
         )
-        # 写入状态哈希，供分支校验使用
-        _new_node = self.world_tree.get_node(node_id)
-        if _new_node:
-            from engine.world_tree import WorldTree as _WT
-            _new_node["_state_hash"] = _WT.state_hash(self.current_state)
         # Bug-1: 将 regenerate 需要的上下文写入节点，避免重新生成时丢失
         node = self.world_tree.get_node(node_id)
         if node:
@@ -614,6 +610,11 @@ class StateApplyMixin:
 
         if ctx.get("_agentic_post_processed"):
             self._record_narrative_facts(result.get("narrative", ""), ctx)
+
+        result["state"] = self.current_state
+        if node:
+            node["state_snapshot"] = copy.deepcopy(self.current_state)
+            node["_state_hash"] = self.world_tree.state_hash(node["state_snapshot"])
 
         return result
 

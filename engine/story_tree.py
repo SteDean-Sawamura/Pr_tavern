@@ -142,21 +142,21 @@ class StoryTreeEngine:
                         active.add(nid)
                         sts["active"] = list(active)
                         result.newly_active.append(node)
-                        if ntype == "choice" and node.get("auto_resolve"):
-                            chosen_c = self._auto_resolve_choice(node, condition_eval)
-                            if chosen_c:
-                                sts["choices_made"][nid] = chosen_c["id"]
-                                self._complete_node(node, sts, result, completed, unlocked)
-                                self._apply_effects(chosen_c.get("effects", {}), result, nid)
-                                for uid in chosen_c.get("unlock", []):
-                                    unlocked.add(uid)
-                                sts["unlocked"] = list(unlocked)
-                                active.discard(nid)
-                                sts["active"] = list(active)
-                        elif ntype == "choice":
+                        if ntype == "choice" and not node.get("auto_resolve"):
                             notify = f"【剧情分支】{node.get('name', nid)} — 请在剧情树中做出选择"
                             result.notifications.append(notify)
                             result.notification_sources.append(nid)
+                    if ntype == "choice" and node.get("auto_resolve"):
+                        chosen_c = self._auto_resolve_choice(node, condition_eval)
+                        if chosen_c:
+                            sts["choices_made"][nid] = chosen_c["id"]
+                            self._complete_node(node, sts, result, completed, unlocked)
+                            self._apply_effects(chosen_c.get("effects", {}), result, nid)
+                            for uid in chosen_c.get("unlock", []):
+                                unlocked.add(uid)
+                            sts["unlocked"] = list(unlocked)
+                            active.discard(nid)
+                            sts["active"] = list(active)
 
                 elif ntype == "periodic":
                     cd_until = sts.get("periodic_cooldowns", {}).get(nid, 0)

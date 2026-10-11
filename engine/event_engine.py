@@ -783,19 +783,19 @@ class EventEngine:
                         active.add(eid)
                         es.setdefault(eid, {})["status"] = "active"
                         result.newly_active.append(self._event_to_dict(ev))
-                        if cat == "choice" and ev.auto_resolve:
-                            chosen_c = self._auto_resolve_choice(ev, condition_eval)
-                            if chosen_c:
-                                es[eid]["choices_made"] = chosen_c["id"]
-                                self._complete_event(ev, es, result, completed, unlocked)
-                                self._apply_effects(chosen_c.get("effects", {}), result, eid)
-                                for uid in chosen_c.get("unlock", []):
-                                    unlocked.add(uid)
-                                    es.setdefault(uid, {})["status"] = "unlocked"
-                                active.discard(eid)
-                        elif cat == "choice" and not self.shadow_story_nodes:
+                        if cat == "choice" and not ev.auto_resolve and not self.shadow_story_nodes:
                             result.notifications.append(f"【剧情分支】{ev.name} — 请在剧情树中做出选择")
                             result.notification_sources.append(eid)
+                    if cat == "choice" and ev.auto_resolve:
+                        chosen_c = self._auto_resolve_choice(ev, condition_eval)
+                        if chosen_c:
+                            es[eid]["choices_made"] = chosen_c["id"]
+                            self._complete_event(ev, es, result, completed, unlocked)
+                            self._apply_effects(chosen_c.get("effects", {}), result, eid)
+                            for uid in chosen_c.get("unlock", []):
+                                unlocked.add(uid)
+                                es.setdefault(uid, {})["status"] = "unlocked"
+                            active.discard(eid)
 
                 elif cat == "periodic":
                     cd_until = es.get(eid, {}).get("cooldown_until", 0)
