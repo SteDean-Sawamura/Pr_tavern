@@ -12,11 +12,11 @@ VARIABLE_CHANGES_SCHEMA = {
 
 LOREBOOK_QUERY_PARAMETERS = {"type": "object", "properties": {
     "keyword": {"type": "string", "description": "全文搜索关键词，可用空格分隔；与 entry_id、entry_ids 三选一"},
-    "entry_id": {"type": "string", "description": "读取单条设定的 ID；按 next_offset 续读时使用"},
+    "entry_id": {"type": "string", "description": "读取单条设定的 ID；用返回的 id 配合 offset 定位或按 next_offset 续读"},
     "entry_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3,
                   "uniqueItems": True, "description": "一次读取 1-3 个独立条目 ID；不可与 keyword、entry_id、page 或 offset 混用"},
     "page": {"type": "integer", "minimum": 0, "description": "搜索页码，从 0 开始；按 next_page 翻页时携带顶层 snapshot 和原 keyword"},
-    "offset": {"type": "integer", "minimum": 0, "description": "按 entry_id 阅读时的字符位置，默认 0；按 next_offset 续读时携带该条目 snapshot"},
+    "offset": {"type": "integer", "minimum": 0, "description": "按 entry_id 阅读时的字符位置，默认 0；定位或重读被省略的片段用条目当前 offset，读到该片段后才按 next_offset 续读，均携带条目 snapshot。完整阅读从0开始，定位不代表已读全文"},
     "snapshot": {"type": "string", "description": "初查可省略；翻页/续读必填。搜索用顶层快照，按ID阅读用条目快照。失效时丢弃旧片段并按 restart 从头读取，不拼接不同快照；搜索摘要不等于从头读过正文。"},
 }}
 
@@ -33,7 +33,7 @@ FOREGROUND_TOOLS_SCHEMA = [
     }},
     {"type": "function", "function": {
         "name": "query_lorebook",
-        "description": "全文搜索世界书并返回带 ID 的摘要；按 entry_id 分段续读，或用 entry_ids 一次读取最多 3 条。truncated 表示并非全文。",
+        "description": "全文搜索世界书并返回带 ID 的摘要；按命中条目的 offset 和 snapshot 定位读取，或按 entry_id 分段续读、用 entry_ids 一次读取最多 3 条。定位片段和 truncated 结果均不代表已读全文。",
         "parameters": LOREBOOK_QUERY_PARAMETERS,
     }},
     {"type": "function", "function": {
@@ -174,7 +174,7 @@ GAME_TOOLS_SCHEMA = [
     }},
     {"type": "function", "function": {
         "name": "query_lorebook",
-        "description": "全文搜索世界书并返回带 ID 的摘要；按 entry_id 分段续读，或用 entry_ids 一次读取最多 3 条。truncated 表示并非全文。",
+        "description": "全文搜索世界书并返回带 ID 的摘要；按命中条目的 offset 和 snapshot 定位读取，或按 entry_id 分段续读、用 entry_ids 一次读取最多 3 条。定位片段和 truncated 结果均不代表已读全文。",
         "parameters": LOREBOOK_QUERY_PARAMETERS,
     }},
     {"type": "function", "function": {

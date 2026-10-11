@@ -175,7 +175,8 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
             ]
             preview["content_omitted"] = True
             preview["notice"] = (
-                "正文已省略，不是已读完；按 entry_id 从 offset=0 完整重读，携带条目 snapshot 按 next_offset 续读；失效按 restart 重查。"
+                "正文已省略，不算已读；按条目 id、offset 和条目 snapshot 重读当前片段，不要直接跳到 next_offset。"
+                "需要完整阅读时从 offset=0 开始，再按新结果 next_offset 续读；定位片段不等于全文，失效按 restart 重查。"
                 "资料仅供推演，非已发生或角色已知。"
             )
             encoded = json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
