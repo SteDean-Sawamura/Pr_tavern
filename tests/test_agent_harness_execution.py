@@ -711,7 +711,7 @@ async def test_retrieval_settlement_stream_and_reload(
                 assert session.current_state["script_variables"]["test_capacity"] == 7
                 assert_lifecycle_state(session, settled=True)
                 assert final["state"]["active_persistent_states"] == ["test_arrived"]
-                assert final["state"]["npc_schedule_overrides"] == session.current_state["npc_schedule_overrides"]
+                assert "npc_schedule_overrides" not in final["state"]
                 assert all(args.get("summary") != "Outdated decision" for name, args in dispatched)
                 assert sum(name == "finalize_turn" for name, _ in dispatched) == 1
                 assert review_narrative.await_args.args[0] == narrative

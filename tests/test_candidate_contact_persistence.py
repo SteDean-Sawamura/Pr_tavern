@@ -180,7 +180,7 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
             assert "_pending_world_events" not in final["state"]
             assert "npc_schedule_change" not in response.text
             assert "previous_activity" not in response.text
-            assert history_activity not in json.dumps([event for event in events if event["type"] != "final"], ensure_ascii=False)
+            assert history_activity not in response.text
             autonomy = copy.deepcopy(session.npc_autonomy.snapshot())
             assert autonomy["npc_states"]["test_guide"]["location"] == session._get_npc_location("test_guide")
             assert settled["_npc_autonomy"] == autonomy

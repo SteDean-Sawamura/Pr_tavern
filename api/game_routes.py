@@ -1337,6 +1337,9 @@ def _player_state_changes(changes: list, script: dict, state: dict) -> list:
             target = change.get("target")
             if target in private_targets:
                 continue
+            if isinstance(target, str) and (target == "npc_schedule_overrides"
+                                            or target.startswith("npc_schedule_overrides.")):
+                continue
             if isinstance(target, str) and target.startswith("npcs."):
                 parts = target.split(".")
                 if (len(parts) != 3 or parts[1] not in known_npcs
@@ -1428,7 +1431,7 @@ def _player_state(current_state: dict, script: dict | None = None, session: Game
                 "lorebook_enabled_overrides", "lorebook_entry_overrides", "dynamic_lorebook", "script_variables",
                 "dynamic_story_content", "mechanics_overrides", "_npc_autonomy", "_node_context",
                 "pending_consequences", "events", "shelved_pc_data", "narrative_callbacks",
-                "information_network"):
+                "information_network", "npc_schedule_overrides"):
         state.pop(key, None)
     private_properties = _private_world_property_names(script)
     if "world_properties" in state:
