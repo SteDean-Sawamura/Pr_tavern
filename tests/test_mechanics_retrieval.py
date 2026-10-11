@@ -10,7 +10,7 @@ from engine.game_session import GameSession
 from engine.tool_schemas import _unified_tools
 
 
-RULE_CATEGORIES = ["variables", "triggers", "random_items", "one_time_events", "cyclic_events", "persistent_states"]
+RULE_CATEGORIES = ["variables", "triggers", "random_items", "one_time_events", "cyclic_events", "persistent_states", "world_properties"]
 
 
 def make_session():
@@ -36,11 +36,13 @@ def make_session():
             "effects": [{"type": "deactivate_persistent_state", "target": "test_condition"}],
         }],
         "persistent_states": [{"id": "test_condition", "description": "SYNTHETIC_RULE_DETAIL"}],
+        "world_properties": [{"id": "test_access", "value": "closed", "rule_notes": "SYNTHETIC_RULE_DETAIL"}],
     }
     session = GameSession(script, None)
     session.current_state = {
         "game_time": "2030-01-01T09:00:00", "player": {},
         "inventory": [{"item": "test token"}],
+        "world_properties": {"test_access": "open"},
     }
     session.script_variables.init_state(session.current_state)
     session.script_variables.set(session.current_state, "test_capacity", 7)
@@ -66,6 +68,8 @@ def test_catalog_returns_runtime_definitions_without_executing_them(category):
     assert entry["next_offset"] is None
     if category == "variables":
         assert json.loads(entry["content"])["current_value"] == 7
+    elif category == "world_properties":
+        assert json.loads(entry["content"])["current_value"] == "open"
     assert session.current_state == original_state
     assert session.script == original_script
     assert session._mechanics_definitions() == {key: original_rules[key] for key in RULE_CATEGORIES[:3]}

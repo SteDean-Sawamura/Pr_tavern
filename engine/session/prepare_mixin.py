@@ -928,8 +928,8 @@ class PrepareMixin:
 
         self.current_state["active_tone"] = tone_parts if tone_parts else []
 
-    def _evaluate_condition(self, condition: str) -> bool:
-        """Evaluate a simple condition string against current state.
+    def _evaluate_condition(self, condition: str, state: dict | None = None) -> bool:
+        """Evaluate a simple condition string against the supplied or current state.
 
         Supports formats like:
           'player.health < 30'
@@ -950,11 +950,12 @@ class PrepareMixin:
                 start = match.end()
             if parts:
                 parts.append(stripped[start:].strip())
-                return aggregate(self._evaluate_condition(part) for part in parts)
-        return self._evaluate_single_condition(stripped)
+                return aggregate(self._evaluate_condition(part, state) for part in parts)
+        return self._evaluate_single_condition(stripped, state)
 
-    def _evaluate_single_condition(self, condition: str) -> bool:
+    def _evaluate_single_condition(self, condition: str, state: dict | None = None) -> bool:
         """Evaluate a single condition expression (no AND/OR)."""
+        state = self.current_state if state is None else state
         if re.fullmatch(r'event\.\w+\.fired', condition.strip()):
             condition = f'{condition.strip()} == true'
         m = re.match(r'([\w.]+)\s*(==|!=|<=|>=|<|>)\s*(.+)', condition.strip())
@@ -965,7 +966,7 @@ class PrepareMixin:
         # node_completed.{node_id} == true
         if path.startswith("node_completed."):
             node_id = path[len("node_completed."):]
-            sts = self.current_state.get("story_tree_state", {})
+            sts = state.get("story_tree_state", {})
             is_done = node_id in sts.get("completed", [])
             target = raw_val.lower() in ("true", "1", "yes")
             if op == "==":
@@ -977,7 +978,7 @@ class PrepareMixin:
         # milestone.{milestone_id} == true
         if path.startswith("milestone."):
             ms_id = path[len("milestone."):]
-            is_achieved = ms_id in self.current_state.get("achieved_milestones", [])
+            is_achieved = ms_id in state.get("achieved_milestones", [])
             target = raw_val.lower() in ("true", "1", "yes")
             if op == "==":
                 return is_achieved == target
@@ -987,8 +988,8 @@ class PrepareMixin:
 
         if path.startswith("event_fired.") or (path.startswith("event.") and path.endswith(".fired")):
             event_id = path[len("event_fired."):] if path.startswith("event_fired.") else path[len("event."):-len(".fired")]
-            fired_ot = self.current_state.get("fired_one_time_events", [])
-            trackers = self.current_state.get("cyclic_event_trackers", {})
+            fired_ot = state.get("fired_one_time_events", [])
+            trackers = state.get("cyclic_event_trackers", {})
             is_fired = event_id in fired_ot or bool(trackers.get(event_id, {}).get("last_fired"))
             target = raw_val.lower() in ("true", "1", "yes")
             if op == "==":
@@ -999,9 +1000,9 @@ class PrepareMixin:
 
         if path.startswith("status."):
             state_id = path[len("status."):]
-            actual = "active" if state_id in self.current_state.get("active_persistent_states", []) else "inactive"
+            actual = "active" if state_id in state.get("active_persistent_states", []) else "inactive"
         else:
-            actual = self.state_manager._get_value(self.current_state, path)
+            actual = self.state_manager._get_value(state, path)
         if actual is None:
             return False
 

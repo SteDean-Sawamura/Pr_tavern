@@ -1038,17 +1038,9 @@ class StateApplyMixin:
             dl = state.get("dynamic_lorebook", [])
             state["dynamic_lorebook"] = [e for e in dl if e.get("id") != lore_id]
 
-        # Filter world_property_changes: reject object-level details (belong in scene_details)
-        _REJECT_WP_PATTERNS = ("lamp", "light", "door", "window", "clock", "alarm",
-                               "desk", "chair", "phone", "radio", "tv", "灯", "门",
-                               "窗", "桌", "椅", "电话", "闹钟", "台灯", "scattered",
-                               "curtain", "drawer", "paper", "document", "书桌", "抽屉")
         for wp in parsed.get("world_property_changes", []):
             wp_id = wp.get("id")
-            if not wp_id:
-                continue
-            _wp_lower = wp_id.lower()
-            if any(p in _wp_lower for p in _REJECT_WP_PATTERNS):
+            if not wp_id or self._is_undeclared_object_property(wp_id):
                 continue
             state.setdefault("world_properties", {})[wp_id] = wp.get("value")
             wp_name = wp.get("name")

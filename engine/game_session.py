@@ -2171,6 +2171,12 @@ class GameSession(
         "curtain", "drawer", "paper", "document", "书桌", "抽屉",
     )
 
+    def _is_undeclared_object_property(self, property_id: str) -> bool:
+        if any(isinstance(definition, dict) and definition.get("id") == property_id
+               for definition in self.script.get("world_properties", [])):
+            return False
+        return any(pattern in property_id.lower() for pattern in self._REJECT_WP_PATTERNS_TOOL)
+
     def _is_undeclared_environment_state(self, entry: str | dict) -> bool:
         if isinstance(entry, dict):
             state_id = entry.get("id", "")
@@ -2263,6 +2269,8 @@ class GameSession(
                     projected.setdefault("display_names", {})[location_id] = location_name
             if parsed.get("location_change"):
                 projected.setdefault("player", {})["location"] = parsed["location_change"]
+            if parsed.get("world_property_changes"):
+                self._update_dynamic_connections(projected)
         self._sync_dirty_npc_attitudes(projected, dirty_npc_ids)
         return projected
 
@@ -2394,7 +2402,7 @@ class GameSession(
             issues = []
             for wp in args.get("world_property_changes", []):
                 wp_id = wp.get("id", "")
-                if wp_id and any(p in wp_id.lower() for p in self._REJECT_WP_PATTERNS_TOOL):
+                if wp_id and self._is_undeclared_object_property(wp_id):
                     issues.append(f"过滤物件级属性: {wp_id}")
             result = "世界属性已接收"
             if issues:
@@ -2480,7 +2488,7 @@ class GameSession(
                 # Filter object-level properties
                 for wp in args.get("world_property_changes", []):
                     wp_id = wp.get("id", "")
-                    if wp_id and any(p in wp_id.lower() for p in self._REJECT_WP_PATTERNS_TOOL):
+                    if wp_id and self._is_undeclared_object_property(wp_id):
                         continue
                     parsed["world_property_changes"].append(wp)
 
@@ -4330,7 +4338,7 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
                 condition = cc.get("condition", "")
                 if not target or not condition:
                     continue
-                met = self._evaluate_condition(condition)
+                met = self._evaluate_condition(condition, state)
                 if met and target not in loc_conns:
                     loc_conns.append(target)
                     changed = True

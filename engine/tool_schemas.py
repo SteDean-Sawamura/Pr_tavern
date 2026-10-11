@@ -307,11 +307,11 @@ STATE_TOOLS_SCHEMA = [
     }},
     {"type": "function", "function": {
         "name": "update_world",
-        "description": "更新宏观世界级变量（戒严等级、势力影响等），不写物件状态",
+        "description": "更新剧本声明的世界属性或宏观世界级变量；精确声明优先，不另造未声明的物件状态",
         "parameters": {"type": "object", "properties": {
             "world_property_changes": {
                 "type": "array",
-                "description": '世界属性变更: [{"id":"属性ID","value":"新值"}]。只写宏观世界级变量，不写物件状态（台灯/门窗等属于scene_details）',
+                "description": '世界属性变更: [{"id":"属性ID","value":"新值"}]。按剧本声明的精确ID和规则更新；未声明的物件状态属于scene_details，只允许另增宏观世界级变量',
                 "items": {"type": "object", "properties": {
                     "id": {"type": "string"}, "value": {"type": "string"},
                 }, "required": ["id", "value"]},
@@ -566,7 +566,7 @@ CONSOLIDATED_SETTLEMENT_TOOLS = [
             },
             "world_property_changes": {
                 "type": "array",
-                "description": '世界属性变更: [{"id":"属性ID","value":"新值"}]。只写宏观世界级变量，不写物件状态',
+                "description": '世界属性变更: [{"id":"属性ID","value":"新值"}]。先用consult_rules(category="world_properties")读取声明与已提交现值，按精确ID和规则更新；未声明的物件状态属于scene_details，只允许另增宏观世界级变量',
                 "items": {"type": "object", "properties": {
                     "id": {"type": "string"}, "value": {"type": "string"},
                 }, "required": ["id", "value"]},
@@ -789,13 +789,13 @@ def _unified_tools() -> list[dict]:
         }},
         {"type": "function", "function": {
             "name": "consult_rules",
-            "description": "只读咨询当前分支规则。指定 category 可检索变量及现值、触发器、随机项、一次性事件、周期事件、持续状态或剧情节点的完整声明；story_nodes 返回含树元数据的 tree 和完整 node，不重复包含兄弟节点。不指定时按 question 检查 NPC 在场和物品持有。不会执行规则或模拟未提交的行动。",
+            "description": "只读咨询当前分支规则。指定 category 可检索变量及现值、世界属性及现值、触发器、随机项、一次性事件、周期事件、持续状态或剧情节点的完整声明；story_nodes 返回含树元数据的 tree 和完整 node，不重复包含兄弟节点。不指定时按 question 检查 NPC 在场和物品持有。不会执行规则或模拟未提交的行动。",
             "parameters": {"type": "object", "properties": {
                 "question": {"type": "string", "description": "要咨询的问题"},
                 "context": {"type": "string", "description": "相关上下文"},
-                "category": {"type": "string", "enum": ["variables", "triggers", "random_items", "one_time_events", "cyclic_events", "persistent_states", "story_nodes"],
+                "category": {"type": "string", "enum": ["variables", "triggers", "random_items", "one_time_events", "cyclic_events", "persistent_states", "world_properties", "story_nodes"],
                              "description": "机制类别；指定后无需 question。每次最多返回5条，每条 content 最多2000字符"},
-                "query": {"type": "string", "description": "在定义和变量现值中搜索，不区分大小写；空字符串列出该类别"},
+                "query": {"type": "string", "description": "在定义和变量或世界属性现值中搜索，不区分大小写；空字符串列出该类别"},
                 "rule_index": {"type": "integer", "minimum": 0,
                                "description": "读取某条查询结果的完整定义时，传入其 rule_index；不可与 query 混用，切换分支后须重新查询索引"},
                 "offset": {"type": "integer", "minimum": 0, "default": 0,

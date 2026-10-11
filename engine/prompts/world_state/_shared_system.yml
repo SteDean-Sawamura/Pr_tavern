@@ -61,7 +61,7 @@ field_defs:
     desc: '- deactivate_states: [状态ID]'
   world_property_changes:
     group: world
-    desc: '- world_property_changes: [{"id":"属性ID","value":"新值"}] 宏观世界级变量（戒严等级、势力影响等），不写物件状态'
+    desc: '- world_property_changes: [{"id":"属性ID","value":"新值"}] 按剧本声明的精确 ID 和规则更新；已声明的物件机制不受名称过滤，未声明的物件状态写入 scene_details，只允许另增宏观世界级变量'
   npc_location_changes:
     group: spatial
     system_filter: npc

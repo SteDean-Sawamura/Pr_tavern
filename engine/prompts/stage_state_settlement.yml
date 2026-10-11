@@ -21,7 +21,7 @@ system: |
 
   禁止事项：
   - activate_states 不得包含天气或时段（weather/dawn/dusk/night等）——这些由引擎自动管理
-  - world_property_changes 只写宏观世界级变量（戒严等级、势力影响、社会压力等），不写物件状态（台灯/闹钟/门窗/文件散落等）——物件状态属于 scene_details
+  - world_property_changes 按剧本声明的精确 ID 和规则更新，已声明的物件机制不受名称过滤；不得另造未声明的物件属性，临时物件状态属于 scene_details，只允许另增宏观世界级变量
   - npc_attitude_changes 中的 npc_id 必须是已存在的NPC ID，不可凭空创造新角色ID
   - location_change 必须使用「已知地点」列表中的精确ID（如上文所示），禁止自行编造ID或使用下划线拼接的英文描述
 

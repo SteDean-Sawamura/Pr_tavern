@@ -4932,6 +4932,7 @@ class AgenticMixin:
             "one_time_events": self.script.get("one_time_events", []),
             "cyclic_events": self.script.get("cyclic_events", []),
             "persistent_states": self.script.get("persistent_states", []),
+            "world_properties": self.script.get("world_properties", []),
             "story_nodes": [
                 {"tree": {key: value for key, value in tree.items() if key != "nodes"}, "node": node}
                 for tree in (self.story_tree_engine.trees if self.story_tree_engine else [])
@@ -4964,6 +4965,8 @@ class AgenticMixin:
             payload = {"definition": definition}
             if category == "variables":
                 payload["current_value"] = self.script_variables.get(self.current_state, definition["id"])
+            elif category == "world_properties":
+                payload["current_value"] = self.current_state.get("world_properties", {}).get(definition["id"])
             content = json.dumps(payload, ensure_ascii=False)
             if not detailed and query.casefold() not in content.casefold():
                 continue
