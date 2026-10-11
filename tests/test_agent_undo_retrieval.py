@@ -22,6 +22,8 @@ from engine.game_session import GameSession
     ("read_director_notes", {}),
     ("consult_rules", {"category": "variables", "query": "test_counter"}),
     ("consult_rules", {"question": "Librarian 在场吗？", "include_candidates": True}),
+    ("invoke_character", {"npc_id": "test_librarian", "situation": "Consider the shelf."}),
+    ("invoke_character", {"npc_id": "test_librarian", "situation": "Consider the shelf.", "include_candidates": True}),
     ("trace_causality", {"entity": "test_librarian"}),
     ("preview_choice_outcome", {"choice_text": "Inspect the room."}),
 ])
@@ -54,7 +56,7 @@ async def test_read_only_tools_preserve_single_undo_target(operation, read_name,
         "npcs": [{"id": "test_librarian", "name": "Librarian", "default_location": "test_room"}],
         "variables": [{"id": "test_counter", "type": "number", "default": 2}],
         "lorebook": [{"id": "test_label", "keys": ["label"], "content": "A plain shelf label."}],
-    }, SimpleNamespace(generate_with_tools=AsyncMock(side_effect=respond)))
+    }, SimpleNamespace(generate_with_tools=AsyncMock(side_effect=respond), generate=AsyncMock(return_value="Synthetic advice.")))
     session.current_state = {
         "game_time": "2030-01-01T09:00:00", "player": {"name": "Visitor", "location": "test_room"},
         "visible_locations": ["test_room"],

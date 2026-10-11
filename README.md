@@ -945,6 +945,16 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 更新、撤销或切换分支后须重新查询，不能沿用旧答案。上下文压缩省略旧在场/持有结果并保留候选边界和重查提示。`tests/test_candidate_presence.py`、`tests/test_agent_undo_retrieval.py` 与 `tests/test_scheduled_npc_overrides.py` 使用合成声明、假模型和隔离 SQLite，覆盖时间与房间、物品增减、撤销重查、工具结果驱动的叙事分支、保存失败回滚与重试、重载、分支往返及请求重放；查询正文不进入公开 SSE/trace。这些证据不代表真实模型的自主互动质量或在线体验已验收。
 
+### 带状态边界的角色推演建议
+
+`invoke_character(npc_id, situation)` 是 GM 的角色独立推演工具，不是玩家直接对话入口；允许推演尚未接触的幕后角色。默认取正式状态，运行时身份信息优先于剧本定义，注入角色位置、房间、情绪、态度、关系和未完成目标的描述，不把目标条件或效果当作角色知识。支持运行时新增角色，未知或已故角色在调用模型前返回错误。
+
+进行中回合可显式传 `include_candidates=true`，读取累计接受的空间和状态更新；仅有已接受的 `end_time` 时纳入定时事件和日程到期投影，不采用 `new_time` 预估值。返回保留 `npc/response`，另含 `npc_id/mode=advisory/game_time/context/knowledge_source` 和候选 `projection`。这是有限的候选状态视图，不是完整回合模拟，不包含接触更新或候选信息传播。
+
+自动注入的角色知识复用既有 NPC 认知检索，限正式状态中分配给该角色的信息和隐藏词条；定时来源还须经过已触发和知情时间校验。候选事件不自动变成角色知识。调用方仍须确保 `situation` 只包含角色可感知刺激或明确假设，不能把未知秘密塞入情境；自然语言提示不能保证真实模型不会越界。工具建议仅供 GM 内部参考，不等于玩家知情、互动许可或已执行行为，不建立接触、不推进时间、不保存状态，也不占用撤销目标；不缓存建议，更新、撤销或切换分支后重新调用。上下文压缩省略旧建议和角色上下文，保留未提交边界及重调提示。
+
+`tests/test_character_advisory.py`、`tests/test_character_advisory_stream.py` 和撤销回归使用合成角色、假模型与隔离 SQLite，覆盖状态与知识边界、建议驱动叙事选择、撤销重调、保存失败回滚、重载、分支及请求重放。角色建议和工具上下文不直接进入公开 SSE/trace；测试不证明真实模型的语义保密性、自主互动质量或线上体验。
+
 ## 技术栈
 
 - **后端**: FastAPI + Uvicorn + aiosqlite (SQLite WAL 模式)

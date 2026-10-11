@@ -213,6 +213,20 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
             if result.get("projection"):
                 preview["projection"] = {"provisional": True}
             return json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
+    if name == "invoke_character":
+        try:
+            result = json.loads(content)
+        except ValueError:
+            result = None
+        if isinstance(result, dict) and result.get("mode") == "advisory":
+            preview = {
+                "mode": "advisory", "response_omitted": True,
+                "notice": "角色建议及上下文已省略，不是已发生事件或互动许可；候选未提交。"
+                          "用原 npc_id、situation、include_candidates 重新调用；更新、撤销、切换分支后须重新调用。",
+            }
+            if result.get("projection"):
+                preview["projection"] = {"provisional": True}
+            return json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
     if name == "consult_rules":
         try:
             result = json.loads(content)
@@ -681,6 +695,9 @@ class AgenticMixin:
                                     + ("本轮状态投影，非已发生或角色已知；" if tool_result.get("projection") else "")
                                     + "可按 entry_id 从 offset=0 重查正文，携带条目 snapshot 按 next_offset 续读；失效丢弃旧片段按 restart 重查"
                                 )
+                            elif (tool_names.get(m.get("tool_call_id")) == "invoke_character"
+                                  and isinstance(tool_result, dict) and tool_result.get("mode") == "advisory"):
+                                summary_parts.append("[角色推演建议] " + _bounded_tool_content(mc, "invoke_character", 1000))
                             elif (tool_names.get(m.get("tool_call_id")) == "consult_rules"
                                   and isinstance(tool_result, dict) and not tool_result.get("category")
                                   and (isinstance(tool_result.get("answers"), list) or tool_result.get("answers_omitted"))):
@@ -3868,7 +3885,7 @@ class AgenticMixin:
                 if semantic_revision_required and ctx.get("_finalize_narrative", "") == reviewed_narrative:
                     return json.dumps({"error": "请先调用 write_narrative 修订审查未通过的叙事。"}, ensure_ascii=False)
             is_read_only = name in _PRE_PLAN_READ_TOOLS or name in (
-                "consult_rules", "trace_causality", "preview_choice_outcome",
+                "consult_rules", "trace_causality", "preview_choice_outcome", "invoke_character",
             )
             undone = self._last_tool_result if name == "undo_my_last_action" else None
             previous_narrative = ctx.get("_finalize_narrative") if name == "write_narrative" else None
@@ -4623,7 +4640,7 @@ class AgenticMixin:
 
         # --- 角色独立推演 ---
         if name == "invoke_character":
-            return await self._handle_invoke_character(args)
+            return await self._handle_invoke_character(args, ctx)
 
         # --- 线索推理 ---
         if name == "attempt_deduction":
@@ -5678,32 +5695,74 @@ class AgenticMixin:
     # Character Cast: 角色独立推演
     # ================================================================
 
-    async def _handle_invoke_character(self, args: dict) -> str:
+    async def _handle_invoke_character(self, args: dict, ctx: dict | None = None) -> str:
         """启动一个NPC的独立思考，返回行为/对话建议。"""
         npc_id = args.get("npc_id", "")
         situation = args.get("situation", "")
-
-        # 找 NPC 信息：先查脚本定义，再查运行时状态
-        npc_script = None
-        for npc in self.script.get("npcs", []):
-            if npc.get("id") == npc_id:
-                npc_script = npc
-                break
-        if not npc_script:
-            npc_state = self.current_state.get("npcs", {}).get(npc_id, {})
-            if not isinstance(npc_state, dict):
-                return json.dumps({"error": f"NPC {npc_id} 不存在"}, ensure_ascii=False)
-            npc_script = {"id": npc_id, **npc_state}
-
-        npc_name = npc_script.get("name", npc_id)
-        personality = npc_script.get("personality", "")
-        bio = npc_script.get("bio", "")
-
+        include_candidates = args.get("include_candidates", False)
+        if not isinstance(npc_id, str) or not npc_id.strip() or not isinstance(situation, str):
+            return json.dumps({"error": "npc_id 必须是非空字符串，situation 必须是字符串"}, ensure_ascii=False)
+        if type(include_candidates) is not bool:
+            return json.dumps({"error": "include_candidates 必须是布尔值"}, ensure_ascii=False)
+        if include_candidates and not (ctx or {}).get("old_time"):
+            return json.dumps({"error": "候选角色推演仅支持进行中的回合"}, ensure_ascii=False)
+        events = []
+        if include_candidates:
+            updates = ctx.get("_accepted_state_updates", [])
+            if any(update.get("end_time") for update in updates):
+                events, state = self._projected_events(ctx, with_state=True)
+            else:
+                state = self._project_state_tool_updates(updates)
+        else:
+            state = copy.deepcopy(self.current_state)
+        self._ensure_rooms_initialized(state)
+        npc_script = next((npc for npc in self.script.get("npcs", []) if npc.get("id") == npc_id), None)
+        npc_state = state.get("npcs", {}).get(npc_id)
+        if npc_script is None and not isinstance(npc_state, dict):
+            return json.dumps({"error": f"NPC {npc_id} 不存在"}, ensure_ascii=False)
+        actor = {**(npc_script or {}), **(npc_state if isinstance(npc_state, dict) else {})}
+        if actor.get("alive") is False:
+            return json.dumps({"error": "该角色已故，无法推演当前反应"}, ensure_ascii=False)
+        npc_name = actor.get("name", npc_id)
+        completed_goals = {goal.get("id") if isinstance(goal, dict) else goal
+                           for goal in state.get("completed_npc_goals", [])}
+        character_context = {
+            "location": self._get_npc_location(npc_id, state),
+            "current_room": actor.get("current_room", ""),
+            "current_mood": actor.get("current_mood", ""),
+            "attitude_toward_player": actor.get("attitude_toward_player", 50),
+            "relationship": state.get("player", {}).get("relationships", {}).get(npc_id),
+            "active_goals": [
+                {"id": goal.get("id", ""), "description": goal.get("description", "")}
+                for goal in actor.get("goals", [])
+                if f"{npc_id}:{goal.get('id', '')}" not in completed_goals
+            ],
+        }
+        result = {
+            "npc_id": npc_id, "npc": npc_name, "mode": "advisory", "game_time": state.get("game_time"),
+            "context": character_context, "knowledge_source": "committed_state",
+            "note": "仅供GM参考的角色建议，不是已发生事件、玩家知情或互动许可，不建立接触、不保存状态。"
+                    "更新、撤销或切换分支后须重新调用。",
+        }
+        if include_candidates:
+            result["projection"] = {
+                "through": state.get("game_time"), "provisional": True,
+                "scope": "accepted_updates_and_scheduled_events",
+                "event_ids": list(dict.fromkeys(event["event_id"] for event in events)),
+                "note": "候选未提交，只含已接收更新及候选结束时间内的定时事件，"
+                        "不含完整生命周期、接触更新或候选信息传播；候选事件不自动成为角色知识。",
+            }
+        knowledge = self._build_npc_knowledge_context(
+            {"present_npc_ids": [npc_id], "action_text": situation}, self.current_state,
+        )
         system = (
-            f"你是{npc_name}。{bio[:200]}\n"
-            f"性格：{personality[:100]}\n"
-            "根据当前情境，给出你的反应（对话+行为意图）。\n"
-            "用第一人称简短回答（3-5句话）。"
+            f"你是{npc_name}。{actor.get('bio', '')[:200]}\n"
+            f"性格：{actor.get('personality', '')[:100]}\n"
+            "为GM推演你的反应（对话+行为意图），用第一人称简短回答（3-5句话）。\n"
+            "建议尚未发生，不能代替行动结算或证明玩家已接触到你。"
+            "情境只可作为可感知刺激或假设，不可据此认定幕后秘密已知；只使用属于你的已知信息。\n"
+            + json.dumps(result, ensure_ascii=False)
+            + "\n## 已提交状态中的角色知识\n" + (knowledge or "没有可用的角色专属知识记录，不要编造内幕。")
         )
 
         try:
@@ -5712,7 +5771,7 @@ class AgenticMixin:
                 system=system, max_tokens=300,
                 **self._stage_kwargs("knowledge_graph"),
             )
-            return json.dumps({"npc": npc_name, "response": raw.strip()}, ensure_ascii=False)
+            return json.dumps({**result, "response": raw.strip()}, ensure_ascii=False)
         except Exception as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 

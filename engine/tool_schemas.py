@@ -865,10 +865,11 @@ def _unified_tools() -> list[dict]:
         }},
         {"type": "function", "function": {
             "name": "invoke_character",
-            "description": "启动一个NPC的独立思考。NPC会根据自己的性格、目标和当前情境给出行为/对话建议。适合多人场景。",
+            "description": "为GM推演单个NPC的行为/对话建议，可用于幕后角色；不是玩家对话入口，不建立接触或提交状态。默认读取正式角色状态，进行中回合可显式使用候选时空；自动注入的角色知识仍仅来自正式状态。更新、撤销或切换分支后重新调用，不能把建议当成已发生事件或互动许可。",
             "parameters": {"type": "object", "properties": {
                 "npc_id": {"type": "string", "description": "NPC的ID"},
-                "situation": {"type": "string", "description": "当前情境描述（给NPC看的）"},
+                "situation": {"type": "string", "description": "给NPC看的可感知刺激或明确假设，不要塞入其未知的GM秘密"},
+                "include_candidates": {"type": "boolean", "description": "默认false。true仅限进行中回合，投影已接收更新及已接收结束时间内定时事件；不采用预估时间，不包含完整生命周期、接触更新或候选知识传播"},
             }, "required": ["npc_id", "situation"]},
         }},
         {"type": "function", "function": {
