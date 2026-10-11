@@ -127,7 +127,8 @@ def test_builtin_weather_categories_remain_distinct():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state_id", ["test_knight_oath", "builtin_weather"])
-async def test_retrieved_declaration_reaches_projection_stream_persistence_and_branches(tmp_path, monkeypatch, state_id):
+@pytest.mark.parametrize("deactivate_first", [False, True])
+async def test_retrieved_declaration_reaches_projection_stream_persistence_and_branches(tmp_path, monkeypatch, state_id, deactivate_first):
     if state_id == "builtin_weather":
         state_id = builtin_weather_state("阴雨")
     session, script = make_session(state_id)
@@ -150,11 +151,16 @@ async def test_retrieved_declaration_reaches_projection_stream_persistence_and_b
                      for message in messages if message.get("role") == "tool"
                      and message.get("tool_call_id", "").startswith(prefix)}
         index = max(completed, default=-1) + 1
+        activation_step = 2 + int(deactivate_first)
         if index == 0:
             name, arguments = "submit_plan", {"plan": "Read the declared condition before proposing its activation."}
         elif index == 1:
             name, arguments = "consult_rules", {"category": "persistent_states"}
-        elif index == 2:
+        elif deactivate_first and index == 2:
+            rules = json.loads(completed[1])
+            definition = json.loads(rules["entries"][0]["content"])["definition"]
+            name, arguments = "update_state", {"deactivate_states": [definition["id"]]}
+        elif index == activation_step:
             rules = json.loads(completed[1])
             definition = json.loads(rules["entries"][0]["content"])["definition"]
             assert definition == script["persistent_states"][0]
@@ -162,18 +168,18 @@ async def test_retrieved_declaration_reaches_projection_stream_persistence_and_b
                 "activate_states": [{key: definition[key] for key in ("id", "name", "description")}],
                 "end_time": "2030-01-01T09:01:00",
             }
-        elif index == 3:
-            assert "过滤" not in completed[2]
+        elif index == activation_step + 1:
+            assert "过滤" not in completed[activation_step]
             name, arguments = "query_lorebook", {"entry_id": "test_notice"}
-        elif index == 4:
-            lore = json.loads(completed[3])
+        elif index == activation_step + 2:
+            lore = json.loads(completed[activation_step + 1])
             assert [entry["id"] for entry in lore["entries"]] == ["test_notice"]
             assert lore["projection"]["provisional"] is True
             assert lore["projection"]["event_ids"] == ["test_check_state"]
             assert state_id not in session.current_state["active_persistent_states"]
             name, arguments = "write_narrative", {"text": narrative}
         else:
-            assert index == 5
+            assert index == activation_step + 3
             name, arguments = "finalize_turn", {"summary": "Inspected the shelf."}
         assert name in [tool["function"]["name"] for tool in kwargs["tools"]]
         return {"content": "", "tool_calls": [{"id": f"{prefix}{index}", "name": name, "arguments": arguments}]}
@@ -231,22 +237,29 @@ async def test_retrieved_declaration_reaches_projection_stream_persistence_and_b
             assert final["state"]["active_persistent_states"] == [state_id]
             assert session._evaluate_condition(script["one_time_events"][0]["condition"]) is True
             assert session.current_state["fired_one_time_events"] == ["test_check_state"]
-            assert len(requests) == 6
+            assert len(requests) == 6 + int(deactivate_first)
             calls_before_replay = provider.generate_with_tools.await_count
             replay = await client.post(endpoint, json=action)
             assert replay.text == response.text
             assert provider.generate_with_tools.await_count == calls_before_replay
             final_state = copy.deepcopy(session.current_state)
+            assert "_persistent_state_operations" not in response.text
+            assert "_persistent_state_operations" not in json.dumps(final_state)
             game_routes._sessions.clear()
             restored = await game_routes._restore_session(session.save_id)
             assert restored is not None and restored is not session
             sessions.append(restored)
+            assert restored.current_state == final_state
+            repeated = []
+            restored._settle_timed_events(script["start_time"], final_state["game_time"], repeated)
+            assert repeated == []
             assert restored.current_state == final_state
             rules = json.loads(restored._handle_consult_rules({"category": "persistent_states"}))
             assert json.loads(rules["entries"][0]["content"])["definition"] == script["persistent_states"][0]
             game_routes._sessions[session.save_id] = restored
             node = await game_routes.get_tree_node(session.save_id, final["node_id"])
             assert node["agent_trace"]["rounds"]
+            assert "_persistent_state_operations" not in json.dumps(node["agent_trace"])
             for marker in ("SYNTHETIC_DECLARED_STATE_RULE", "SYNTHETIC_DECLARED_STATE_LORE"):
                 assert marker in json.dumps(requests)
                 assert marker not in response.text

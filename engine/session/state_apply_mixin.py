@@ -996,7 +996,16 @@ class StateApplyMixin:
             # Sync significant attitude changes to lorebook
             self._sync_attitude_to_lorebook(npc_att)
 
-        for entry in parsed.get("activate_states", []):
+        state_operations = parsed.get("_persistent_state_operations")
+        if state_operations is None:
+            state_operations = [("activate", entry) for entry in parsed.get("activate_states", [])]
+            state_operations.extend(("deactivate", state_id) for state_id in parsed.get("deactivate_states", []))
+        for operation, entry in state_operations:
+            if operation == "deactivate":
+                active = state.get("active_persistent_states", [])
+                if entry in active:
+                    active.remove(entry)
+                continue
             if self._is_undeclared_environment_state(entry):
                 continue
             if isinstance(entry, dict):
@@ -1028,10 +1037,6 @@ class StateApplyMixin:
             psd = state.setdefault("persistent_state_descriptions", {})
             if s_desc and sid not in psd:
                 psd[sid] = s_desc
-        for sid in parsed.get("deactivate_states", []):
-            active = state.get("active_persistent_states", [])
-            if sid in active:
-                active.remove(sid)
 
         # Invalidate speculative lorebook entries (butterfly effect)
         for lore_id in parsed.get("invalidate_lore", []):

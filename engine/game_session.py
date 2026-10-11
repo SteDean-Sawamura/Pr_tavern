@@ -2459,7 +2459,13 @@ class GameSession(
                     if self._is_undeclared_environment_state(entry):
                         continue
                     parsed["activate_states"].append(entry)
-                parsed["deactivate_states"].extend(args.get("deactivate_states", []))
+                    parsed.setdefault("_persistent_state_operations", []).append(("activate", entry))
+                deactivations = args.get("deactivate_states", [])
+                parsed["deactivate_states"].extend(deactivations)
+                if deactivations:
+                    parsed.setdefault("_persistent_state_operations", []).extend(
+                        ("deactivate", state_id) for state_id in deactivations
+                    )
                 go = args.get("game_over")
                 if go:
                     parsed["game_over"] = go
