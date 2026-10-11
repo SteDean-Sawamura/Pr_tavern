@@ -3639,7 +3639,8 @@ class AgenticMixin:
                             review = current_review.result()
                         except (Exception, asyncio.CancelledError):
                             review = None
-                        if (review and review.get("pass") is True
+                        if (current_review is semantic_review_task
+                                and review and review.get("pass") is True
                                 and ctx.get("_finalize_narrative", "") == reviewed_narrative
                                 and not self._map_travel_revision_feedback(ctx, reviewed_narrative)):
                             yield {"type": "_early_reviewed_text", "content": reviewed_narrative}
