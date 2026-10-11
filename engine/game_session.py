@@ -150,6 +150,7 @@ class GameSession(
         self._merge_legacy_events_into_tree(_story_tree_def, script)
         self.story_tree_engine = StoryTreeEngine(_story_tree_def) if _story_tree_def.get("trees") else None
         self.event_engine = EventEngine(script, shadow_story_nodes=self.story_tree_engine is not None)
+        self._dynamic_story_tree_ids: set[str] = set()
         self.current_state: dict = {}
         self.turn_number = 0
         self.authors_note = ""  # Player's behind-the-scenes directive

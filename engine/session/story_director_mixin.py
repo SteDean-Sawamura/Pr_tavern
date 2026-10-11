@@ -597,8 +597,13 @@ class StoryDirectorMixin:
             if new_nodes:
                 tree = {"id": f"_dyn_director_{self.turn_number}", "name": "动态剧情",
                         "nodes": new_nodes}
-                dsc["trees"].append(tree)
-                self._inject_dynamic_tree(tree)
+                accepted = self._inject_dynamic_tree(tree)
+                if accepted:
+                    saved_tree = next((entry for entry in dsc["trees"] if entry["id"] == accepted["id"]), None)
+                    if saved_tree is None:
+                        dsc["trees"].append(copy.deepcopy(accepted))
+                    else:
+                        saved_tree["nodes"].extend(copy.deepcopy(accepted["nodes"]))
 
             completed_nodes = []
             for nid in tree_result.get("complete_nodes", []):
@@ -644,8 +649,6 @@ class StoryDirectorMixin:
             dsc["generation_log"] = dsc["generation_log"][-20:]
         if len(dsc["lorebook"]) > 50:
             dsc["lorebook"] = dsc["lorebook"][-50:]
-        if len(dsc["trees"]) > 20:
-            dsc["trees"] = dsc["trees"][-20:]
         if len(dsc.get("random_item_updates", [])) > 20:
             dsc["random_item_updates"] = dsc["random_item_updates"][-20:]
         if len(dsc.get("variable_updates", [])) > 20:
@@ -714,20 +717,24 @@ class StoryDirectorMixin:
 
     def _inject_dynamic_tree(self, tree: dict):
         """注入一棵动态剧情树到 story_tree_engine 和 event_engine。"""
-        if not self.story_tree_engine:
-            from engine.story_tree import StoryTreeEngine
-            self.story_tree_engine = StoryTreeEngine({"trees": []})
-        existing_ids = set(self.story_tree_engine._nodes.keys())
-        new_node_ids = {n["id"] for n in tree.get("nodes", []) if n.get("id")}
-        valid_ids = existing_ids | new_node_ids
+        existing_trees = self.story_tree_engine.trees if self.story_tree_engine else []
+        if tree["id"] not in self._dynamic_story_tree_ids and any(
+            entry["id"] == tree["id"] for entry in [*existing_trees, *self.event_engine._trees]
+        ):
+            return None
+        story_ids = set(self.story_tree_engine._nodes) if self.story_tree_engine else set()
+        existing_ids = story_ids | self.event_engine.events.keys()
+        new_node_ids = {node["id"] for node in tree.get("nodes", []) if node.get("id")} - existing_ids
+        valid_ids = story_ids | new_node_ids
         tree_copy = {
             "id": tree["id"],
             "name": tree.get("name", ""),
+            "description": tree.get("description", ""),
             "icon": tree.get("icon", "scroll"),
             "nodes": [],
         }
-        for node in tree.get("nodes", []):
-            if node.get("id") in existing_ids:
+        for node in copy.deepcopy(tree.get("nodes", [])):
+            if not node.get("id") or node["id"] in existing_ids:
                 continue
             # 动态生成的 choice 节点降级为 auto（叙事不会自动展示选项）
             if node.get("type") == "choice":
@@ -745,12 +752,46 @@ class StoryDirectorMixin:
                     continue
             tree_copy["nodes"].append(node)
             existing_ids.add(node["id"])
-        if tree_copy["nodes"]:
+        if not tree_copy["nodes"]:
+            return None
+        if not self.story_tree_engine:
+            from engine.story_tree import StoryTreeEngine
+            self.story_tree_engine = StoryTreeEngine({"trees": []})
+        existing_tree = next((entry for entry in existing_trees if entry["id"] == tree["id"]), None)
+        if existing_tree is None:
             self.story_tree_engine.trees.append(tree_copy)
-            for node in tree_copy["nodes"]:
-                self.story_tree_engine._nodes[node["id"]] = node
-                self.story_tree_engine._tree_for_node[node["id"]] = tree_copy["id"]
-        self.event_engine.inject_dynamic_tree(tree)
+        else:
+            existing_tree["nodes"].extend(tree_copy["nodes"])
+        for node in tree_copy["nodes"]:
+            self.story_tree_engine._nodes[node["id"]] = node
+            self.story_tree_engine._tree_for_node[node["id"]] = tree_copy["id"]
+        self._dynamic_story_tree_ids.add(tree_copy["id"])
+        self.event_engine.inject_dynamic_tree(tree_copy)
+        self.event_engine.shadow_story_nodes = True
+        return tree_copy
+
+    def _hydrate_dynamic_story_runtime(self, state):
+        tree_ids = self._dynamic_story_tree_ids
+        if self.story_tree_engine:
+            engine = self.story_tree_engine
+            engine.trees[:] = [tree for tree in engine.trees if tree["id"] not in tree_ids]
+            for node_id, tree_id in list(engine._tree_for_node.items()):
+                if tree_id in tree_ids:
+                    engine._tree_for_node.pop(node_id)
+                    engine._nodes.pop(node_id, None)
+            if not engine.trees:
+                self.story_tree_engine = None
+        engine = self.event_engine
+        engine._trees[:] = [tree for tree in engine._trees if tree["id"] not in tree_ids]
+        for node_id, tree_id in list(engine._tree_for_event.items()):
+            if tree_id in tree_ids:
+                engine._tree_for_event.pop(node_id)
+                engine.events.pop(node_id, None)
+        tree_ids.clear()
+        engine.shadow_story_nodes = self.story_tree_engine is not None
+        self._hydrate_dynamic_events(state)
+        for tree in state.get("dynamic_story_content", {}).get("trees", []):
+            self._inject_dynamic_tree(tree)
 
     def _inject_dynamic_event(self, evt: dict, kind: str, *, state=None):
         """注入动态事件到 event_scheduler 和 event_engine。"""
@@ -979,9 +1020,7 @@ class StoryDirectorMixin:
         dsc = self.current_state.get("dynamic_story_content")
         if not dsc:
             return
-        for tree in dsc.get("trees", []):
-            self._inject_dynamic_tree(tree)
-        self._hydrate_dynamic_events(self.current_state)
+        self._hydrate_dynamic_story_runtime(self.current_state)
         for entry in dsc.get("lorebook", []):
             self.prompt_builder.lorebook.add_entries([entry])
         self._hydrate_mechanics_runtime(self.current_state)
