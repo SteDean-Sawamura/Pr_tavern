@@ -332,7 +332,7 @@ class AgenticMixin:
                         for message in msgs if message.get("role") == "assistant"
                         for call in message.get("tool_calls", [])
                     }
-                    exact_lore_call_ids = set()
+                    exact_lore_queries = {}
                     for message in msgs:
                         for call in message.get("tool_calls", []):
                             if call.get("function", {}).get("name") != "query_lorebook":
@@ -342,11 +342,11 @@ class AgenticMixin:
                             except (TypeError, ValueError):
                                 continue
                             if isinstance(arguments, dict) and (arguments.get("entry_id") or arguments.get("entry_ids")):
-                                exact_lore_call_ids.add(call.get("id"))
+                                exact_lore_queries[call.get("id")] = arguments
                     latest_exact_lore_result = None
                     for message in reversed(msgs):
                         if (message.get("role") != "tool"
-                                or message.get("tool_call_id") not in exact_lore_call_ids):
+                                or message.get("tool_call_id") not in exact_lore_queries):
                             continue
                         try:
                             result = json.loads(message.get("content") or "{}")
@@ -379,9 +379,30 @@ class AgenticMixin:
                             entry_ids = ([entry.get("id") for entry in entries
                                           if isinstance(entry, dict) and isinstance(entry.get("id"), str)]
                                          if isinstance(entries, list) else [])
+                            lore_arguments = exact_lore_queries.get(m.get("tool_call_id"))
+                            if lore_arguments and isinstance(entries, list) and not _tool_result_failed(tool_result):
+                                requested_ids = lore_arguments.get("entry_ids") or [lore_arguments["entry_id"]]
+                                not_returned_ids = [entry_id for entry_id in requested_ids if entry_id not in entry_ids]
+                                query_status = {
+                                    "requested_ids": requested_ids,
+                                    "returned_ids": entry_ids,
+                                    "not_returned_ids": not_returned_ids,
+                                }
+                                if "offset" in lore_arguments:
+                                    query_status["offset"] = lore_arguments["offset"]
+                                if "projection" in tool_result:
+                                    query_status["projection"] = tool_result["projection"]
+                                if not_returned_ids:
+                                    query_status["note"] = (
+                                        "仅记录本次精确查询未返回的条目，不证明词条不存在，"
+                                        "也不能用旧片段证明本次仍可用。"
+                                    )
+                                summary_parts.append("[世界书查询状态] " + json.dumps(query_status, ensure_ascii=False))
+                                if not entry_ids:
+                                    continue
                             if entry_ids:
                                 is_latest_exact = m is latest_exact_lore_result
-                                is_exact_read = m.get('tool_call_id') in exact_lore_call_ids
+                                is_exact_read = m.get('tool_call_id') in exact_lore_queries
                                 read_spans = [
                                     f"{entry['id']} offset={entry['offset']}, "
                                     f"next_offset={entry.get('next_offset')}, "

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from engine.game_session import GameSession
+from engine.lorebook import Lorebook
 
 
 @pytest.fixture
@@ -57,6 +58,120 @@ def state_feedback(summary):
     lines = [line for line in summary.splitlines() if line.startswith("[状态投影反馈] ")]
     assert len(lines) == 1
     return lines[0]
+
+
+def lore_query_statuses(summary):
+    prefix = "[世界书查询状态] "
+    return [json.loads(line.removeprefix(prefix)) for line in summary.splitlines()
+            if line.startswith(prefix)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batch", [False, True])
+async def test_compaction_keeps_target_of_empty_exact_query(session, batch):
+    target = "test_requested_only_here"
+    arguments = {"entry_ids": [target]} if batch else {"entry_id": target}
+    result = Lorebook([]).query(**arguments)
+    summary = await compact(session, [("query_lorebook", arguments, json.dumps(result))])
+    assert target in summary, summary
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_reason", ["absent", "disabled", "excluded"])
+@pytest.mark.parametrize("batch", [False, True])
+async def test_compaction_preserves_exact_queries_without_results(session, missing_reason, batch):
+    lorebook = Lorebook([{"id": "test_label", "keys": ["label"], "content": "Synthetic label."}])
+    arguments = {"entry_ids": ["test_label"]} if batch else {"entry_id": "test_label"}
+    previous = lorebook.query(**arguments)
+    if missing_reason == "absent":
+        lorebook.remove_entry("test_label")
+    elif missing_reason == "disabled":
+        lorebook.update_entry_enabled("test_label", False)
+    result = lorebook.query(**arguments, excluded_ids={"test_label"} if missing_reason == "excluded" else None)
+    result["projection"] = {
+        "through": "2030-01-01T09:00:00", "event_ids": [], "provisional": True,
+        "note": "Synthetic candidate projection, not settled state or player knowledge.",
+    }
+    assert result["entries"] == []
+    summary = await compact(session, [
+        ("query_lorebook", arguments, json.dumps(previous)),
+        ("query_lorebook", arguments, json.dumps(result)),
+    ])
+    statuses = lore_query_statuses(summary)
+    assert len(statuses) == 2
+    assert statuses[0]["returned_ids"] == ["test_label"]
+    assert statuses[1]["requested_ids"] == ["test_label"]
+    assert statuses[1]["returned_ids"] == []
+    assert statuses[1]["not_returned_ids"] == ["test_label"]
+    assert statuses[1]["projection"] == result["projection"]
+    assert "不证明词条不存在" in statuses[1]["note"]
+
+
+@pytest.mark.asyncio
+async def test_compaction_preserves_partial_batch_query_and_repeated_status(session):
+    lorebook = Lorebook([
+        {"id": "test_label", "keys": ["label"], "content": "Synthetic label."},
+        {"id": "test_closed", "keys": ["closed"], "content": "SYNTHETIC_UNREAD", "enabled": False},
+    ])
+    arguments = {"entry_ids": ["test_label", "test_closed", "test_absent"]}
+    result = lorebook.query(**arguments)
+    summary = await compact(session, [("query_lorebook", arguments, json.dumps(result))])
+    for _ in range(2):
+        summary = await compact(session, [], summary)
+        statuses = lore_query_statuses(summary)
+        assert len(statuses) == 1
+        assert statuses[0]["requested_ids"] == arguments["entry_ids"]
+        assert statuses[0]["returned_ids"] == ["test_label"]
+        assert statuses[0]["not_returned_ids"] == ["test_closed", "test_absent"]
+        assert "SYNTHETIC_UNREAD" not in summary
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("next_arguments", [
+    {"entry_id": "test_other"},
+    {"entry_id": "test_label", "offset": 2000},
+    {"entry_id": "test_label", "offset": -1},
+    {"entry_ids": []},
+    {"keyword": "label", "page": 10},
+])
+async def test_compaction_distinguishes_missing_error_eof_and_search(session, next_arguments):
+    content = "Synthetic evidence. " * 30 + "SYNTHETIC_EVIDENCE_END"
+    lorebook = Lorebook([{"id": "test_label", "keys": ["label"], "content": content}])
+    result = lorebook.query(**next_arguments)
+    summary = await compact(session, [
+        ("query_lorebook", {"entry_id": "test_label"}, json.dumps(lorebook.query(entry_id="test_label"))),
+        ("query_lorebook", next_arguments, json.dumps(result)),
+    ])
+    statuses = lore_query_statuses(summary)
+    assert statuses
+    assert statuses[0]["returned_ids"] == ["test_label"]
+    assert statuses[0]["not_returned_ids"] == []
+    assert "SYNTHETIC_EVIDENCE_END" in summary
+    if next_arguments.get("entry_id") == "test_other":
+        assert len(statuses) == 2
+        assert statuses[1]["not_returned_ids"] == ["test_other"]
+    elif next_arguments.get("offset") == 2000:
+        assert len(statuses) == 2
+        assert statuses[1]["returned_ids"] == ["test_label"]
+        assert statuses[1]["not_returned_ids"] == []
+        assert statuses[1]["offset"] == 2000
+        assert "next_offset=None" in summary
+    else:
+        assert len(statuses) == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_compaction_retains_chronological_query_outcomes(session):
+    lorebook = Lorebook([{"id": "test_label", "keys": ["label"], "content": "Synthetic old label."}])
+    arguments = {"entry_id": "test_label"}
+    summary = None
+    for enabled in (True, False, True):
+        lorebook.update_entry_enabled("test_label", enabled)
+        result = lorebook.query(**arguments)
+        summary = await compact(session, [("query_lorebook", arguments, json.dumps(result))], summary)
+    statuses = lore_query_statuses(summary)
+    assert [status["returned_ids"] for status in statuses] == [["test_label"], [], ["test_label"]]
+    assert [status["not_returned_ids"] for status in statuses] == [[], ["test_label"], []]
 
 
 @pytest.mark.asyncio

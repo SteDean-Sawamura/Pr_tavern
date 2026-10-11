@@ -363,7 +363,7 @@ async def test_retrieval_settlement_stream_and_reload(
         if name == "write_narrative" and interjection_phase == "model":
             retrieved.set()
             await release_narrative.wait()
-        content = "Synthetic prior context. " * 1600 if compact_history and index in (2, 5, 8, 12) else ""
+        content = "Synthetic prior context. " * 1600 if compact_history and index in (2, 5, 8, 12, 14) else ""
         tool_calls = [{
             "id": f"synthetic-call-{index}", "name": name, "arguments": arguments,
         }]
@@ -556,6 +556,24 @@ async def test_retrieval_settlement_stream_and_reload(
                     assert "已接受 2 次状态更新" in final_context
                     assert "已撤销上一个工具调用（update_state）" in final_context
                     assert "请重新查询后再继续推演" in final_context
+                    requery_context = next(request for request in requests
+                                           if any(message.get("tool_call_id") == "synthetic-call-14"
+                                                  for message in request)
+                                           and not any(message.get("tool_call_id") == "synthetic-call-15"
+                                                       for message in request))
+                    assert not any(message.get("tool_call_id") == "synthetic-call-12"
+                                   for message in requery_context)
+                    query_statuses = [json.loads(line.removeprefix("[世界书查询状态] "))
+                                      for message in requery_context
+                                      for line in (message.get("content") or "").splitlines()
+                                      if line.startswith("[世界书查询状态] ")]
+                    assert query_statuses
+                    assert query_statuses[-1]["requested_ids"] == ["test_label"]
+                    assert query_statuses[-1]["not_returned_ids"] == (
+                        [] if lore_effect == "update_lore" else ["test_label"]
+                    )
+                    assert query_statuses[-1]["projection"]["event_ids"] == []
+                    assert query_statuses[-1]["projection"]["provisional"] is True
                     assert "[工具失败] update_state:" in final_context
                 for index, (name, arguments) in enumerate(operations):
                     if name != "consult_rules":
