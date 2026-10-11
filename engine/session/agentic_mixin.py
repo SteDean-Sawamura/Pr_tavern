@@ -25,6 +25,7 @@ from uuid import uuid4
 from typing import TYPE_CHECKING, Callable
 
 from ai.base import strip_think_tags
+from engine.conditions import CONDITION_RULE_SECTIONS, condition_error
 from engine.tool_schemas import CONSOLIDATED_SETTLEMENT_TOOLS, FOREGROUND_TOOLS_SCHEMA, _unified_tools
 
 if TYPE_CHECKING:
@@ -5021,6 +5022,10 @@ class AgenticMixin:
         records = []
         for index, definition in enumerate(category_definitions):
             payload = {"definition": definition}
+            if category in CONDITION_RULE_SECTIONS:
+                error = condition_error(definition.get("condition", ""))
+                if error:
+                    payload["condition_error"] = error
             if category == "variables":
                 payload["current_value"] = self.script_variables.get(self.current_state, definition["id"])
             elif category == "world_properties":

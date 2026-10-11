@@ -522,7 +522,7 @@ class EventEngine:
                 while next_fire and next_fire <= effective_end and iterations < 1000:
                     iterations += 1
                     if next_fire >= t_old:
-                        if ev.condition and condition_eval and not condition_eval(ev.condition):
+                        if condition_eval is not None and not condition_eval(ev.condition):
                             prev = next_fire
                             next_fire = _advance_time(next_fire, freq_val, freq_unit)
                             if next_fire and next_fire <= prev:
@@ -551,7 +551,7 @@ class EventEngine:
                     continue
                 trigger = _parse_time(ev.trigger_time)
                 if trigger and t_old <= trigger <= t_new:
-                    if ev.condition and condition_eval and not condition_eval(ev.condition):
+                    if condition_eval is not None and not condition_eval(ev.condition):
                         continue
                     result.scheduled_events.append({
                         "type": "one_time", "event_id": eid,
@@ -742,7 +742,7 @@ class EventEngine:
                 if not all(r in completed for r in ev.requires):
                     continue
 
-                if ev.condition and condition_eval and not condition_eval(ev.condition):
+                if condition_eval is not None and not condition_eval(ev.condition):
                     continue
 
                 if eid not in unlocked and eid not in active:
@@ -934,7 +934,7 @@ class EventEngine:
                     continue
                 if skip_story_triggers and eid in self._tree_for_event:
                     continue
-                if ev.condition and condition_eval and not condition_eval(ev.condition):
+                if condition_eval is not None and not condition_eval(ev.condition):
                     continue
                 self._apply_effects(ev.effects, result, eid)
                 continue
@@ -942,7 +942,7 @@ class EventEngine:
             if eid in completed or eid in unlocked or es.get(eid, {}).get("status") == "active":
                 continue
             if event_name in ev.activate_on:
-                if ev.condition and condition_eval and not condition_eval(ev.condition):
+                if condition_eval is not None and not condition_eval(ev.condition):
                     continue
                 unlocked.add(eid)
                 es.setdefault(eid, {})["status"] = "unlocked"
@@ -974,7 +974,7 @@ class EventEngine:
             return EventResult()
 
         choice_cond = chosen.get("condition", "")
-        if choice_cond and condition_eval and not condition_eval(choice_cond):
+        if condition_eval is not None and not condition_eval(choice_cond):
             return EventResult()
 
         es.setdefault(event_id, {})["choices_made"] = choice_id
@@ -1533,15 +1533,15 @@ class EventEngine:
     @staticmethod
     def _auto_resolve_choice(ev: GameEvent, condition_eval: Callable | None) -> dict | None:
         choices = ev.choices
-        if not choices:
-            return None
-        for c in choices:
-            cond = c.get("condition", "")
-            if not cond:
-                continue
-            if condition_eval and condition_eval(cond):
-                return c
-        return next((c for c in choices if not c.get("condition")), choices[-1])
+        fallback = None
+        for choice in choices:
+            condition = choice.get("condition", "")
+            if isinstance(condition, str) and not condition.strip():
+                if fallback is None:
+                    fallback = choice
+            elif condition_eval is not None and condition_eval(condition):
+                return choice
+        return fallback
 
     @staticmethod
     def _event_to_dict(ev: GameEvent) -> dict:

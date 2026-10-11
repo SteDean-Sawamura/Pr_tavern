@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 from config import SCRIPTS_DIR
+from engine.conditions import CONDITION_RULE_SECTIONS, condition_error
 
 
 def _migrate_npc_orgs(script: dict):
@@ -92,6 +93,12 @@ class ScriptLoader:
         npc_ids = [npc["id"] for npc in script.get("npcs", [])]
         if len(npc_ids) != len(set(npc_ids)):
             errors.append({"msg": "Duplicate NPC IDs found", "target": "npcs", "field": "id"})
+
+        for section in CONDITION_RULE_SECTIONS:
+            for rule in script.get(section, []):
+                error = condition_error(rule.get("condition", ""))
+                if error:
+                    errors.append({"msg": error, "target": f"{section}:{rule.get('id', '?')}", "field": "condition"})
 
         return errors
 

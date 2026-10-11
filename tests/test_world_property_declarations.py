@@ -12,15 +12,20 @@ from fastapi import FastAPI
 
 from api import config_routes, game_routes
 from db import database
+from engine.conditions import condition_error
 from engine.game_session import GameSession
 from engine.script_loader import ScriptLoader
 from test_agent_harness_execution import _stream_events
 
 
-def make_session(property_id="test_flight_capacity", gate_value=None):
+def make_session(property_id="test_flight_capacity", gate_value=None, condition_style="simple"):
     condition = f"world_properties.{property_id} == open"
     if gate_value is not None:
         condition += f" AND script_variables.test_inspected == {str(gate_value).lower()}"
+    if condition_style == "grouped":
+        condition = f"({condition}) AND (world_properties.{property_id} == open OR world_properties.{property_id} == unlocked)"
+    elif condition_style == "malformed":
+        condition += " OR"
     script = {
         "script_id": "synthetic-world-declarations", "name": "Synthetic world declarations", "settings": {},
         "start_time": "2030-01-01T09:00:00",
@@ -188,10 +193,15 @@ def test_rule_query_searches_and_rereads_full_committed_world_values():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cursor_change", [None, "update", "undo"])
 @pytest.mark.parametrize("gate_value", [None, True, False])
-async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_branches(tmp_path, monkeypatch, cursor_change, gate_value):
-    session, script = make_session(gate_value=gate_value)
+@pytest.mark.parametrize("condition_style", ["simple", "grouped", "malformed"])
+async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_branches(tmp_path, monkeypatch, cursor_change, gate_value, condition_style):
+    session, script = make_session(gate_value=gate_value, condition_style=condition_style)
     session.save_id = "synthetic-world-save"
     property_id = script["world_properties"][0]["id"]
+    malformed = condition_style == "malformed"
+    expected_events = [] if malformed else ["test_check_access"]
+    expected_connections = [] if malformed else ["test_archive"]
+    expected_error = condition_error(script["one_time_events"][0]["condition"])
     narrative = (
         "You remain in the reading room and inspect the empty shelf carefully. "
         "The shelf is firmly attached to the wall, and there is nothing behind it. "
@@ -314,14 +324,21 @@ async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_br
             name, arguments = "query_lorebook", {"entry_id": "test_notice"}
         elif index == 5:
             lore = json.loads(completed[4])
-            assert [entry["id"] for entry in lore["entries"]] == ["test_notice"]
+            assert [entry["id"] for entry in lore["entries"]] == ([] if malformed else ["test_notice"])
             assert lore["projection"]["provisional"] is True
-            assert lore["projection"]["event_ids"] == ["test_check_access"]
+            assert lore["projection"]["event_ids"] == expected_events
             assert session.current_state["world_properties"][property_id] == "closed"
             assert "test_archive" not in session.current_state["location_connections"].get("test_room", [])
+            name, arguments = "consult_rules", {"category": "one_time_events"}
+        elif index == 6:
+            payload = json.loads(json.loads(completed[5])["entries"][0]["content"])
+            assert payload["definition"] == script["one_time_events"][0]
+            assert ("condition_error" in payload) is malformed
+            if malformed:
+                assert payload["condition_error"] == expected_error
             name, arguments = "write_narrative", {"text": narrative}
         else:
-            assert index == 6
+            assert index == 7
             name, arguments = "finalize_turn", {"summary": "Inspected the shelf.", "choices": []}
         parameters = next(tool["function"]["parameters"] for tool in kwargs["tools"] if tool["function"]["name"] == name)
         assert arguments.keys() <= parameters["properties"].keys()
@@ -390,9 +407,9 @@ async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_br
             if gate_value is not None:
                 assert "script_variables" not in final["state"]
                 assert session.current_state["script_variables"]["test_inspected"] is gate_value
-            assert final["state"]["location_connections"]["test_room"] == ["test_archive"]
-            assert session.current_state["fired_one_time_events"] == ["test_check_access"]
-            assert len(requests) == 7 + cursor_calls
+            assert final["state"]["location_connections"].get("test_room", []) == expected_connections
+            assert session.current_state.get("fired_one_time_events", []) == expected_events
+            assert len(requests) == 8 + cursor_calls
             calls_before_replay = provider.generate_with_tools.await_count
             replay = await client.post(endpoint, json=action)
             assert replay.text == response.text
@@ -407,9 +424,14 @@ async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_br
             node = await game_routes.get_tree_node(session.save_id, final["node_id"])
             assert node["agent_trace"]["rounds"]
             for marker in ("SYNTHETIC_WORLD_RULE", "SYNTHETIC_WORLD_LORE"):
-                assert marker in json.dumps(requests)
+                assert (marker in json.dumps(requests)) is (marker != "SYNTHETIC_WORLD_LORE" or not malformed)
                 assert marker not in response.text
                 assert marker not in json.dumps(node["agent_trace"])
+            if malformed:
+                for marker in ("condition_error", expected_error):
+                    assert marker in json.dumps(requests)
+                    assert marker not in response.text
+                    assert marker not in json.dumps(node["agent_trace"])
             if cursor_change:
                 assert recovered_payload is not None and cursor_phase == "done"
                 for marker in ("SYNTHETIC_CURSOR_BEFORE_", "SYNTHETIC_CURSOR_AFTER_", *snapshots):
@@ -424,9 +446,9 @@ async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_br
                 payload = json.loads(rules["entries"][0]["content"])
                 assert payload["definition"] == script["world_properties"][0]
                 assert payload["current_value"] == value
-                assert restored._evaluate_condition(script["one_time_events"][0]["condition"]) == (value == "open")
-                assert ("test_archive" in restored.current_state["location_connections"].get("test_room", [])) == (value == "open")
-            assert restored.current_state["fired_one_time_events"] == ["test_check_access"]
+                assert restored._evaluate_condition(script["one_time_events"][0]["condition"]) == (value == "open" and not malformed)
+                assert ("test_archive" in restored.current_state["location_connections"].get("test_room", [])) == (value == "open" and not malformed)
+            assert restored.current_state.get("fired_one_time_events", []) == expected_events
         async with database.get_db() as db:
             row = await (await db.execute("SELECT COUNT(*) FROM tree_nodes WHERE save_id = ?", (session.save_id,))).fetchone()
             assert row[0] == 2

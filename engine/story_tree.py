@@ -81,7 +81,7 @@ class StoryTreeEngine:
                     if not any(e in (active_events or []) for e in node_events):
                         continue
                     condition = node.get("condition", "")
-                    if condition and condition_eval and not condition_eval(condition):
+                    if condition_eval is not None and not condition_eval(condition):
                         continue
                     self._apply_effects(node.get("effects", {}), result, nid)
                     continue
@@ -103,7 +103,7 @@ class StoryTreeEngine:
                     continue
 
                 condition = node.get("condition", "")
-                if condition and condition_eval and not condition_eval(condition):
+                if condition_eval is not None and not condition_eval(condition):
                     continue
 
                 if nid not in unlocked:
@@ -212,7 +212,7 @@ class StoryTreeEngine:
             return StoryTreeResult()
 
         choice_cond = chosen.get("condition", "")
-        if choice_cond and condition_eval and not condition_eval(choice_cond):
+        if condition_eval is not None and not condition_eval(choice_cond):
             return StoryTreeResult()
 
         sts["choices_made"][node_id] = choice_id
@@ -274,7 +274,7 @@ class StoryTreeEngine:
                 events = node.get("activate_events", [])
                 if event in events:
                     condition = node.get("condition", "")
-                    if condition and condition_eval and not condition_eval(condition):
+                    if condition_eval is not None and not condition_eval(condition):
                         continue
                     unlocked.add(nid)
                     changed = True
@@ -288,18 +288,17 @@ class StoryTreeEngine:
         node: dict,
         condition_eval: Callable[[str], bool] | None,
     ) -> dict | None:
-        """Pick the first choice whose condition is met, or the last choice as fallback."""
+        """Pick the first matching condition, otherwise an unconditional default."""
         choices = node.get("choices", [])
-        if not choices:
-            return None
-        for c in choices:
-            cond = c.get("condition", "")
-            if not cond:
-                continue
-            if condition_eval and condition_eval(cond):
-                return c
-        # Fallback: last choice (should be the unconditional default)
-        return choices[-1]
+        fallback = None
+        for choice in choices:
+            condition = choice.get("condition", "")
+            if isinstance(condition, str) and not condition.strip():
+                if fallback is None:
+                    fallback = choice
+            elif condition_eval is not None and condition_eval(condition):
+                return choice
+        return fallback
 
     def _complete_node(
         self,

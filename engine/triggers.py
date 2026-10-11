@@ -3,6 +3,7 @@
 import re
 import operator
 
+from engine.conditions import evaluate_condition
 from engine.script_variables import ScriptVariables
 
 _OPS = {
@@ -34,7 +35,7 @@ class TriggerEngine:
                 continue
             # Schema B (剧本格式): {"condition": "event.xxx.fired", "actions": [{type, target}]}
             cond = t.get("condition", "")
-            if cond.startswith("event.") and cond.endswith(".fired"):
+            if isinstance(cond, str) and cond.startswith("event.") and cond.endswith(".fired"):
                 cond_event_id = cond[6:-6]
                 if cond_event_id == event:
                     for act in t.get("actions", []):
@@ -43,13 +44,14 @@ class TriggerEngine:
 
     def _check_condition(self, trigger: dict, state: dict, condition_eval=None) -> bool:
         cond = trigger.get("condition", "")
-        if not cond:
-            return True
         if condition_eval is not None:
             return condition_eval(cond, state)
-        m = _COND_RE.match(cond.strip())
+        return evaluate_condition(cond, lambda term: self._compare_condition(term, state))
+
+    def _compare_condition(self, condition: str, state: dict) -> bool:
+        m = _COND_RE.fullmatch(condition.strip())
         if not m:
-            return True
+            return False
         var_id, op_str, raw_val = m.group(1), m.group(2), m.group(3).strip().strip('"').strip("'")
         current = self.variables.get(state, var_id)
         if current is None:

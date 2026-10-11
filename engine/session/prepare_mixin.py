@@ -9,6 +9,7 @@ import re
 from datetime import timedelta
 from math import ceil
 
+from engine.conditions import evaluate_condition
 from engine.event_scheduler import parse_time, public_event_notifications
 from engine.prompt_builder import PromptBuilder
 
@@ -938,29 +939,16 @@ class PrepareMixin:
           'player.health < 30 AND current_weather == 暴雨'
           'player.gold > 100 OR player.reputation > 50'
         """
-        stripped = condition.strip()
-        for operator, aggregate in ((r'\bOR\b|\|\|', any), (r'\bAND\b|&&', all)):
-            parts = []
-            start = 0
-            pattern = r'''"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|''' + operator
-            for match in re.finditer(pattern, stripped):
-                if match.group().startswith(('"', "'")):
-                    continue
-                parts.append(stripped[start:match.start()].strip())
-                start = match.end()
-            if parts:
-                parts.append(stripped[start:].strip())
-                return aggregate(self._evaluate_condition(part, state) for part in parts)
-        return self._evaluate_single_condition(stripped, state)
+        return evaluate_condition(condition, lambda term: self._evaluate_single_condition(term, state))
 
     def _evaluate_single_condition(self, condition: str, state: dict | None = None) -> bool:
         """Evaluate a single condition expression (no AND/OR)."""
         state = self.current_state if state is None else state
         if re.fullmatch(r'event\.\w+\.fired', condition.strip()):
             condition = f'{condition.strip()} == true'
-        m = re.match(r'([\w.]+)\s*(==|!=|<=|>=|<|>)\s*(.+)', condition.strip())
+        m = re.fullmatch(r'(\w+(?:\.\w+)*)\s*(==|!=|<=|>=|<|>)\s*(.+)', condition.strip(), re.DOTALL)
         if not m:
-            return True  # No parseable condition — always trigger
+            return False
         path, op, raw_val = m.group(1), m.group(2), m.group(3).strip().strip('"').strip("'")
         boolean_target = {"true": True, "false": False, "1": True, "0": False,
                           "yes": True, "no": False}.get(raw_val.casefold())

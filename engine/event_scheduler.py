@@ -119,7 +119,7 @@ class EventScheduler:
                 iterations += 1
                 if next_fire >= t_old:
                     cond = event.get("condition", "")
-                    if cond and condition_eval and not condition_eval(cond):
+                    if condition_eval is not None and not condition_eval(cond):
                         prev_fire = next_fire
                         next_fire = self._advance_time(
                             next_fire,
@@ -153,7 +153,7 @@ class EventScheduler:
             trigger_time = parse_time(event.get("trigger_time"))
             if trigger_time and t_old <= trigger_time <= t_new:
                 cond = event.get("condition", "")
-                if cond and condition_eval and not condition_eval(cond):
+                if condition_eval is not None and not condition_eval(cond):
                     continue
                 triggered.append({
                     "type": "one_time",
