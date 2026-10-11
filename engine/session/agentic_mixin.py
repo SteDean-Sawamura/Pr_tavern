@@ -4390,22 +4390,10 @@ class AgenticMixin:
             }
         return json.dumps(result, ensure_ascii=False)
 
-    async def _query_lorebook_for_turn(self, ctx: dict, args: dict) -> str:
-        updates = ctx.get("_accepted_state_updates", [])
-        end_time = next((update["end_time"] for update in reversed(updates)
-                         if update.get("end_time")), None)
-        if not updates:
-            return await self._run_tool_native_async("query_lorebook", args)
+    def _project_lorebook_for_turn(self, projected_state: dict, events: list[dict]):
         lorebook = getattr(self.prompt_builder, "lorebook", None)
         if lorebook is None:
-            return await self._run_tool_native_async("query_lorebook", args)
-
-        if end_time and ctx.get("old_time"):
-            events, projected_state = self._projected_events(ctx, with_state=True)
-        else:
-            events, projected_state = [], self._project_state_tool_updates(updates)
-        if end_time:
-            projected_state["game_time"] = end_time
+            return None
         original_dynamic_lore = {
             entry["id"]: entry for entry in self.current_state.get("dynamic_lorebook", []) if entry.get("id")
         }
@@ -4455,6 +4443,21 @@ class AgenticMixin:
                 preview_lorebook.update_entry_enabled(entry_id, False)
             for entry_id in trigger_lore.get("lore_reveals", []):
                 preview_lorebook.update_entry_enabled(entry_id, True)
+        return preview_lorebook
+
+    async def _query_lorebook_for_turn(self, ctx: dict, args: dict) -> str:
+        updates = ctx.get("_accepted_state_updates", [])
+        end_time = next((update["end_time"] for update in reversed(updates)
+                         if update.get("end_time")), None)
+        if not updates or getattr(self.prompt_builder, "lorebook", None) is None:
+            return await self._run_tool_native_async("query_lorebook", args)
+        if end_time and ctx.get("old_time"):
+            events, projected_state = self._projected_events(ctx, with_state=True)
+        else:
+            events, projected_state = [], self._project_state_tool_updates(updates)
+        if end_time:
+            projected_state["game_time"] = end_time
+        preview_lorebook = self._project_lorebook_for_turn(projected_state, events)
 
         result = preview_lorebook.query(
             keyword=args.get("keyword", ""), entry_id=args.get("entry_id", ""),
@@ -4583,16 +4586,19 @@ class AgenticMixin:
             changes = self._npc_attitude_to_state_changes(list(unique_reactions.values()), state=projected)
             projected, _ = self.state_manager.apply_changes(projected, changes, inplace=True)
             self._sync_dirty_npc_attitudes(projected, {change["target"].split(".")[2] for change in changes})
+        events = []
         if ctx.get("old_time") and (end_time or ctx.get("new_time")):
-            _, projected = self._projected_events(
+            events, projected = self._projected_events(
                 {"old_time": ctx["old_time"], "new_time": end_time or ctx["new_time"]},
                 with_state=True, base_state=projected,
             )
+        lorebook = self._project_lorebook_for_turn(projected, events)
         return [str(claim.get("entry_id", "?")) if isinstance(claim, dict) else "?"
                 for claim in args.get("lore_reveals", [])
                 if self._validated_npc_lore_reveal(
                     projected, claim, narrative, ctx.get("present_npc_ids"),
                     turn_start_time=ctx.get("old_time"), turn_end_time=end_time,
+                    lorebook=lorebook,
                 ) is None]
 
     def _narrative_quotes_private_script(self, narrative: str) -> bool:

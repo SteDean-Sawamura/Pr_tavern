@@ -1501,10 +1501,11 @@ class StateApplyMixin:
 
     def _validated_npc_lore_reveal(self, state, claim, narrative, present_npc_ids,
                                     *, require_attitude=True, turn_start_time=None,
-                                    turn_end_time=None):
-        if not isinstance(claim, dict) or not self.prompt_builder.lorebook:
+                                    turn_end_time=None, lorebook=None):
+        lorebook = self.prompt_builder.lorebook if lorebook is None else lorebook
+        if not isinstance(claim, dict) or not lorebook:
             return None
-        entry = next((entry for entry in self.prompt_builder.lorebook.entries
+        entry = next((entry for entry in lorebook.entries
                       if entry.id == claim.get("entry_id")), None)
         if not entry or not entry.enabled or entry.visibility != "hidden":
             return None
