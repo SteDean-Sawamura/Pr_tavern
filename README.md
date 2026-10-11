@@ -865,6 +865,10 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 ### 当前剧情节点与选择发现
 
+玩家端的大地图选项、剧情树与选择提交后的树视图共用当前分支读取：已登记的剧情节点以剧情树引擎为准，事件引擎只补充独立节点，陈旧影子状态或定义不覆盖规范节点。激活中的选择使用与实际提交相同的条件求值；缺省或空字符串条件可用，显式 `null`、布尔值、数字、列表、对象及非法表达式不能被当作无条件。未满足条件的选项不生成按钮，已完成节点保留既有选择记录，不因后来条件变化删除历史。
+
+玩家查询只在状态副本上初始化或兼容迁移，不改变当前状态、存档或机制定义，也不推进剧情、事件或节点计时。`tests/test_player_story_choices.py` 使用合成声明与隔离 SQLite 验证两个查询入口、提交响应、双引擎来源、独立事件、重载和分支往返；这些是离线 API 证据，不代表浏览器或真实模型体验验收。正式提交仍重新校验状态和条件；本轮不新增 Agent 自动代选能力，也不改变分支来源校验协议。
+
 统一 Agent 可先调用 `consult_rules(category="story_nodes", view="runtime", node_status="active")` 发现当前分支的节点与选择，不必根据少量剧情摘要猜测 ID，也不必逐个模拟全部声明。省略 `node_status` 查询全部节点；支持 `active`、`completed`、`unlocked`、`locked` 四种存档状态筛选，`query` 在运行态响应内容中检索。列表仍每页最多5条，按顶层 `next_offset` 和 `snapshot` 续读，并保留视图、筛选条件与候选参数；`rule_index` 是原类别索引，不是筛选后的序号。
 
 运行态条目只含 `tree_id`、`node_id`、名称、类型、状态、`chosen_choice_id`、选择列表，以及适用的计时或冷却信息，不重复规则正文。`choices` 提供 `choice_id`、标签、`available` 和 `reason`；可用性遵循现有选择结算的激活检查和条件求值，失败区分 `node_not_active` 与 `condition_not_met`，条件格式错误另附诊断。`unlocked` 不等于已激活或可以提交；冷却已结束也不在查询中重置已完成状态。默认查询不初始化或迁移状态、不触发事件或结算效果；所有视图均不运行剧情树求值、不推进节点计时。

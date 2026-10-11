@@ -2794,6 +2794,38 @@ def _player_story_trees(trees: list[dict], script: dict) -> list[dict]:
     return public_trees
 
 
+def _current_story_trees(session: GameSession) -> list[dict]:
+    story_state = copy.deepcopy(session.current_state)
+    story_nodes = session.story_tree_engine._nodes if session.story_tree_engine else {}
+    trees = session.story_tree_engine.get_visible_trees(story_state, session.turn_number) if session.story_tree_engine else []
+    event_state = copy.deepcopy(session.current_state)
+    if session.event_engine:
+        trees_by_id = {tree["id"]: tree for tree in trees}
+        for tree in session.event_engine.get_visible_trees(event_state, session.turn_number):
+            tree["nodes"] = [node for node in tree["nodes"] if node["id"] not in story_nodes]
+            if not tree["nodes"]:
+                continue
+            if tree["id"] in trees_by_id:
+                trees_by_id[tree["id"]]["nodes"].extend(tree["nodes"])
+            else:
+                trees.append(tree)
+                trees_by_id[tree["id"]] = tree
+    for tree in trees:
+        for node in tree["nodes"]:
+            if node["type"] != "choice" or node["status"] != "active":
+                continue
+            if node["id"] in story_nodes:
+                source_choices = story_nodes[node["id"]].get("choices", [])
+                state = story_state
+            else:
+                source_choices = session.event_engine.events[node["id"]].choices
+                state = event_state
+            available_ids = {choice["id"] for choice in source_choices
+                             if session._evaluate_condition(choice.get("condition", ""), state)}
+            node["choices"] = [choice for choice in node["choices"] if choice["id"] in available_ids]
+    return trees
+
+
 class StoryTreeChoiceRequest(BaseModel):
     node_id: str
     choice_id: str
@@ -2808,29 +2840,17 @@ async def get_active_story_choices(save_id: str):
             session = await _restore_session(save_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Game session not found")
-        trees = []
-        if session.event_engine:
-            trees = session.event_engine.get_visible_trees(session.current_state, session.turn_number)
-        elif session.story_tree_engine:
-            trees = session.story_tree_engine.get_visible_trees(session.current_state, session.turn_number)
+        trees = _current_story_trees(session)
         pending = []
         for tree in trees:
             for node in tree["nodes"]:
                 if node.get("type") != "choice" or node.get("status") != "active":
                     continue
-                if session.event_engine:
-                    source_choices = session.event_engine.events[node["id"]].choices
-                else:
-                    source_choices = session.story_tree_engine._nodes[node["id"]].get("choices", [])
-                available_ids = {
-                    choice["id"] for choice in source_choices
-                    if not choice.get("condition") or session._evaluate_condition(choice["condition"])
-                }
                 choices = [{
                     "id": choice["id"],
                     "label": choice["label"],
                     "description": choice.get("description", ""),
-                } for choice in node.get("choices", []) if choice["id"] in available_ids]
+                } for choice in node.get("choices", [])]
                 if choices:
                     pending.append({"id": node["id"], "name": node["name"], "choices": choices})
         return {"choices": pending}
@@ -2845,11 +2865,7 @@ async def get_story_tree(save_id: str):
             session = await _restore_session(save_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Game session not found")
-        trees = []
-        if session.event_engine:
-            trees = session.event_engine.get_visible_trees(session.current_state, session.turn_number)
-        elif session.story_tree_engine:
-            trees = session.story_tree_engine.get_visible_trees(session.current_state, session.turn_number)
+        trees = _current_story_trees(session)
 
         ot_view = []
         fired_set = set(session.current_state.get("fired_one_time_events", []))
@@ -2893,8 +2909,9 @@ async def get_story_tree(save_id: str):
                 "last_fired": tracker.get("last_fired", ""),
             })
 
-        threads = session.event_engine.get_events_by_category(session.current_state, "thread") if session.event_engine else []
-        clues = session.event_engine.get_events_by_category(session.current_state, "clue") if session.event_engine else []
+        view_state = copy.deepcopy(session.current_state)
+        threads = session.event_engine.get_events_by_category(view_state, "thread") if session.event_engine else []
+        clues = session.event_engine.get_events_by_category(view_state, "clue") if session.event_engine else []
         return {
             "trees": _player_story_trees(trees, session.script),
             "one_time_events": ot_view,
@@ -2925,7 +2942,6 @@ async def story_tree_choice(save_id: str, req: StoryTreeChoiceRequest, summary_o
                 raise HTTPException(status_code=404, detail="Game session not found")
         if not session.story_tree_engine and not session.event_engine:
             raise HTTPException(status_code=400, detail="此剧本没有剧情树")
-        view_engine = session.event_engine or session.story_tree_engine
         snapshot = _capture_generation_state(session)
         deferred_lore_ids = set()
         previous_deferred_ids = session._deferred_lore_vector_ids
@@ -2935,7 +2951,7 @@ async def story_tree_choice(save_id: str, req: StoryTreeChoiceRequest, summary_o
             if result is not None and not result.newly_completed:
                 await _rollback_generation_state(session, snapshot)
             if not summary_only:
-                trees = view_engine.get_visible_trees(copy.deepcopy(session.current_state), session.turn_number)
+                trees = _current_story_trees(session)
             if session.current_state != snapshot["state"]:
                 await _persist_active_state(session)
         except BaseException:
