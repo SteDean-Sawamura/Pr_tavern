@@ -103,7 +103,7 @@ _ROLLBACK_FIELDS = (
     ("narrative_graph", ("nodes", "edges")),
     ("director_notes", ("notes",)),
     ("world_clock", ("last_tick_time", "pending_events")),
-    ("prompt_builder", ("_npc_name_map", "_branch_lore_ids", "_branch_npc_ids")),
+    ("prompt_builder", ("_npc_name_map", "_branch_lore_ids", "_branch_npc_ids", "_lorebook_override_ids")),
     ("prompt_builder.lorebook", ("entries", "_precomputed")),
     ("", ("_pending_world_events", "_last_tool_result",
           "_settlement_messages", "_last_activity_time", "_stable_prefix",
@@ -2925,42 +2925,50 @@ async def story_tree_choice(save_id: str, req: StoryTreeChoiceRequest, summary_o
                 raise HTTPException(status_code=404, detail="Game session not found")
         if not session.story_tree_engine and not session.event_engine:
             raise HTTPException(status_code=400, detail="此剧本没有剧情树")
-        if session.event_engine:
-            node = session.event_engine.events.get(req.node_id)
-            selectable = node is not None and node.category == "choice"
+        story_node = session.story_tree_engine._nodes.get(req.node_id) if session.story_tree_engine else None
+        use_story_tree = story_node is not None
+        if use_story_tree:
+            selectable = story_node.get("type") == "choice"
         else:
-            node = session.story_tree_engine._nodes.get(req.node_id)
-            selectable = node is not None and node.get("type") == "choice"
+            node = session.event_engine.events.get(req.node_id) if session.event_engine else None
+            selectable = node is not None and node.category == "choice"
+        view_engine = session.event_engine or session.story_tree_engine
         if not selectable:
             if summary_only:
                 return {"success": False}
-            engine = session.event_engine or session.story_tree_engine
-            trees = engine.get_visible_trees(session.current_state, session.turn_number)
+            trees = view_engine.get_visible_trees(copy.deepcopy(session.current_state), session.turn_number)
             return {"success": False, "completed": [], "notifications": [],
                     "trees": _player_story_trees(trees, session.script)}
         snapshot = _capture_generation_state(session)
+        deferred_lore_ids = set()
+        previous_deferred_ids = session._deferred_lore_vector_ids
+        session._deferred_lore_vector_ids = deferred_lore_ids
         try:
-            if session.event_engine:
-                result = session.event_engine.make_choice(
-                    session.current_state, req.node_id, req.choice_id,
-                    condition_eval=session._evaluate_condition,
-                )
-                session._apply_event_result(result)
-                if not summary_only:
-                    trees = session.event_engine.get_visible_trees(session.current_state, session.turn_number)
-            else:
-                result = session.story_tree_engine.make_choice(
-                    session.current_state, req.node_id, req.choice_id,
-                    condition_eval=session._evaluate_condition,
-                )
+            engine = session.story_tree_engine if use_story_tree else session.event_engine
+            result = engine.make_choice(
+                session.current_state, req.node_id, req.choice_id,
+                condition_eval=session._evaluate_condition,
+            )
+            if not result.newly_completed:
+                await _rollback_generation_state(session, snapshot)
+            elif use_story_tree:
+                if session.event_engine:
+                    session.event_engine.sync_story_tree_state(session.current_state)
                 session._apply_story_tree_result(result)
-                if not summary_only:
-                    trees = session.story_tree_engine.get_visible_trees(session.current_state, session.turn_number)
+                if session.event_engine:
+                    session.event_engine.sync_story_tree_state(session.current_state)
+            else:
+                session._apply_event_result(result)
+            if not summary_only:
+                trees = view_engine.get_visible_trees(copy.deepcopy(session.current_state), session.turn_number)
             if session.current_state != snapshot["state"]:
                 await _persist_active_state(session)
         except BaseException:
             await _rollback_generation_state(session, snapshot)
             raise
+        finally:
+            session._deferred_lore_vector_ids = previous_deferred_ids
+        session._sync_lorebook_vectors(deferred_lore_ids)
         success = len(result.newly_completed) > 0
         if summary_only:
             return {"success": success}
@@ -3368,6 +3376,7 @@ async def _persist_active_state(session: GameSession) -> None:
         )
         await db.commit()
     node["state_snapshot"] = copy.deepcopy(session.current_state)
+    node["_state_hash"] = session.world_tree.state_hash(node["state_snapshot"])
 
 
 async def _persist_query_exchange(session: GameSession, question: str, answer: str,

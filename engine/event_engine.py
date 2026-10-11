@@ -354,6 +354,27 @@ class EventEngine:
         es = state.setdefault("events", {})
         return es
 
+    def sync_story_tree_state(self, state: dict):
+        if not self.shadow_story_nodes:
+            return
+        story_state = state.get("story_tree_state", {})
+        statuses = [(status, set(story_state.get(status, [])))
+                    for status in ("completed", "active", "unlocked")]
+        events = self._init_state(state)
+        for node_id in self._tree_for_event:
+            if self.events[node_id].category == "trigger":
+                continue
+            entry = events.setdefault(node_id, {})
+            entry["status"] = next((status for status, node_ids in statuses if node_id in node_ids), "locked")
+            for story_key, event_key in (("choices_made", "choices_made"),
+                                         ("timed_progress", "progress"),
+                                         ("periodic_cooldowns", "cooldown_until")):
+                values = story_state.get(story_key, {})
+                if node_id in values:
+                    entry[event_key] = copy.deepcopy(values[node_id])
+                else:
+                    entry.pop(event_key, None)
+
     def _migrate_state(self, state: dict):
         if "events" in state and state["events"]:
             return

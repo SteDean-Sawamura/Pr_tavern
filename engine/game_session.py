@@ -160,6 +160,7 @@ class GameSession(
         self.logit_bias: list[dict] = []  # [{"text": "暴力", "bias": -5}, ...]
         self._background_tasks: set[asyncio.Task] = set()
         self._index_tasks: set[asyncio.Task] = set()
+        self._deferred_lore_vector_ids: set[str] | None = None
         self._deferred_tasks: set[asyncio.Task] = set()
         self._deferred_story_task: asyncio.Task | None = None
         self._deferred_story_source: tuple | None = None
@@ -3586,6 +3587,9 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
         self._sync_lorebook_vectors(changed_ids)
 
     def _sync_lorebook_vectors(self, entry_ids):
+        if self._deferred_lore_vector_ids is not None:
+            self._deferred_lore_vector_ids.update(entry_ids)
+            return
         if not self.vector_memory or not entry_ids:
             return
         entries = {entry.id: entry for entry in self.prompt_builder.lorebook.entries}
