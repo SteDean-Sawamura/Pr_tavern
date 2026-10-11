@@ -492,7 +492,7 @@ class PrepareMixin:
             )
             self._apply_story_tree_result(story_tree_result)
 
-        self._run_turn_computations(story_tree_result, check_result, achieved_milestones)
+        all_state_changes.extend(self._run_turn_computations(story_tree_result, check_result, achieved_milestones))
 
         # Build AI prompts
         if not dice_enabled:

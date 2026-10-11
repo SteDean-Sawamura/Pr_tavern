@@ -211,7 +211,7 @@ async def test_goal_discovery_and_compaction_keep_reread_coordinates_not_rules(m
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("dynamic, threshold, reward", [(False, 7, 3), (True, 9, 5)])
-async def test_agent_reads_goal_rules_then_settles_once_after_reload(tmp_path, monkeypatch, dynamic, threshold, reward):
+async def test_agent_reads_goal_rules_then_settles_same_turn_once_after_reload(tmp_path, monkeypatch, dynamic, threshold, reward):
     session, script = make_session(dynamic)
     declaration = updates("Inspect the catalog.", threshold)
     for category, _ in CATEGORIES:
@@ -294,11 +294,11 @@ async def test_agent_reads_goal_rules_then_settles_once_after_reload(tmp_path, m
             assert final["narrative"] == narrative and steps == list(range(6))
             state = await stored_state(session)
             assert state["script_variables"]["test_gate"] == threshold
-            assert state["player"]["gold"] == (10 + reward if turn else 10)
+            assert state["player"]["gold"] == 10 + reward
             for category, actor_id in CATEGORIES:
-                assert sum(record["id"] == f"{actor_id}:test_new_goal" for record in state.get(f"completed_{category}", [])) == turn
+                assert sum(record["id"] == f"{actor_id}:test_new_goal" for record in state.get(f"completed_{category}", [])) == 1
                 record, = payloads(query_goals(session, category, query="test_new_goal"))
-                assert record["status"] == ("completed" if turn else "pending")
+                assert record["status"] == "completed"
             calls = session.ai_provider.generate_with_tools.await_count
             assert (await client.post(endpoint, json=action)).text == response.text
             assert session.ai_provider.generate_with_tools.await_count == calls

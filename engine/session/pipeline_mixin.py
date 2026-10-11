@@ -1099,7 +1099,7 @@ class PipelineMixin:
         # Phase 1: independent computations
         self._evaluate_tone(story_tree_result)
         self._check_npc_goals()
-        self._check_org_goals()
+        goal_changes = self._check_org_goals()
         self._check_npc_goal_conflicts()
         self._update_companion_loyalty()
         self._sync_companions()
@@ -1115,6 +1115,7 @@ class PipelineMixin:
         self._check_npc_secrets()
         self._check_npc_interventions()
         self._compute_active_effects_summary()
+        return goal_changes
 
     async def _build_compose_context(self, plot_decision: str, ctx: dict, scope: str = "moderate", *, state: dict | None = None) -> str:
         """Build compose_history for Stage 3, can run in parallel with Stage 2."""

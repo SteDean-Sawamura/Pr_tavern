@@ -614,8 +614,11 @@ class StateApplyMixin:
         if ctx.get("_agentic_post_processed"):
             self._record_narrative_facts(result.get("narrative", ""), ctx)
 
+        self._check_npc_goals()
+        all_state_changes.extend(self._check_org_goals())
         result["state"] = self.current_state
         if node:
+            node["state_changes"] = all_state_changes
             node["state_snapshot"] = copy.deepcopy(self.current_state)
             node["_state_hash"] = self.world_tree.state_hash(node["state_snapshot"])
 

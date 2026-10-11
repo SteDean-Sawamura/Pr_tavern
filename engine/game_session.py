@@ -4892,6 +4892,7 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
 
     def _check_org_goals(self):
         """Check organization goal completion conditions and record callbacks."""
+        state_changes = []
         completed_goals = self.current_state.get("completed_org_goals", [])
         completed_ids = {(g["id"] if isinstance(g, dict) else g) for g in completed_goals}
         for org_def in self.script.get("organizations", []):
@@ -4922,17 +4923,20 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
                         f"组织「{org_name}」达成目标「{desc}」",
                         ["org_goal", org_id], priority="high",
                     )
-                    self._apply_org_goal_effects(goal, org_id, org_name, desc)
+                    state_changes.extend(self._apply_org_goal_effects(goal, org_id, org_name, desc))
         self.current_state["completed_org_goals"] = completed_goals
+        return state_changes
 
     def _apply_org_goal_effects(self, goal: dict, org_id: str, org_name: str, desc: str):
         """Apply on_complete_effects from an organization goal and inject into information_network."""
+        state_changes = []
         effects = goal.get("on_complete_effects", {})
         if effects:
             for sc in effects.get("state_change", []):
-                self.current_state, _ = self.state_manager.apply_changes(
+                self.current_state, changes = self.state_manager.apply_changes(
                     self.current_state, [sc], inplace=True,
                 )
+                state_changes.extend(changes)
             for loc_id in effects.get("unlock_locations", []):
                 if not self._is_duplicate_location(self.current_state, loc_id):
                     self.current_state = self.state_manager.reveal_location(
@@ -4968,6 +4972,7 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
         })
         if len(network) > 30:
             self.current_state["information_network"] = network[-30:]
+        return state_changes
 
     # ================================================================
     # Feature #2: Promise/Lie Tracking System
