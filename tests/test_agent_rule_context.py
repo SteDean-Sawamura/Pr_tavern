@@ -67,23 +67,24 @@ def test_bounded_rules_keep_json_pagination_and_complete_reread_coordinates(cate
     original_script = copy.deepcopy(session.script)
     original_trees = copy.deepcopy(session.story_tree_engine.trees)
     arguments = {"category": category}
+    first = json.loads(session._handle_consult_rules(arguments))
     if mode == "detail":
-        arguments.update(rule_index=2, offset=2000)
+        arguments.update(rule_index=2, offset=2000, snapshot=first["entries"][2]["snapshot"])
     elif mode == "next_page":
-        arguments["offset"] = 5
+        arguments.update(offset=5, snapshot=first["snapshot"])
     messages = rule_messages(session, arguments)
     original = json.loads(messages[-1]["content"])
     assert sum(len(json.dumps(message, ensure_ascii=False)) for message in messages) > 2000
     bounded = _bound_tool_messages(messages, 2000)
     result = json.loads(bounded[-1]["content"])
-    for key in ("category", "source", "game_time", "offset", "next_offset", "total"):
+    for key in ("category", "source", "game_time", "offset", "next_offset", "total", "snapshot"):
         assert result[key] == original[key]
     assert result["truncated"] is True
     assert "offset=0" in result["notice"]
     assert len(result["entries"]) == len(original["entries"])
     for entry, previous in zip(result["entries"], original["entries"]):
         assert "content" not in entry
-        assert entry == {key: previous[key] for key in ("rule_index", "offset", "next_offset", "total_chars")}
+        assert entry == {key: previous[key] for key in ("rule_index", "offset", "next_offset", "total_chars", "snapshot")}
     assert sum(len(json.dumps(message, ensure_ascii=False)) for message in bounded) <= 2000
     assert len(json.dumps(bounded[-1], ensure_ascii=False)) <= 1000
     assert session.current_state == original_state
@@ -146,7 +147,10 @@ async def test_real_agent_budget_rereads_declaration_before_proposing_its_action
             preview = results["test_catalog_0"]
             assert preview.get("truncated") is True, preview
             assert "offset=0" in preview["notice"]
-            arguments = {"category": preview["category"], "rule_index": preview["entries"][2]["rule_index"], "offset": 0}
+            arguments = {
+                "category": preview["category"], "rule_index": preview["entries"][2]["rule_index"], "offset": 0,
+                "snapshot": preview["entries"][2]["snapshot"],
+            }
         elif decoded_rule is not None:
             assert "变量候选值" in messages[-1]["content"]
             return {"content": "Synthetic action proposed after reading its declaration.", "tool_calls": []}
@@ -160,7 +164,10 @@ async def test_real_agent_budget_rereads_declaration_before_proposing_its_action
                 return {"content": "", "tool_calls": [model_call(
                     "update_state", decoded_rule["definition"]["node"]["action_rule"], "test_declared_action",
                 )]}
-            arguments = {"category": result["category"], "rule_index": entry["rule_index"], "offset": entry["next_offset"]}
+            arguments = {
+                "category": result["category"], "rule_index": entry["rule_index"], "offset": entry["next_offset"],
+                "snapshot": entry["snapshot"],
+            }
         return {"content": "", "tool_calls": [model_call("consult_rules", arguments, f"test_reread_{len(requests)}")]}
 
     session.ai_provider = SimpleNamespace(generate_with_tools=AsyncMock(side_effect=respond))
@@ -226,6 +233,7 @@ async def test_budgeted_rule_reading_settles_once_and_restores_without_public_ru
             phase = "read"
             name, arguments = "consult_rules", {
                 "category": preview["category"], "rule_index": preview["entries"][2]["rule_index"], "offset": 0,
+                "snapshot": preview["entries"][2]["snapshot"],
             }
         elif phase == "read":
             result = json.loads(next(message["content"] for message in reversed(messages) if message["role"] == "tool"))
@@ -239,6 +247,7 @@ async def test_budgeted_rule_reading_settles_once_and_restores_without_public_ru
             else:
                 name, arguments = "consult_rules", {
                     "category": result["category"], "rule_index": entry["rule_index"], "offset": entry["next_offset"],
+                    "snapshot": entry["snapshot"],
                 }
         elif phase == "updated":
             assert "变量候选值" in next(message["content"] for message in reversed(messages) if message["role"] == "tool")

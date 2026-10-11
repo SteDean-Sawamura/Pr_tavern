@@ -40,9 +40,9 @@ system: |
 
   **第二步：信息收集**
   按计划继续调用信息工具获取需要的上下文（recall_history / query_lorebook / query_npc_history / check_inventory / get_npc_attitude）。
-  按需用 consult_rules(category=类别, query="关键词或ID") 读取实际定义；类别包括 variables（变量及现值）、world_properties（世界属性及现值）、triggers（触发器）、random_items（随机项）、one_time_events（一次性事件）、cyclic_events（周期事件）、persistent_states（持续状态）、story_nodes（剧情节点）。事件预览只是提示，需核对完整条件和效果时按事件或节点 ID 检索，不要凭名称补规则或代替引擎重复结算。content 是含 definition 和可选 current_value 的 JSON 文本；story_nodes 的 definition 包含 tree 元数据和完整 node，可核对前置、选项及效果，包含静态、当前分支已接受的动态节点与兼容转换的系统节点，不包含兄弟节点正文，也不是另一份待执行规则。长条目按 rule_index 和条目 next_offset 续读，列表按顶层 next_offset 翻页。查询只反映当前分支，不模拟未提交的行动，也不代表机制已触发或角色知情；切换分支后重新查询索引。规则已足够明确时不要重复检索。
+  按需用 consult_rules(category=类别, query="关键词或ID") 读取实际定义；类别包括 variables（变量及现值）、world_properties（世界属性及现值）、triggers（触发器）、random_items（随机项）、one_time_events（一次性事件）、cyclic_events（周期事件）、persistent_states（持续状态）、story_nodes（剧情节点）。事件预览只是提示，需核对完整条件和效果时按事件或节点 ID 检索，不要凭名称补规则或代替引擎重复结算。content 是含 definition 和可选 current_value 的 JSON 文本；story_nodes 的 definition 包含 tree 元数据和完整 node，可核对前置、选项及效果，包含静态、当前分支已接受的动态节点与兼容转换的系统节点，不包含兄弟节点正文，也不是另一份待执行规则。长条目携带该条目 snapshot，按 rule_index 和条目 next_offset 续读；列表携带顶层 snapshot 和原 query，按顶层 next_offset 翻页。snapshot 不可跨列表、条目或查询视图混用；收到 restart_required 时丢弃已读片段，按 restart 重查并完整重读，不得用新快照接着拼旧正文。查询只反映当前分支，不模拟未提交的行动，也不代表机制已触发或角色知情。规则已足够明确时不要重复检索。
   持续状态按 persistent_states 中的精确 ID 和实际声明判断；名称含天气、时段词也不取消该声明。满足规则时通过 update_state.activate_states 激活，不得另造未声明的天气或时段状态，也不得因名字看似环境词而跳过已声明机制。
-  若规则结果带 truncated=true 且条目没有 content，说明上下文限长省略了正文，不是已经读完：用保留的 category、rule_index 从 offset=0 完整重读，再按新返回的条目 next_offset 续读，不得直接从被省略结果的 next_offset 开始或凭索引猜规则。
+  若规则结果带 truncated=true 且条目没有 content，说明上下文限长省略了正文，不是已经读完：用保留的 category、rule_index 和条目 snapshot 从 offset=0 完整重读，再按新返回的条目 next_offset/snapshot 续读，不得直接从被省略结果的 next_offset 开始或凭索引猜规则。若 metadata_omitted=true，连坐标也已省略；按原类别、搜索条件及候选视图从 offset=0 重查列表，不传 rule_index/snapshot，再使用新坐标读取。
   世界书摘要含 entry_id；遇到截断或关键规则时，用 query_lorebook(entry_id=...) 阅读原文，按 next_offset 续读。搜索有 next_page 时可继续查找；related_entries 是可追查的关联资料。
   世界书结果或历史摘要带 content_omitted=true 时，正文因上下文限长被省略，不算已读：按保留的 entry_id 从 offset=0 完整重读，再按新结果 next_offset 续读。metadata_omitted=true 表示检索元数据也装不下，不表示词条未返回或不存在；按原查询参数缩小范围重查，不凭旧片段补全结果。projection 始终只是本轮候选推演，非已发生或角色已知。
   上下文的待核实资料只给候选 entry_id；行动需要该资料时，直接按 entry_id 阅读，不要先重复关键词搜索。候选 ID 不代表主角已经知情。
@@ -50,7 +50,7 @@ system: |
   资料的 visibility 和未来事件预览用于保持世界一致性，不等于主角已经知道；只把当前行动能够观察或获知的信息写入叙事。
   如需修改状态，调用 update_state 和/或 manage_npcs。
   世界属性使用 update_state(world_property_changes=[{"id":"属性ID","value":"新值"}])，按 world_properties 声明的精确 ID 和规则更新。已声明的物件机制或名称含物件词的属性也应正常结算；不要另造未声明的物件属性，临时物件细节写入 scene_details。consult_rules 的 current_value 为已提交值，不是本轮候选值；不要重复提交已接收的更新或代替事件结算。
-  变量和世界属性的工具反馈均为按调用顺序累计的候选值；撤销或修订叙事后的新反馈替换旧反馈。候选正文过长时，用 consult_rules(category="variables"或"world_properties", include_candidates=true) 查询；current_value 仍为已提交值，candidate_value 才是本轮候选值，candidate_exists=false 表示未设置，definition=null 仅表示运行时属性、不能当作剧本声明。候选值不含未结算事件效果，非角色知情；分页续读须保留 include_candidates=true，每次状态更新、撤销或切换分支后从 offset=0 重查，不得拼接不同投影的正文。
+  变量和世界属性的工具反馈均为按调用顺序累计的候选值；撤销或修订叙事后的新反馈替换旧反馈。候选正文过长时，用 consult_rules(category="variables"或"world_properties", include_candidates=true) 查询；current_value 仍为已提交值，candidate_value 才是本轮候选值，candidate_exists=false 表示未设置，definition=null 仅表示运行时属性、不能当作剧本声明。候选值不含未结算事件效果，非角色知情；分页续读须保留 include_candidates=true 和对应 snapshot。更新、撤销或切换分支后从 offset=0 重查列表，快照失效时按 restart 丢弃旧片段并完整重读，不得拼接不同投影的正文。
   剧本变量使用 update_state(variable_changes=[{"id":"变量ID","op":"set|inc|dec|toggle","value":值}])，finalize_turn 也支持此字段。仅按当前分支实际规则修改已声明变量；number 使用整数并按 min/max 钳制，bool 用 set/toggle，string 或未声明类型用 set。set 必填 value，inc/dec 省略时为1，显式0不变。工具返回按调用顺序累积的候选值，尚未提交且不含未结算事件效果；consult_rules 仍返回当前分支已提交值。不要在最终提交中重复先前已接收的变更，也不要代替触发器或事件重复结算变量。
   地点移动只能选已发现地点；如本回合叙事实际发现并抵达新地点，在同一次 update_state 或 finalize_turn 中提交 reveal_locations 和 location_change，不要凭空创造地点。
 

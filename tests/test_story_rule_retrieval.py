@@ -119,8 +119,9 @@ def test_story_catalog_paginates_across_trees_and_searches_full_definitions():
     session, _ = make_session(trees)
     entries = []
     offset = 0
+    cursor = {}
     while True:
-        result = query_rules(session, offset=offset)
+        result = query_rules(session, offset=offset, **cursor)
         assert result["total"] == 12
         assert len(result["entries"]) <= 5
         entries.extend(result["entries"])
@@ -128,6 +129,7 @@ def test_story_catalog_paginates_across_trees_and_searches_full_definitions():
             break
         assert result["next_offset"] == offset + 5
         offset = result["next_offset"]
+        cursor = {"snapshot": result["snapshot"]}
     assert [entry["rule_index"] for entry in entries] == list(range(12))
     assert [json.loads(entry["content"])["definition"]["node"] for entry in entries] == [
         node for tree in trees for node in tree["nodes"]
@@ -135,7 +137,7 @@ def test_story_catalog_paginates_across_trees_and_searches_full_definitions():
     for query, indexes in [("TeSt_NoDe_11", [11]), ("SYNTHETIC catalog 1", [4, 5, 6, 7]), ("合成目录", list(range(5)))]:
         result = query_rules(session, query=query)
         assert [entry["rule_index"] for entry in result["entries"]] == indexes
-    assert query_rules(session, offset=100)["entries"] == []
+    assert query_rules(session, offset=100, **cursor)["entries"] == []
 
 
 def test_long_tree_metadata_and_node_rules_can_be_reassembled_without_siblings():
@@ -148,7 +150,7 @@ def test_long_tree_metadata_and_node_rules_can_be_reassembled_without_siblings()
     assert entry["rule_index"] == 0
     chunks = [entry["content"]]
     while entry["next_offset"] is not None:
-        result = query_rules(session, rule_index=entry["rule_index"], offset=entry["next_offset"])
+        result = query_rules(session, rule_index=entry["rule_index"], offset=entry["next_offset"], snapshot=entry["snapshot"])
         entry, = result["entries"]
         assert len(entry["content"]) <= 2000
         chunks.append(entry["content"])

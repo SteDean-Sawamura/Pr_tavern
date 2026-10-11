@@ -809,11 +809,11 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 `story_nodes` 直接读取当前剧情树运行时已接受的定义，覆盖静态节点、当前分支动态节点及兼容转换的系统节点；不会旁路读取已被拒绝、未规范化或已离开分支的声明。每条 `definition` 含 `tree`（除节点列表外的树元数据）与 `node`（完整节点），保留前置、条件、选项、效果及作者自定义字段，不重复装入兄弟节点正文。这是现有引擎规则的只读视图，不是额外执行一次系统触发器或剧情效果的授权。
 
-查询结果标记 `source="current_branch"`，反映运行时定义及变量、世界属性现值，不模拟本轮尚未提交的 `update_state` 或未结算事件，也不代表规则已执行、事件已发生或角色知情。每页最多 5 条，按顶层 `next_offset` 翻页；每条 `content` 是含 `definition` 和可选 `current_value` 的 JSON 文本，最多返回 2000 字符，长内容用该条的 `rule_index` 和 `next_offset` 续读后拼接解析。索引只对当前分支有效，切换分支后须重新查询。
+查询结果标记 `source="current_branch"`，反映运行时定义及变量、世界属性现值，不模拟本轮尚未提交的 `update_state` 或未结算事件，也不代表规则已执行、事件已发生或角色知情。每页最多 5 条，携带顶层 `snapshot` 和原 `query`，按顶层 `next_offset` 翻页；每条 `content` 是含 `definition` 和可选 `current_value` 的 JSON 文本，最多返回 2000 字符，长内容用该条的 `rule_index`、`snapshot` 和 `next_offset` 续读后拼接解析。指定 `rule_index` 时，即使 `offset=0` 也必须携带条目快照；列表与条目的快照不可混用。
 
-上下文压缩省略规则正文时，保留类别、条目索引及阅读位置，并明确提示从 `offset=0` 重新完整读取，避免只保留尾段而漏掉前置约束。`tests/test_mechanics_retrieval.py` 覆盖七类规则、搜索分页、长定义与长变量值续读、旧式无 ID 触发器、参数边界、分支恢复和压缩后的重读指引。流式 harness 验证规则内容真正进入后续模型请求、待结算机制不会提前出现在结果中，以及内部规则标记不进入 SSE 或公开 trace；这些仍是合成数据和假模型证据，不是实际模型叙事质量验收。
+上下文压缩省略规则正文时，保留类别、条目索引、快照及阅读位置，并明确提示携带条目 `snapshot` 从 `offset=0` 重新完整读取，避免只保留尾段而漏掉前置约束。`tests/test_mechanics_retrieval.py` 覆盖七类规则、搜索分页、长定义与长变量值续读、旧式无 ID 触发器、参数边界、分支恢复和压缩后的重读指引。流式 harness 验证规则内容真正进入后续模型请求、待结算机制不会提前出现在结果中，以及内部规则标记不进入 SSE 或公开 trace；这些仍是合成数据和假模型证据，不是实际模型叙事质量验收。
 
-同批多条规则查询超过 Agent 上下文预算时，硬限长也保留合法 JSON、类别、全部返回条目的索引、列表分页与正文阅读坐标；省略正文的结果标记 `truncated=true`，条目不再提供 `content`，并要求从 `offset=0` 重读。未超预算的结果不变。`tests/test_agent_rule_context.py` 使用八类合成规则验证转义字符下的实际消息长度、重复压缩后的索引保留，以及真实工具 schema 和 Agent 预算下假模型重新完整读取声明、据声明提交变量更新的链路；隔离 SQLite 的完整流式回合另验证保存重载、请求重放不重复执行，以及规则正文不进入 SSE 或保存的公开 trace。这些仍是合成数据和假模型证据，不代表真实模型叙事质量或在线服务已验收。
+同批多条规则查询超过 Agent 上下文预算时，硬限长也保留合法 JSON、类别、全部返回条目的索引与快照、列表分页与正文阅读坐标；省略正文的结果标记 `truncated=true`，条目不再提供 `content`，并要求携带条目快照从 `offset=0` 重读。若元数据本身也超出预算，返回 `metadata_omitted=true`，明确要求按原查询重新取列表，不保留不能安全使用的半套坐标。未超预算的结果不变。`tests/test_agent_rule_context.py` 使用八类合成规则验证转义字符下的实际消息长度、重复压缩后的坐标保留，以及真实工具 schema 和 Agent 预算下假模型重新完整读取声明、据声明提交变量更新的链路；隔离 SQLite 的完整流式回合另验证保存重载、请求重放不重复执行，以及规则正文不进入 SSE 或保存的公开 trace。这些仍是合成数据和假模型证据，不代表真实模型叙事质量或在线服务已验收。
 
 世界书 `query_lorebook` 超预算时同样返回合法 JSON：正文省略标记为 `content_omitted=true`，保留可容纳的词条 ID、可见性、正文坐标、关联 ID、搜索分页、近似匹配标记与候选投影；这些坐标不代表正文已读，必须从 `offset=0` 重读后再续读。若元数据本身也过长，改为 `metadata_omitted=true` 的重查提示，不伪造空结果或词条缺失；重复历史压缩仍保留原查询与未读提示。`tests/test_agent_lore_context.py` 使用合成世界书和假模型验证实际预算下的批量查询、完整重读、关联资料发现及声明驱动的变量更新；隔离 SQLite 的流式回合覆盖保存重载、重放幂等和公开 SSE/trace 不含内部正文标记。这不代表真实模型会自主完成检索，也不代表在线服务已更新或验收。
 
@@ -829,7 +829,15 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 长工具链压缩保留本轮已涉及变量和世界属性的最新累计候选值、候选时间和当前已接受的状态更新次数，并保留失败与撤销的执行记录。撤销状态更新或后台结算因叙事修订而回滚后，反馈按恢复后的候选状态重新生成；后续压缩只替换已过时的投影，不把失败或被过滤的变更当作成功，也不以撤销前的值继续推演。撤销新建属性后明确标记未设置，不把缺失值当成字符串或有效空值。
 
-每类候选值反馈正文最多保留 4000 字符，超过时明确省略全文并提供续读入口，不截断成看似完整的值。统一 Agent 和后台结算均可调用 `consult_rules(category="variables"或"world_properties", include_candidates=true)` 分页读回完整候选值；默认查询仍只读已提交状态，`current_value` 始终是已提交值，新增 `candidate_value` 和 `candidate_exists` 描述候选快照，`projection` 标记未提交且不含尚未结算事件效果。仅运行时存在或本轮撤销的宏观属性以 `definition=null`、独立 `id` 返回，不伪造剧本声明。压缩保留候选读取标记及索引坐标；续读须保留 `include_candidates=true`，状态更新、撤销或切换分支后从 `offset=0` 重查，不能拼接不同快照的片段。`tests/test_world_property_feedback.py` 覆盖累计值、失败与过滤、撤销、叙事回滚、长值续读和压缩；验证使用合成数据与假模型，不代表真实模型质量或在线体验已验收。
+每类候选值反馈正文最多保留 4000 字符，超过时明确省略全文并提供续读入口，不截断成看似完整的值。统一 Agent 和后台结算均可调用 `consult_rules(category="variables"或"world_properties", include_candidates=true)` 分页读回完整候选值；默认查询仍只读已提交状态，`current_value` 始终是已提交值，新增 `candidate_value` 和 `candidate_exists` 描述候选快照，`projection` 标记未提交且不含尚未结算事件效果。仅运行时存在或本轮撤销的宏观属性以 `definition=null`、独立 `id` 返回，不伪造剧本声明。压缩保留候选读取标记及索引快照；续读须保留 `include_candidates=true` 和对应 `snapshot`，状态更新、撤销或切换分支后从 `offset=0` 重查列表，不能拼接不同快照的片段。`tests/test_world_property_feedback.py` 覆盖累计值、失败与过滤、撤销、叙事回滚、长值续读和压缩；验证使用合成数据与假模型，不代表真实模型质量或在线体验已验收。
+
+### 规则分页快照一致性
+
+`consult_rules` 的八类规则查询统一使用内容快照校验：快照绑定世界树、活动分支、游戏时间、类别、已提交/候选视图和该类别的完整内容。列表快照还绑定搜索条件，条目快照绑定索引；快照不是权限凭据，不会执行机制或提交状态。首次查询列表无需快照，后续列表翻页和条目读取必须原样携带对应标识。
+
+缺少快照返回 `error_code="snapshot_required"`；有效格式的标识与当前读取范围或内容不一致时返回 `error_code="snapshot_expired"`。两者均带 `restart_required=true` 和可直接用于重查列表的 `restart` 参数，不返回正文片段或新的续读快照。调用方必须丢弃旧片段，按 `restart` 获取新列表后完整重读，不能只换新标识继续拼接旧正文。默认已提交视图不会因仅候选值变化而失效。
+
+`tests/test_mechanics_snapshots.py` 覆盖现值、候选值、声明顺序、搜索条件、列表成员、会话与分支变化、撤销及后台叙事回滚，以及快照经限长和重复压缩后的完整重读。`tests/test_world_property_declarations.py` 在隔离 SQLite 与真实流式路由中驱动假模型先遇到过期快照、重新读取，再根据声明提出更新，验证保存重载、分支往返和请求重放，且候选片段和快照不进入公开 SSE/trace。上述证据仍不代表真实模型的自主检索质量或在线体验已验收。
 
 `tests/test_agent_variable_updates.py` 验证字段契约、边界与零增量、类型校验、错误恢复、投影和结算一致性、最终提交修订回滚及分支定义隔离。流式 harness 通过假模型和临时 SQLite 验证规则读取、变量操作、撤销、错误恢复、条件事件、重放去重、保存恢复和分支往返；不调用外部模型、不包含真实剧本，也不代表实际推演流畅性或叙事质量已验收。
 

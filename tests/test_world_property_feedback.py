@@ -35,7 +35,7 @@ async def read_full_candidate(session, context, **arguments):
     chunks = [entry["content"]]
     while entry["next_offset"] is not None:
         result = await read_candidate(session, context, category=arguments.get("category", "world_properties"),
-                                      rule_index=entry["rule_index"], offset=entry["next_offset"])
+                                      rule_index=entry["rule_index"], offset=entry["next_offset"], snapshot=entry["snapshot"])
         entry, = result["entries"]
         assert entry["offset"] == sum(map(len, chunks))
         chunks.append(entry["content"])
@@ -261,11 +261,13 @@ async def test_candidate_listing_paginates_without_forging_runtime_declarations(
     session._handle_update_state(updates, context)
     entries = []
     offset = 0
+    cursor = {}
     while offset is not None:
-        result = await read_candidate(session, context, offset=offset)
+        result = await read_candidate(session, context, offset=offset, **cursor)
         assert len(result["entries"]) <= 5
         entries.extend(json.loads(entry["content"]) for entry in result["entries"])
         offset = result["next_offset"]
+        cursor = {"snapshot": result["snapshot"]}
     assert len(entries) == 13
     assert entries[0]["definition"] == session.script["world_properties"][0]
     assert all(entry["definition"] is None for entry in entries[1:])

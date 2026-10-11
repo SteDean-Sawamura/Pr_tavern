@@ -11,6 +11,7 @@ Background agent : narrative -> state settlement tool calls -> parsed dict
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 from difflib import SequenceMatcher
 import hashlib
@@ -66,7 +67,7 @@ def _candidate_value_feedback(category: str, values: dict, missing=()) -> str:
         content += "；未设置: " + json.dumps(missing, ensure_ascii=False)
     if len(content) > 4000:
         content = ("候选值全文过长已省略，不是空值；用 consult_rules(category=\"" + category
-                   + "\", include_candidates=true) 查询，按 rule_index 和 next_offset 完整续读；"
+                   + "\", include_candidates=true) 查询，携带条目 snapshot 按 rule_index 和 next_offset 完整续读；"
                      "每次更新或撤销后从 offset=0 重查，不要重复执行已接收的更新")
     return f" | {label}候选值（未提交，不含尚未结算的事件效果）: {content}"
 
@@ -110,24 +111,29 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
             result = None
         if isinstance(result, dict) and result.get("category") and isinstance(result.get("entries"), list):
             preview = {key: result[key] for key in (
-                "category", "source", "game_time", "offset", "next_offset", "total", "projection",
+                "category", "source", "game_time", "offset", "next_offset", "total", "projection", "snapshot",
             ) if key in result}
             preview["entries"] = [
-                {key: entry[key] for key in ("rule_index", "offset", "next_offset", "total_chars") if key in entry}
+                {key: entry[key] for key in ("rule_index", "offset", "next_offset", "total_chars", "snapshot") if key in entry}
                 for entry in result["entries"] if isinstance(entry, dict)
             ]
             preview["truncated"] = True
             preview["notice"] = (
-                "正文已省略；用 consult_rules(category=类别, rule_index=索引, offset=0) 完整重读；"
-                "切换分支后重查索引。只反映已提交分支，不代表已触发或角色已知。"
+                "正文省略；携带条目 snapshot、category、rule_index 从 offset=0 重读；"
+                "失效则重查列表。非已触发或角色已知。"
             )
             if result.get("projection"):
                 preview["notice"] = (
-                    "正文已省略；保留 include_candidates=true，用 category 和 rule_index 从 offset=0 重读；"
-                    "当前值仍是已提交值，候选值仅为查询时投影、不含未结算事件效果、非角色知情；"
-                    "更新、撤销或切换分支后重查索引和正文。"
+                    "正文省略；保留 include_candidates=true 和条目 snapshot，用 category、rule_index 从 offset=0 重读；"
+                    "候选值未提交、不含未结算效果、非角色知情；失效时丢弃旧片段重查列表。"
                 )
-            return json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
+            serialized = json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
+            if len(serialized) <= limit:
+                return serialized
+            return json.dumps({
+                "truncated": True, "metadata_omitted": True,
+                "notice": "正文与坐标省略；按原查询类别和候选视图从 offset=0 重查列表，不传 rule_index/snapshot，再携带新快照重读。非已发生或角色已知。",
+            }, ensure_ascii=False, separators=(",", ":"))
     if name == "read_director_notes":
         try:
             result = json.loads(content)
@@ -507,17 +513,17 @@ class AgenticMixin:
                                   and tool_result.get("category") in self._queryable_mechanics_definitions()
                                   and isinstance(entries, list)):
                                 preview = {key: tool_result[key] for key in (
-                                    "category", "source", "game_time", "offset", "next_offset", "total", "notice", "projection",
+                                    "category", "source", "game_time", "offset", "next_offset", "total", "notice", "projection", "snapshot",
                                 ) if key in tool_result}
                                 preview["entries"] = [
-                                    {key: entry[key] for key in ("rule_index", "offset", "next_offset", "total_chars")
+                                    {key: entry[key] for key in ("rule_index", "offset", "next_offset", "total_chars", "snapshot")
                                      if key in entry}
                                     for entry in entries[:5] if isinstance(entry, dict)
                                 ]
                                 summary_parts.append(
                                     "[剧本机制检索] " + json.dumps(preview, ensure_ascii=False)
-                                    + "；本次匹配的规则正文已省略；用 consult_rules 的 category 和 rule_index "
-                                      "从 offset=0 重新完整读取，不得只续读尾段；切换分支后重查索引。"
+                                    + "；本次匹配的规则正文已省略；用 consult_rules 的 category、rule_index 和条目 snapshot "
+                                      "从 offset=0 重新完整读取，不得只续读尾段；快照失效时丢弃旧片段重查列表。"
                                 )
                             elif (isinstance(tool_result, dict) and isinstance(tool_result.get("events"), list)
                                   and isinstance(tool_result.get("conditional_candidates"), list)):
@@ -4934,6 +4940,8 @@ class AgenticMixin:
             return self._handle_mechanics_query(args, ctx)
         if args.get("include_candidates", False) is not False:
             return json.dumps({"error": "候选值查询须指定 variables 或 world_properties 类别"}, ensure_ascii=False)
+        if "snapshot" in args:
+            return json.dumps({"error": "snapshot 仅用于指定 category 的规则查询"}, ensure_ascii=False)
         question = args.get("question", "").lower()
         context_str = args.get("context", "")
 
@@ -5001,15 +5009,16 @@ class AgenticMixin:
             return json.dumps({"error": "query 必须是字符串"}, ensure_ascii=False)
         detailed = "rule_index" in args
         rule_index = args.get("rule_index")
-        if detailed and (type(rule_index) is not int or not 0 <= rule_index < len(category_definitions)):
+        if detailed and (type(rule_index) is not int or rule_index < 0):
             return json.dumps({"error": "rule_index 超出当前类别的范围"}, ensure_ascii=False)
         if detailed and query:
             return json.dumps({"error": "rule_index 不能与 query 混用；切换分支后请重新查询索引"}, ensure_ascii=False)
+        supplied_snapshot = args.get("snapshot")
+        if "snapshot" in args and (not isinstance(supplied_snapshot, str) or not re.fullmatch(r"[A-Za-z0-9_-]{22}", supplied_snapshot)):
+            return json.dumps({"error": "snapshot 必须原样使用查询返回的快照标识"}, ensure_ascii=False)
 
         records = []
         for index, definition in enumerate(category_definitions):
-            if detailed and index != rule_index:
-                continue
             payload = {"definition": definition}
             if category == "variables":
                 payload["current_value"] = self.script_variables.get(self.current_state, definition["id"])
@@ -5026,35 +5035,65 @@ class AgenticMixin:
                     if index >= len(definitions[category]):
                         payload.update({"definition": None, "id": definition["id"]})
             content = json.dumps(payload, ensure_ascii=False)
-            if not detailed and query.casefold() not in content.casefold():
-                continue
             records.append((index, content))
+        projection = None
+        if include_candidates:
+            updates = ctx.get("_accepted_state_updates", [])
+            projection = {
+                "provisional": True, "accepted_updates": len(updates), "excludes_unsettled_events": True,
+                "as_of": next((update["end_time"] for update in reversed(updates) if update.get("end_time")), ctx["old_time"]),
+            }
+        revision = hashlib.sha256(json.dumps([
+            self.world_tree.tree_id, self.world_tree.active_node_id, self.current_state.get("game_time"),
+            category, include_candidates, projection, records,
+        ], ensure_ascii=False).encode("utf-8")).hexdigest()
+
+        def snapshot_for(index=None):
+            scope = [revision, "list", query.casefold()] if index is None else [revision, "entry", index]
+            digest = hashlib.sha256(json.dumps(scope).encode("utf-8")).digest()[:16]
+            return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+        snapshot = snapshot_for(rule_index if detailed else None)
+        if (((detailed or offset > 0) and supplied_snapshot is None)
+                or (supplied_snapshot is not None and supplied_snapshot != snapshot)):
+            return json.dumps({
+                "error": "快照缺失或已失效；丢弃旧正文片段，按 restart 从列表首屏重查，再携带新快照完整读取。",
+                "error_code": "snapshot_required" if supplied_snapshot is None else "snapshot_expired",
+                "restart_required": True,
+                "restart": {"category": category, "query": query, "include_candidates": include_candidates, "offset": 0},
+            }, ensure_ascii=False)
+        if detailed and rule_index >= len(records):
+            return json.dumps({"error": "rule_index 超出当前类别的范围"}, ensure_ascii=False)
+        records = [record for record in records if record[0] == rule_index] if detailed else [
+            record for record in records if query.casefold() in record[1].casefold()
+        ]
         page = records if detailed else records[offset:offset + 5]
         content_offset = offset if detailed else 0
         if detailed and content_offset > len(page[0][1]):
             return json.dumps({"error": "offset 超出机制正文长度"}, ensure_ascii=False)
         entries = [{
             "rule_index": index, "content": content[content_offset:content_offset + 2000],
+            "snapshot": snapshot_for(index),
             "offset": content_offset, "total_chars": len(content),
             "next_offset": content_offset + 2000 if len(content) > content_offset + 2000 else None,
         } for index, content in page]
         result = {
             "category": category, "source": "current_branch", "game_time": self.current_state.get("game_time"),
             "notice": "当前分支定义与现值；不模拟未提交的行动，不代表机制已触发或角色已知。",
-            "entries": entries, "total": len(records), "offset": offset,
+            "entries": entries, "total": len(records), "offset": offset, "snapshot": snapshot,
             "next_offset": offset + 5 if not detailed and len(records) > offset + 5 else None,
         }
         if include_candidates:
-            updates = ctx.get("_accepted_state_updates", [])
-            result["projection"] = {
-                "provisional": True, "accepted_updates": len(updates), "excludes_unsettled_events": True,
-                "as_of": next((update["end_time"] for update in reversed(updates) if update.get("end_time")), ctx["old_time"]),
-            }
+            result["projection"] = projection
             result["notice"] = (
                 "current_value 为已提交值；candidate_value 为查询时累计候选值，不含未结算事件效果、非角色知情。"
                 "candidate_exists=false 表示未设置，definition=null 表示仅运行时属性、不是剧本声明。"
-                "续读保留 include_candidates=true；更新、撤销或切换分支后从 offset=0 重查索引和正文。"
+                "续读保留 include_candidates=true。"
             )
+        result["notice"] += (
+            "列表翻页携带顶层 snapshot；指定 rule_index（包括 offset=0）须携带条目 snapshot。"
+            "更新、撤销、切换分支或查询视图可使快照失效；收到 restart_required 时丢弃旧片段，按 restart 重查，不得拼接不同快照。"
+        )
         return json.dumps(result, ensure_ascii=False)
 
     def _handle_peek_upcoming_events(self, args: dict) -> str:

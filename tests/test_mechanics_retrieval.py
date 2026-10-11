@@ -83,12 +83,14 @@ def test_search_and_pagination_keep_original_rule_indexes():
     ]})
     entries = []
     offset = 0
+    cursor = {}
     while offset is not None:
-        result = json.loads(session._handle_consult_rules({"category": "variables", "query": "QUOTA", "offset": offset}))
+        result = json.loads(session._handle_consult_rules({"category": "variables", "query": "QUOTA", "offset": offset, **cursor}))
         assert result["total"] == 11
         assert len(result["entries"]) <= 5
         entries.extend(result["entries"])
         offset = result["next_offset"]
+        cursor = {"snapshot": result["snapshot"]}
     assert [entry["rule_index"] for entry in entries] == list(range(1, 12))
     assert [json.loads(entry["content"])["current_value"] for entry in entries] == list(range(11))
     missing = json.loads(session._handle_consult_rules({"category": "variables", "query": "test_missing_marker"}))
@@ -104,6 +106,7 @@ def test_long_rule_and_idless_trigger_can_be_read_completely():
     while entry["next_offset"] is not None:
         result = json.loads(session._handle_consult_rules({
             "category": "triggers", "rule_index": entry["rule_index"], "offset": entry["next_offset"],
+            "snapshot": entry["snapshot"],
         }))
         entry, = result["entries"]
         assert len(entry["content"]) <= 2000
@@ -128,6 +131,7 @@ def test_long_variable_value_is_searchable_and_can_be_read_completely():
             break
         result = json.loads(session._handle_consult_rules({
             "category": "variables", "rule_index": entry["rule_index"], "offset": entry["next_offset"],
+            "snapshot": entry["snapshot"],
         }))
         entry, = result["entries"]
     payload = json.loads("".join(chunks))
@@ -136,6 +140,7 @@ def test_long_variable_value_is_searchable_and_can_be_read_completely():
     assert sum(map(len, chunks)) == entry["total_chars"]
     end = json.loads(session._handle_consult_rules({
         "category": "variables", "rule_index": entry["rule_index"], "offset": entry["total_chars"],
+        "snapshot": entry["snapshot"],
     }))
     assert end["entries"][0]["content"] == ""
     assert end["entries"][0]["next_offset"] is None
@@ -148,7 +153,8 @@ def test_empty_categories_and_exhausted_pages(category):
     assert empty["entries"] == [] and empty["total"] == 0
     assert empty["next_offset"] is None
     session, _ = make_session()
-    exhausted = json.loads(session._handle_consult_rules({"category": category, "offset": 10**9}))
+    first = json.loads(session._handle_consult_rules({"category": category}))
+    exhausted = json.loads(session._handle_consult_rules({"category": category, "offset": 10**9, "snapshot": first["snapshot"]}))
     assert exhausted["entries"] == [] and exhausted["total"] == 1
     assert exhausted["next_offset"] is None
 
@@ -228,7 +234,11 @@ async def test_rule_queries_follow_reloaded_branch_and_current_values():
     await session.branch_to_node(root)
     assert json.loads(session._handle_consult_rules(query))["entries"] == []
     await session.branch_to_node(final)
-    assert json.loads(session._handle_consult_rules(query))["entries"] == expected["entries"]
+    entries = json.loads(session._handle_consult_rules(query))["entries"]
+    assert [{key: value for key, value in entry.items() if key != "snapshot"} for entry in entries] == [
+        {key: value for key, value in entry.items() if key != "snapshot"} for entry in expected["entries"]
+    ]
+    assert entries[0]["snapshot"] != expected["entries"][0]["snapshot"]
 
 
 def test_full_context_advertises_rules_without_dumping_private_definitions(monkeypatch):
@@ -248,7 +258,7 @@ def test_full_context_advertises_rules_without_dumping_private_definitions(monke
 def test_consult_rules_schema_exposes_structured_retrieval_and_keeps_legacy_queries():
     schema = next(tool["function"]["parameters"] for tool in _unified_tools() if tool["function"]["name"] == "consult_rules")
     assert set(schema["properties"]["category"]["enum"]) == set(RULE_CATEGORIES) | {"story_nodes"}
-    assert {"query", "rule_index", "offset"} <= schema["properties"].keys()
+    assert {"query", "rule_index", "offset", "snapshot"} <= schema["properties"].keys()
     assert "question" not in schema.get("required", [])
     session, _ = make_session()
     assert json.loads(session._handle_consult_rules({"question": "有没有test token"}))["answers"] == ["持有 test token"]
@@ -265,18 +275,21 @@ def test_event_and_state_rules_support_search_pages_and_complete_rereads(categor
     original_state = copy.deepcopy(session.current_state)
     matches = []
     offset = 0
+    cursor = {}
     while offset is not None:
-        page = json.loads(session._handle_consult_rules({"category": category, "query": "final_clause", "offset": offset}))
+        page = json.loads(session._handle_consult_rules({"category": category, "query": "final_clause", "offset": offset, **cursor}))
         assert page["total"] == 11
         assert len(page["entries"]) <= 5
         matches.extend(page["entries"])
         offset = page["next_offset"]
+        cursor = {"snapshot": page["snapshot"]}
     assert [entry["rule_index"] for entry in matches] == list(range(1, 12))
     for entry in matches:
         chunks = [entry["content"]]
         while entry["next_offset"] is not None:
             page = json.loads(session._handle_consult_rules({
                 "category": category, "rule_index": entry["rule_index"], "offset": entry["next_offset"],
+                "snapshot": entry["snapshot"],
             }))
             entry, = page["entries"]
             assert entry["offset"] == sum(map(len, chunks))
@@ -322,7 +335,11 @@ async def test_dynamic_event_definitions_follow_branch_after_reload_without_log_
     session._apply_director_results({"events": {kind: [sibling_definition]}})
     sibling = session.world_tree.add_node(root, "2030-01-01T09:01:00", 1, state_snapshot=copy.deepcopy(session.current_state))
     await session.branch_to_node(final)
-    assert json.loads(session._handle_consult_rules(query))["entries"] == result["entries"]
+    entries = json.loads(session._handle_consult_rules(query))["entries"]
+    assert [{key: value for key, value in entry.items() if key != "snapshot"} for entry in entries] == [
+        {key: value for key, value in entry.items() if key != "snapshot"} for entry in result["entries"]
+    ]
+    assert entries[0]["snapshot"] != result["entries"][0]["snapshot"]
     assert session.script[category] == expected
     assert session.event_engine.events["test_dynamic_event_0"].metadata["original_def"] == expected[1]
     scheduled = session.event_scheduler.check_events(

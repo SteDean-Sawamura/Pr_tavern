@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+import re
 from collections import OrderedDict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -165,6 +166,7 @@ def test_rule_query_searches_and_rereads_full_committed_world_values():
     while entry["next_offset"] is not None:
         result = json.loads(session._handle_consult_rules({
             "category": "world_properties", "rule_index": entry["rule_index"], "offset": entry["next_offset"],
+            "snapshot": entry["snapshot"],
         }))
         entry, = result["entries"]
         assert entry["offset"] == sum(map(len, chunks))
@@ -177,7 +179,8 @@ def test_rule_query_searches_and_rereads_full_committed_world_values():
 
 
 @pytest.mark.asyncio
-async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_branches(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cursor_change", [None, "update", "undo"])
+async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_branches(tmp_path, monkeypatch, cursor_change):
     session, script = make_session()
     session.save_id = "synthetic-world-save"
     property_id = script["world_properties"][0]["id"]
@@ -187,8 +190,16 @@ async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_br
         "You leave everything in place and finish your inspection without disturbing the room."
     )
     requests = []
+    base_index = 0
+    cursor_phase = "seed"
+    cursor_calls = 0
+    cursor_entry = None
+    recovered_payload = None
+    chunks = []
+    snapshots = set()
 
     async def generate_with_tools(messages, **kwargs):
+        nonlocal base_index, cursor_phase, cursor_calls, cursor_entry, recovered_payload
         if [tool["function"]["name"] for tool in kwargs["tools"]] == ["extract_notes"]:
             return {"content": "", "tool_calls": [{
                 "id": "synthetic-notes", "name": "extract_notes", "arguments": {"notes": []},
@@ -198,14 +209,81 @@ async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_br
         completed = {int(message["tool_call_id"].removeprefix(prefix)): message["content"]
                      for message in messages if message.get("role") == "tool"
                      and message.get("tool_call_id", "").startswith(prefix)}
-        index = max(completed, default=-1) + 1
+        index = base_index
+        if cursor_change and index == 1 and cursor_phase != "done":
+            operation = None
+            if cursor_phase == "seed":
+                operation = ("update_state", {"world_property_changes": [
+                    {"id": property_id, "value": "SYNTHETIC_CURSOR_BEFORE_" * 200},
+                ]})
+                cursor_phase = "first_read"
+            elif cursor_phase == "first_read":
+                operation = ("consult_rules", {"category": "world_properties", "include_candidates": True})
+                cursor_phase = "change"
+            elif cursor_phase == "change":
+                latest = next(message["content"] for message in reversed(messages) if message.get("role") == "tool")
+                cursor_entry, = json.loads(latest)["entries"]
+                assert cursor_entry["next_offset"] == 2000
+                snapshots.add(cursor_entry["snapshot"])
+                if cursor_change == "update":
+                    operation = ("update_state", {"world_property_changes": [
+                        {"id": property_id, "value": "SYNTHETIC_CURSOR_AFTER_" * 200},
+                    ]})
+                else:
+                    operation = ("undo_my_last_action", {"reason": "Discard the synthetic provisional value."})
+                cursor_phase = "stale_read"
+            elif cursor_phase == "stale_read":
+                operation = ("consult_rules", {
+                    "category": "world_properties", "include_candidates": True,
+                    "rule_index": cursor_entry["rule_index"], "offset": cursor_entry["next_offset"],
+                    "snapshot": cursor_entry["snapshot"],
+                })
+                cursor_phase = "restart"
+            elif cursor_phase == "restart":
+                latest = next(message["content"] for message in reversed(messages) if message.get("role") == "tool")
+                result = json.loads(latest)
+                assert result["error_code"] == "snapshot_expired" and result["restart_required"] is True
+                assert "entries" not in result
+                operation = ("consult_rules", result["restart"])
+                cursor_phase = "reread"
+            else:
+                latest = next(message["content"] for message in reversed(messages) if message.get("role") == "tool")
+                result = json.loads(latest)
+                entry, = result["entries"]
+                assert entry["offset"] == sum(map(len, chunks))
+                snapshots.add(entry["snapshot"])
+                chunks.append(entry["content"])
+                if entry["next_offset"] is not None:
+                    operation = ("consult_rules", {
+                        "category": "world_properties", "include_candidates": True,
+                        "rule_index": entry["rule_index"], "offset": entry["next_offset"], "snapshot": entry["snapshot"],
+                    })
+                else:
+                    recovered_payload = json.loads("".join(chunks))
+                    assert recovered_payload["current_value"] == "closed"
+                    expected = "SYNTHETIC_CURSOR_AFTER_" * 200 if cursor_change == "update" else "closed"
+                    assert recovered_payload["candidate_value"] == expected
+                    assert recovered_payload["definition"] == script["world_properties"][0]
+                    assert "SYNTHETIC_CURSOR_BEFORE_" not in "".join(chunks)
+                    cursor_phase = "done"
+            if operation:
+                name, arguments = operation
+                schema = next(tool["function"]["parameters"] for tool in kwargs["tools"] if tool["function"]["name"] == name)
+                assert arguments.keys() <= schema["properties"].keys()
+                assert set(schema.get("required", [])) <= arguments.keys()
+                if "snapshot" in arguments:
+                    assert re.fullmatch(schema["properties"]["snapshot"]["pattern"], arguments["snapshot"])
+                cursor_calls += 1
+                return {"content": "", "tool_calls": [{
+                    "id": f"synthetic-world-cursor-{cursor_calls}", "name": name, "arguments": arguments,
+                }]}
         if index == 0:
             name, arguments = "submit_plan", {"plan": "Read the declared world rule before proposing its update."}
         elif index == 1:
             name, arguments = "consult_rules", {"category": "world_properties"}
         elif index == 2:
             payload = json.loads(json.loads(completed[1])["entries"][0]["content"])
-            definition = payload["definition"]
+            definition = (recovered_payload or payload)["definition"]
             assert definition == script["world_properties"][0]
             assert payload["current_value"] == "closed"
             name, arguments = "update_state", {
@@ -247,6 +325,7 @@ async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_br
                 assert entry.keys() <= item_schema["properties"].keys()
                 assert set(item_schema["required"]) <= entry.keys()
                 assert all(isinstance(value, str) for value in entry.values())
+        base_index += 1
         return {"content": "", "tool_calls": [{"id": f"{prefix}{index}", "name": name, "arguments": arguments}]}
 
     provider = SimpleNamespace(
@@ -301,7 +380,7 @@ async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_br
             assert final["state"]["world_properties"][property_id] == "open"
             assert final["state"]["location_connections"]["test_room"] == ["test_archive"]
             assert session.current_state["fired_one_time_events"] == ["test_check_access"]
-            assert len(requests) == 7
+            assert len(requests) == 7 + cursor_calls
             calls_before_replay = provider.generate_with_tools.await_count
             replay = await client.post(endpoint, json=action)
             assert replay.text == response.text
@@ -319,6 +398,11 @@ async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_br
                 assert marker in json.dumps(requests)
                 assert marker not in response.text
                 assert marker not in json.dumps(node["agent_trace"])
+            if cursor_change:
+                assert recovered_payload is not None and cursor_phase == "done"
+                for marker in ("SYNTHETIC_CURSOR_BEFORE_", "SYNTHETIC_CURSOR_AFTER_", *snapshots):
+                    assert marker not in response.text
+                    assert marker not in json.dumps(node["agent_trace"])
             for node_id, value in ((root_id, "closed"), (final["node_id"], "open")):
                 await restored.branch_to_node(node_id)
                 assert restored.current_state["world_properties"][property_id] == value
