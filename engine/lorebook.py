@@ -9,6 +9,7 @@ import hashlib
 import json
 import random
 import re
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 
 
@@ -325,23 +326,45 @@ class Lorebook:
             if not entry_id and entry_ids is None:
                 content_lower = entry.content.casefold()
                 terms = preview_terms.get(entry.id, keywords)
-                matches = [
-                    (len(term), position)
-                    for term in terms
-                    if (position := content_lower.find(term)) >= 0
-                ]
-                for date_match in self._DATE_RE.finditer(content_lower):
-                    normalized_date = self._normalize_query_dates(date_match.group())
-                    if normalized_date == date_match.group():
+                variants = {term: self._normalize_query_dates(term) for term in terms}
+                for date_text in dict.fromkeys(match.group() for match in self._DATE_RE.finditer(content_lower)):
+                    normalized_date = self._normalize_query_dates(date_text)
+                    if normalized_date == date_text:
                         continue
                     for term in terms:
                         if normalized_date in term:
-                            expanded = term.replace(normalized_date, date_match.group())
-                            if (position := content_lower.find(expanded)) >= 0:
-                                matches.append((len(term), position))
+                            variants[term.replace(normalized_date, date_text)] = self._normalize_query_dates(term)
+                source_offsets = None
+                if len(content_lower) != len(entry.content):
+                    source_offsets = [index for index, character in enumerate(entry.content)
+                                      for _ in character.casefold()]
+                matches = sorted(
+                    (source_offsets[match.start()] if source_offsets is not None else match.start(),
+                     source_offsets[match.end() - 1] + 1 if source_offsets is not None else match.end(), term)
+                    for variant, term in variants.items()
+                    for match in re.finditer(re.escape(variant), content_lower)
+                )
                 if matches:
-                    _, position = max(matches, key=lambda match: (match[0], -match[1]))
-                    content_start = max(0, position - 80)
+                    visible = [match for match in matches if match[1] - match[0] <= 400]
+                    endings = sorted(visible, key=lambda match: match[1])
+                    coverage = Counter()
+                    left = right = 0
+                    best_score = (-1, 0, 0)
+                    for position, _, term in matches:
+                        window_start = max(0, position - 80)
+                        while right < len(endings) and endings[right][1] <= window_start + 400:
+                            coverage[endings[right][2]] += 1
+                            right += 1
+                        while left < len(visible) and visible[left][0] < window_start:
+                            expired = visible[left][2]
+                            coverage[expired] -= 1
+                            if not coverage[expired]:
+                                del coverage[expired]
+                            left += 1
+                        score = (len(coverage), len(term), -position)
+                        if score > best_score:
+                            best_score = score
+                            content_start = window_start
             content = entry.content[content_start:content_start + (2000 if entry_id or entry_ids is not None else 400)]
             content_end = content_start + len(content)
             results.append({
