@@ -91,8 +91,9 @@ def test_story_catalog_reads_accepted_dynamic_nodes_not_unprocessed_input():
     payload = json.loads(result["entries"][0]["content"])["definition"]
     assert payload["tree"]["id"] in session._dynamic_story_tree_ids
     assert payload["node"] == session.story_tree_engine._nodes["test_choice"]
-    assert payload["node"]["type"] == "auto"
-    assert "choices" not in payload["node"]
+    assert payload["node"]["type"] == "choice"
+    assert payload["node"]["choices"] == accepted["choices"]
+    assert payload["node"]["auto_resolve"] is False
     assert "notify" not in payload["node"]["effects"]
     assert query_rules(session, query="test_rejected")["entries"] == []
     assert query_rules(session)["total"] == 2

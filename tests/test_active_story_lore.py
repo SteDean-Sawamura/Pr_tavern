@@ -17,8 +17,7 @@ START = "2030-01-01T09:00:00"
 MARKER = "SYNTHETIC_ACTIVE_STORY_DETAIL"
 ENTRY_ID = "_st_active_test_instruction"
 CASES = [(source, kind) for source in ("static", "dynamic")
-         for kind in ("choice", "quest", "timed", "pending_review")
-         if (source, kind) != ("dynamic", "choice")]
+         for kind in ("choice", "quest", "timed", "pending_review")]
 CASES += [("event", kind) for kind in ("choice", "quest")]
 
 

@@ -429,6 +429,9 @@ class StoryDirectorMixin:
             "节点type可选:\n"
             "- timed: 定时自动完成（附duration_turns:回合数）\n"
             "- auto: 条件满足时自动完成（附condition表达式）\n"
+            "- choice: 等待玩家选择；choices中每项提供唯一id、面向玩家的label，可声明condition、effects和unlock\n"
+            "  节点name、description和选项描述须面向玩家，不包含隐藏规则；默认不自动选择，"
+            "仅显式auto_resolve:true时按条件自动选择。complete_nodes不得代替玩家完成choice。\n"
             "- pending_review: 无法给出明确条件，由下次审查判断完成\n\n"
             "condition 语法:\n"
             "- player.属性名 op 值 (op: >=, <=, >, <, ==, !=)\n"
@@ -437,8 +440,9 @@ class StoryDirectorMixin:
             "- milestone.里程碑ID == true\n"
             "- 多条件: cond1 AND cond2, cond1 OR cond2\n\n"
             '返回JSON: {"new_nodes":[{"id":"_dyn_xxx","name":"","description":"",'
-            '"type":"timed|auto|pending_review","duration_turns":5,"condition":"",'
-            '"requires":["已有节点ID"],"related_npcs":[],"related_orgs":[]}],'
+            '"type":"timed|auto|choice|pending_review","duration_turns":5,"condition":"",'
+            '"requires":["已有节点ID"],"related_npcs":[],"related_orgs":[],"auto_resolve":false,'
+            '"choices":[{"id":"选项ID","label":"玩家可见选项","condition":"","effects":{},"unlock":[]}]}],'
             '"complete_nodes":["要标记完成的节点ID"]}'
         )
         system = "你是剧情树管理器。生成可追踪的叙事节点，审查节点是否已落地。只返回紧凑JSON。"
@@ -609,6 +613,8 @@ class StoryDirectorMixin:
             for nid in tree_result.get("complete_nodes", []):
                 if self.story_tree_engine and nid in self.story_tree_engine._nodes:
                     node = self.story_tree_engine._nodes[nid]
+                    if node.get("type") == "choice":
+                        continue
                     sts = self.current_state.setdefault("story_tree_state", {
                         "completed": [], "active": [], "unlocked": [],
                         "timed_progress": {}, "choices_made": {},
@@ -736,11 +742,14 @@ class StoryDirectorMixin:
         for node in copy.deepcopy(tree.get("nodes", [])):
             if not node.get("id") or node["id"] in existing_ids:
                 continue
-            # 动态生成的 choice 节点降级为 auto（叙事不会自动展示选项）
             if node.get("type") == "choice":
-                node["type"] = "auto"
-                node.pop("choices", None)
-            # 动态节点不直接暴露给叙事层，通过lorebook间接影响
+                choices = node.get("choices")
+                if (not isinstance(choices, list) or not choices
+                        or any(not isinstance(choice, dict) or not isinstance(choice.get("id"), str)
+                               or not choice["id"].strip() for choice in choices)
+                        or len({choice["id"] for choice in choices}) != len(choices)):
+                    continue
+                node["auto_resolve"] = node.get("auto_resolve") is True
             effects = node.get("effects", {})
             effects.pop("narrative_callback", None)
             effects.pop("notify", None)

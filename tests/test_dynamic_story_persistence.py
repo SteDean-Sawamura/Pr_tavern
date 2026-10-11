@@ -138,7 +138,10 @@ def test_registration_uses_same_accepted_nodes_in_both_engines_without_mutating_
     assert "test_invalid" not in session.event_engine.events
     assert "test_reserved" not in session.story_tree_engine._nodes
     assert session.event_engine.events["test_reserved"].category == "scheduled"
-    assert session.event_engine.events["test_choice"].category == "story"
+    assert saved_tree["nodes"][0]["type"] == "choice"
+    assert saved_tree["nodes"][0]["choices"] == accepted["choices"]
+    assert session.event_engine.events["test_choice"].category == "choice"
+    assert session.event_engine.events["test_choice"].choices == accepted["choices"]
     assert session.event_engine.events["test_choice"].effects == {}
     accepted["name"] = "Synthetic caller mutation"
     session.story_tree_engine._nodes["test_choice"]["name"] = "Synthetic runtime mutation"

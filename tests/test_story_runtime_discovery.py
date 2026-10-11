@@ -221,7 +221,11 @@ def test_runtime_catalog_uses_accepted_dynamic_nodes_and_preserves_definition_vi
     item, = records(result)
     assert item["node_id"] == "test_dynamic"
     assert item["tree_id"] in session._dynamic_story_tree_ids
-    assert item["type"] == "auto" and item["choices"] == []
+    assert item["type"] == "choice" and item["status"] == "locked"
+    assert item["choices"] == [{
+        "choice_id": "test_dynamic_option", "label": "test_dynamic_option",
+        "available": False, "reason": "node_not_active",
+    }]
     assert session._handle_consult_rules({"category": "story_nodes"}) == session._handle_consult_rules({
         "category": "story_nodes", "view": "definition",
     })

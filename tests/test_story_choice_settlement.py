@@ -433,10 +433,10 @@ async def test_cancelled_choice_discards_effects_and_releases_transaction_state(
 
 
 @pytest.mark.asyncio
-async def test_normalized_dynamic_auto_node_is_not_a_manual_choice(tmp_path, monkeypatch):
+async def test_dynamic_auto_node_is_not_a_manual_choice(tmp_path, monkeypatch):
     session = choice_session()
     session._apply_director_results({"tree": {"new_nodes": [{
-        "id": "test_generated", "type": "choice", "choices": [{"id": "test_select"}],
+        "id": "test_generated", "type": "auto", "choices": [{"id": "test_select"}],
     }]}})
     assert session.story_tree_engine._nodes["test_generated"]["type"] == "auto"
     async with choice_client(session, tmp_path, monkeypatch) as (client, sessions):
