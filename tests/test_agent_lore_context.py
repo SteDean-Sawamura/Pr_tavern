@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 from collections import OrderedDict
+from dataclasses import asdict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -61,6 +62,9 @@ def test_bounded_lore_preserves_retrieval_metadata_and_requires_complete_reread(
         "search_page": {"keyword": "合成线索", "page": 1},
         "approximate": {"keyword": "石门铜锁河边青灯"},
     }[mode]
+    if arguments.get("page", 0) > 0 or arguments.get("offset", 0) > 0:
+        initial = session.prompt_builder.lorebook.query(**{**arguments, "page": 0, "offset": 0})
+        arguments["snapshot"] = initial["snapshot"]
     original = session.prompt_builder.lorebook.query(**arguments)
     if mode == "approximate":
         assert original["approximate"] is True
@@ -74,12 +78,12 @@ def test_bounded_lore_preserves_retrieval_metadata_and_requires_complete_reread(
     result = json.loads(bounded[-1]["content"])
     assert result["content_omitted"] is True
     assert "offset=0" in result["notice"]
-    for key in ("total_matches", "next_page", "approximate"):
+    for key in ("total_matches", "next_page", "approximate", "snapshot"):
         assert result.get(key) == original.get(key)
     assert len(result["entries"]) == len(original["entries"])
     for entry, previous in zip(result["entries"], original["entries"]):
         assert "content" not in entry
-        for key in ("id", "visibility", "offset", "next_offset", "total_length", "truncated", "related_entries"):
+        for key in ("id", "visibility", "offset", "next_offset", "total_length", "truncated", "related_entries", "snapshot"):
             assert entry[key] == previous[key]
     assert sum(len(json.dumps(message, ensure_ascii=False)) for message in bounded) <= budget
     assert len(json.dumps(bounded[-1], ensure_ascii=False)) <= budget - 1000
@@ -88,7 +92,12 @@ def test_bounded_lore_preserves_retrieval_metadata_and_requires_complete_reread(
 @pytest.mark.parametrize("arguments", [{"entry_id": "test_lore_0"}, {"entry_id": "test_missing"},
                                       {"entry_id": "test_lore_0", "offset": 100000}])
 def test_lore_within_budget_including_missing_and_eof_is_unchanged(arguments):
-    result = large_session().prompt_builder.lorebook.query(**arguments)
+    lorebook = large_session().prompt_builder.lorebook
+    if arguments.get("offset", 0) > 0:
+        initial = lorebook.query(entry_id=arguments["entry_id"])
+        arguments = {**arguments, "snapshot": initial["snapshot"]}
+    result = lorebook.query(**arguments)
+    assert "error" not in result
     messages = lore_messages(arguments, result)
     original = copy.deepcopy(messages)
     assert _bound_tool_messages(messages, 30000) == original
@@ -103,6 +112,9 @@ async def test_bounded_lore_repeated_compaction_keeps_query_and_unread_status(mo
     context = {"old_time": session.current_state["game_time"]}
     if mode == "projection":
         context["_accepted_state_updates"] = [{"variable_changes": [{"id": "test_counter", "op": "set", "value": 3}]}]
+    if mode == "search":
+        initial = json.loads(await session._query_lorebook_for_turn(context, {**arguments, "page": 0}))
+        arguments["snapshot"] = initial["snapshot"]
     state = copy.deepcopy(session.current_state)
     original = json.loads(await session._query_lorebook_for_turn(context, arguments))
     messages = _bound_tool_messages(lore_messages(arguments, original), 3200)
@@ -229,7 +241,7 @@ async def test_real_agent_budget_rereads_then_discovers_related_declaration(valu
                 target_id, = entry["related_entries"]
                 arguments = {"entry_id": target_id, "offset": 0}
             else:
-                arguments = {"entry_id": entry["id"], "offset": entry["next_offset"]}
+                arguments = {"entry_id": entry["id"], "offset": entry["next_offset"], "snapshot": entry["snapshot"]}
         return {"content": "", "tool_calls": [model_call("query_lorebook", arguments, f"test_read_{len(requests)}")]}
 
     session.ai_provider = SimpleNamespace(generate_with_tools=AsyncMock(side_effect=respond))
@@ -249,9 +261,25 @@ async def test_real_agent_budget_rereads_then_discovers_related_declaration(valu
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("value", [4, 9])
-async def test_budgeted_lore_chain_settles_once_restores_and_keeps_body_out_of_public_stream(tmp_path, monkeypatch, value):
+@pytest.mark.parametrize("value,revise_lore", [(4, False), (9, False), (4, True), (9, True)])
+async def test_budgeted_lore_chain_settles_once_restores_and_keeps_body_out_of_public_stream(tmp_path, monkeypatch, value, revise_lore):
     session = large_session(value)
+    expected_value = value + 3 if revise_lore else value
+    expected_notes = BODY + "SYNTHETIC_REVISED_ARCHIVE" if revise_lore else BODY
+    if revise_lore:
+        state = copy.deepcopy(session.current_state)
+        script = copy.deepcopy(session.script)
+        script["one_time_events"] = [{
+            "id": "test_refresh_archive", "trigger_time": "2030-01-01T09:05:00",
+            "effects": [
+                {"type": "update_lore", "id": "test_lore_0", "content": json.dumps({"notes": expected_notes}, ensure_ascii=False)},
+                {"type": "update_lore", "id": f"test_declaration_{value}", "content": json.dumps({
+                    "variable_changes": [{"id": "test_counter", "op": "set", "value": expected_value}],
+                })},
+            ],
+        }]
+        session = GameSession(script, None)
+        session.current_state = state
     session.save_id = "synthetic-lore-budget-save"
     session.script["locations"] = [{"id": "test_room", "name": "Reading room"}]
     session.current_state.update({
@@ -268,9 +296,11 @@ async def test_budgeted_lore_chain_settles_once_restores_and_keeps_body_out_of_p
     chunks = []
     target_id = None
     declaration = None
+    advanced = False
+    read_snapshots = set()
 
     async def respond(messages, **kwargs):
-        nonlocal phase, target_id, declaration
+        nonlocal phase, target_id, declaration, advanced
         if [tool["function"]["name"] for tool in kwargs["tools"]] == ["extract_notes"]:
             return {"content": "", "tool_calls": [model_call("extract_notes", {"notes": []}, "test_notes")]}
         requests.append(copy.deepcopy(messages))
@@ -298,15 +328,32 @@ async def test_budgeted_lore_chain_settles_once_restores_and_keeps_body_out_of_p
             entry, = result["entries"]
             assert entry["offset"] == sum(map(len, chunks))
             chunks.append(entry["content"])
-            if entry["next_offset"] is None:
-                assert json.loads("".join(chunks))["notes"] == BODY
+            read_snapshots.add(entry["snapshot"])
+            if revise_lore and not advanced:
+                advanced = True
+                phase = "advance"
+                name, arguments = "update_state", {"end_time": "2030-01-01T09:05:00"}
+            elif entry["next_offset"] is None:
+                assert json.loads("".join(chunks))["notes"] == expected_notes
                 target_id, = entry["related_entries"]
                 assert not target_id.startswith("test_lore_")
                 phase = "related"
-                arguments = {"entry_id": target_id, "offset": 0}
+                name, arguments = "query_lorebook", {"entry_id": target_id, "offset": 0}
             else:
-                arguments = {"entry_id": entry["id"], "offset": entry["next_offset"]}
-            name = "query_lorebook"
+                name, arguments = "query_lorebook", {"entry_id": entry["id"], "offset": entry["next_offset"], "snapshot": entry["snapshot"]}
+        elif phase == "advance":
+            calls = {call["id"]: call["function"]["name"] for message in messages for call in message.get("tool_calls", [])}
+            previous = json.loads(next(message["content"] for message in reversed(messages)
+                                       if message["role"] == "tool" and calls.get(message["tool_call_id"]) == "query_lorebook"))
+            entry, = previous["entries"]
+            phase = "stale"
+            name, arguments = "query_lorebook", {"entry_id": entry["id"], "offset": entry["next_offset"], "snapshot": entry["snapshot"]}
+        elif phase == "stale":
+            failure = json.loads(next(message["content"] for message in reversed(messages) if message["role"] == "tool"))
+            assert failure["error_code"] == "snapshot_expired" and failure["restart_required"] is True
+            chunks.clear()
+            phase = "read"
+            name, arguments = "query_lorebook", failure["restart"]
         elif phase == "related":
             result = json.loads(next(message["content"] for message in reversed(messages) if message["role"] == "tool"))
             entry, = result["entries"]
@@ -369,10 +416,11 @@ async def test_budgeted_lore_chain_settles_once_restores_and_keeps_body_out_of_p
             final, = [event for event in events if event["type"] == "final"]
             assert phase == "finished" and len(chunks) >= 2
             assert final["narrative"] == narrative
-            assert declaration["variable_changes"][0]["value"] == value
-            assert session.current_state["script_variables"]["test_counter"] == value
+            assert declaration["variable_changes"][0]["value"] == expected_value
+            assert session.current_state["script_variables"]["test_counter"] == expected_value
             assert "SYNTHETIC_LORE_BUDGET_BODY" in json.dumps(requests)
             assert "SYNTHETIC_LORE_BUDGET_BODY" not in response.text
+            assert all(snapshot not in response.text for snapshot in read_snapshots)
             await session._drain_background_tasks()
             calls = provider.generate_with_tools.await_count
             replay = await client.post(endpoint, json=action)
@@ -381,11 +429,45 @@ async def test_budgeted_lore_chain_settles_once_restores_and_keeps_body_out_of_p
             game_routes._sessions.clear()
             restored = await game_routes._restore_session(session.save_id)
             assert restored is not None and restored is not session
-            assert restored.current_state["script_variables"]["test_counter"] == value
+            assert restored.current_state["script_variables"]["test_counter"] == expected_value
             trace = restored.world_tree.get_node(final["node_id"])["agent_trace"]
             assert trace
-            assert sum(record["tool"] == "update_state" for record in trace["rounds"]) == 1
+            assert sum(record["tool"] == "update_state" for record in trace["rounds"]) == 1 + int(revise_lore)
             assert "SYNTHETIC_LORE_BUDGET_BODY" not in json.dumps(trace)
+            assert all(snapshot not in json.dumps(trace) for snapshot in read_snapshots)
+            saved = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": target_id}))
+            original = json.loads(await session._run_tool_native_async("query_lorebook", {"entry_id": target_id}))
+            assert restored.world_tree.tree_id != session.world_tree.tree_id
+            assert restored.world_tree.active_node_id == session.world_tree.active_node_id
+            assert restored.current_state["game_time"] == session.current_state["game_time"]
+            original_entry = next(entry for entry in session.prompt_builder.lorebook.entries if entry.id == target_id)
+            restored_entry = next(entry for entry in restored.prompt_builder.lorebook.entries if entry.id == target_id)
+            assert asdict(restored_entry) == asdict(original_entry)
+            failed = json.loads(await restored._run_tool_native_async("query_lorebook", {
+                "entry_id": target_id, "snapshot": original["snapshot"],
+            }))
+            assert failed["error_code"] == "snapshot_expired" and failed["restart_required"] is True
+            restarted = json.loads(await restored._run_tool_native_async("query_lorebook", failed["restart"]))
+            assert restarted == saved
+            if revise_lore:
+                assert len(read_snapshots) == 2
+                for snapshot in read_snapshots:
+                    failed = json.loads(await restored._run_tool_native_async("query_lorebook", {
+                        "entry_id": "test_lore_0", "offset": 2000, "snapshot": snapshot,
+                    }))
+                    assert failed["error_code"] == "snapshot_expired"
+                await restored.branch_to_node(root_id)
+                failed = json.loads(await restored._run_tool_native_async("query_lorebook", {
+                    "entry_id": target_id, "snapshot": saved["snapshot"],
+                }))
+                assert failed["error_code"] == "snapshot_expired"
+                root_read = json.loads(await restored._run_tool_native_async("query_lorebook", failed["restart"]))
+                assert json.loads(root_read["entries"][0]["content"])["variable_changes"][0]["value"] == value
+                await restored.branch_to_node(final["node_id"])
+                returned = json.loads(await restored._run_tool_native_async("query_lorebook", {
+                    "entry_id": target_id, "snapshot": saved["snapshot"],
+                }))
+                assert json.loads(returned["entries"][0]["content"])["variable_changes"][0]["value"] == expected_value
     finally:
         await session._drain_background_tasks()
         if restored is not None:

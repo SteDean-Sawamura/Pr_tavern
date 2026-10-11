@@ -458,6 +458,9 @@ class ToolsMixin:
                 page=args.get("page", 0), offset=args.get("offset", 0),
                 excluded_ids=self.prompt_builder._excluded_lore_ids(self.current_state),
                 entry_ids=args.get("entry_ids"),
+                snapshot=args.get("snapshot"),
+                snapshot_scope=(self.world_tree.tree_id, self.world_tree.active_node_id,
+                                self.current_state.get("game_time"), "committed"),
             )
             return json.dumps(result, ensure_ascii=False)
         if name == "query_npc_history":

@@ -244,7 +244,10 @@ async def test_agent_location_lore_unlock_survives_settlement_and_restore(
         restored_lore = json.loads(await restored._run_tool_native_async(
             "query_lorebook", {"entry_id": "test_note"},
         ))
-        assert restored_lore["entries"] == settled_lore["entries"]
+        assert restored_lore["snapshot"] != settled_lore["snapshot"]
+        assert [{key: value for key, value in entry.items() if key != "snapshot"} for entry in restored_lore["entries"]] == [
+            {key: value for key, value in entry.items() if key != "snapshot"} for entry in settled_lore["entries"]
+        ]
         repeated = []
         restored._settle_timed_events(original["game_time"], restored.current_state["game_time"], repeated)
         assert repeated == []

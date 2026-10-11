@@ -155,19 +155,27 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
             result = json.loads(content)
         except ValueError:
             result = None
+        if isinstance(result, dict) and result.get("restart_required"):
+            encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            if len(encoded) <= limit:
+                return encoded
+            return json.dumps({
+                "error_code": result.get("error_code"), "restart_required": True, "metadata_omitted": True,
+                "error": "世界书快照缺失或失效；丢弃旧片段，按原查询从 page=0/offset=0 重查，不传 snapshot。",
+            }, ensure_ascii=False, separators=(",", ":"))
         if isinstance(result, dict) and isinstance(result.get("entries"), list) and not _tool_result_failed(result):
             preview = {key: result[key] for key in (
-                "total_matches", "next_page", "approximate", "projection",
+                "total_matches", "next_page", "approximate", "projection", "snapshot",
             ) if key in result}
             preview["entries"] = [
                 {key: entry[key] for key in (
-                    "id", "visibility", "offset", "next_offset", "total_length", "truncated", "related_entries",
+                    "id", "visibility", "offset", "next_offset", "total_length", "truncated", "related_entries", "snapshot",
                 ) if key in entry}
                 for entry in result["entries"] if isinstance(entry, dict)
             ]
             preview["content_omitted"] = True
             preview["notice"] = (
-                "正文已省略，不是已读完；按 entry_id 从 offset=0 完整重读，再按新结果 next_offset 续读。"
+                "正文已省略，不是已读完；按 entry_id 从 offset=0 完整重读，携带条目 snapshot 按 next_offset 续读；失效按 restart 重查。"
                 "资料仅供推演，非已发生或角色已知。"
             )
             encoded = json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
@@ -175,7 +183,7 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
                 return encoded
             preview = {
                 "content_omitted": True, "metadata_omitted": True,
-                "notice": "正文和元数据已省略，不表示词条未返回；按原调用参数缩小范围重查，精确阅读从 offset=0 开始。"
+                "notice": "正文和元数据已省略，不表示词条未返回；按原查询从 page=0/offset=0 重查，不传 snapshot；缩小范围后携带新快照续读。"
                           "资料仅供推演，非已发生或角色已知。",
             }
             if result.get("projection"):
@@ -565,6 +573,17 @@ class AgenticMixin:
                                           if isinstance(entry, dict) and isinstance(entry.get("id"), str)]
                                          if isinstance(entries, list) else [])
                             lore_arguments = exact_lore_queries.get(m.get("tool_call_id"))
+                            if (tool_names.get(m.get("tool_call_id")) == "query_lorebook"
+                                    and isinstance(tool_result, dict) and tool_result.get("restart_required")):
+                                summary_parts.append("[世界书快照失效] " + json.dumps(tool_result, ensure_ascii=False))
+                                continue
+                            if (tool_names.get(m.get("tool_call_id")) == "query_lorebook"
+                                    and not lore_arguments and isinstance(tool_result, dict) and tool_result.get("snapshot")
+                                    and not _tool_result_failed(tool_result)):
+                                summary_parts.append("[世界书搜索进度] " + json.dumps({
+                                    "query": lore_queries.get(m.get("tool_call_id"), {}),
+                                    **{key: tool_result[key] for key in ("snapshot", "next_page", "total_matches") if key in tool_result},
+                                }, ensure_ascii=False))
                             if lore_arguments and isinstance(entries, list) and not _tool_result_failed(tool_result):
                                 requested_ids = lore_arguments.get("entry_ids") or [lore_arguments["entry_id"]]
                                 not_returned_ids = [entry_id for entry_id in requested_ids if entry_id not in entry_ids]
@@ -577,6 +596,8 @@ class AgenticMixin:
                                     query_status["offset"] = lore_arguments["offset"]
                                 if "projection" in tool_result:
                                     query_status["projection"] = tool_result["projection"]
+                                if "snapshot" in tool_result:
+                                    query_status["snapshot"] = tool_result["snapshot"]
                                 if not_returned_ids:
                                     query_status["note"] = (
                                         "仅记录本次精确查询未返回的条目，不证明词条不存在，"
@@ -596,7 +617,7 @@ class AgenticMixin:
                                 read_spans = [
                                     f"{entry['id']} offset={entry['offset']}, "
                                     f"next_offset={entry.get('next_offset')}, "
-                                    f"total_length={entry.get('total_length')}"
+                                    f"total_length={entry.get('total_length')}, snapshot={entry.get('snapshot')}"
                                     for entry in entries[:3]
                                     if isinstance(entry, dict) and entry.get('id')
                                     and 'offset' in entry and is_exact_read
@@ -614,7 +635,7 @@ class AgenticMixin:
                                     + ("证据片段：" + " | ".join(excerpts) + "；" if excerpts else "")
                                     + "资料仅供推演、非角色自动知情；"
                                     + ("本轮状态投影，非已发生或角色已知；" if tool_result.get("projection") else "")
-                                    + "可按 entry_id 重查正文，按 next_offset 续读"
+                                    + "可按 entry_id 从 offset=0 重查正文，携带条目 snapshot 按 next_offset 续读；失效丢弃旧片段按 restart 重查"
                                 )
                             elif (tool_names.get(m.get("tool_call_id")) == "consult_rules"
                                   and isinstance(tool_result, dict)
@@ -4891,6 +4912,9 @@ class AgenticMixin:
             page=args.get("page", 0), offset=args.get("offset", 0),
             excluded_ids=self.prompt_builder._excluded_lore_ids(projected_state, preview_lorebook),
             entry_ids=args.get("entry_ids"),
+            snapshot=args.get("snapshot"),
+            snapshot_scope=(self.world_tree.tree_id, self.world_tree.active_node_id,
+                            self.current_state.get("game_time"), "candidate", updates),
         )
         if "error" not in result:
             result["projection"] = {
@@ -5813,6 +5837,9 @@ class AgenticMixin:
                     keyword=args.get("keyword", ""), entry_id=args.get("entry_id", ""),
                     page=args.get("page", 0), offset=args.get("offset", 0),
                     excluded_ids=excluded, entry_ids=args.get("entry_ids"),
+                    snapshot=args.get("snapshot"),
+                    snapshot_scope=(self.world_tree.tree_id, self.world_tree.active_node_id,
+                                    state.get("game_time"), "player"),
                 ), ensure_ascii=False)
             if name == "get_npc_attitude":
                 npc = npcs_state.get(args.get("npc_id", ""), {})

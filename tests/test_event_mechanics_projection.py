@@ -83,7 +83,10 @@ async def test_projected_mechanics_unlock_the_same_lore_as_settlement(mechanics_
     assert [event["event_id"] for event in fired] == ["configure_gate", "release_notice"]
     assert session.current_state["script_variables"]["gate"] == 1
     assert [entry["content"] for entry in settled["entries"]] == ["The gate is open."]
-    assert projected["entries"] == settled["entries"]
+    assert projected["snapshot"] != settled["snapshot"]
+    assert [{key: value for key, value in entry.items() if key != "snapshot"} for entry in projected["entries"]] == [
+        {key: value for key, value in entry.items() if key != "snapshot"} for entry in settled["entries"]
+    ]
     assert projected["projection"]["provisional"] is True
     assert projected["projection"]["event_ids"] == [event["event_id"] for event in fired]
     assert [event["event_id"] for event in projected_events] == [event["event_id"] for event in fired]
@@ -93,7 +96,10 @@ async def test_projected_mechanics_unlock_the_same_lore_as_settlement(mechanics_
     restored.current_state = json.loads(json.dumps(session.current_state))
     restored._hydrate_branch_runtime(restored.current_state)
     recovered = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": "gate_notice"}))
-    assert recovered["entries"] == settled["entries"]
+    assert recovered["snapshot"] != settled["snapshot"]
+    assert [{key: value for key, value in entry.items() if key != "snapshot"} for entry in recovered["entries"]] == [
+        {key: value for key, value in entry.items() if key != "snapshot"} for entry in settled["entries"]
+    ]
     root_id = restored.world_tree.add_node(
         None, original_snapshot["game_time"], 0, state_snapshot=copy.deepcopy(original_snapshot),
     )
@@ -106,7 +112,10 @@ async def test_projected_mechanics_unlock_the_same_lore_as_settlement(mechanics_
     assert previous["entries"] == []
     await restored.branch_to_node(final_id)
     recovered = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": "gate_notice"}))
-    assert recovered["entries"] == settled["entries"]
+    assert recovered["snapshot"] != settled["snapshot"]
+    assert [{key: value for key, value in entry.items() if key != "snapshot"} for entry in recovered["entries"]] == [
+        {key: value for key, value in entry.items() if key != "snapshot"} for entry in settled["entries"]
+    ]
 
 
 @pytest.mark.asyncio
@@ -161,7 +170,10 @@ async def test_cyclic_condition_projection_matches_settlement(
         f"2030-01-01T{fire_time}" for fire_time in expected_ticks
     ]
     assert bool(settled["entries"]) is bool(expected_ticks)
-    assert projected["entries"] == settled["entries"]
+    assert projected["snapshot"] != settled["snapshot"]
+    assert [{key: value for key, value in entry.items() if key != "snapshot"} for entry in projected["entries"]] == [
+        {key: value for key, value in entry.items() if key != "snapshot"} for entry in settled["entries"]
+    ]
     assert [(event["event_id"], event["fire_time"]) for event in projected_events] == [
         (event["event_id"], event["fire_time"]) for event in fired
     ]
@@ -172,7 +184,10 @@ async def test_cyclic_condition_projection_matches_settlement(
     restored.current_state = json.loads(json.dumps(session.current_state))
     restored._hydrate_branch_runtime(restored.current_state)
     recovered = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": "gate_notice"}))
-    assert recovered["entries"] == settled["entries"]
+    assert recovered["snapshot"] != settled["snapshot"]
+    assert [{key: value for key, value in entry.items() if key != "snapshot"} for entry in recovered["entries"]] == [
+        {key: value for key, value in entry.items() if key != "snapshot"} for entry in settled["entries"]
+    ]
 
 
 def test_failed_projection_restores_mechanics_runtime(mechanics_script, monkeypatch):

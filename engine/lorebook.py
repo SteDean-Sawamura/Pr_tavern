@@ -4,10 +4,12 @@ Inspired by SillyTavern's World Info system. Entries are only injected into
 the AI prompt when their keywords appear in recent chat history or player input.
 """
 
+import base64
 import hashlib
+import json
 import random
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 
 @dataclass
@@ -159,11 +161,14 @@ class Lorebook:
 
     def query(self, keyword: str = "", entry_id: str = "", page: int = 0,
               offset: int = 0, excluded_ids: set[str] | None = None,
-              entry_ids: list[str] | None = None) -> dict:
+              entry_ids: list[str] | None = None, snapshot: str | None = None,
+              snapshot_scope: tuple = ()) -> dict:
         if not isinstance(keyword, str) or not isinstance(entry_id, str):
             return {"error": "keyword 和 entry_id 必须是字符串"}
         if type(page) is not int or page < 0 or type(offset) is not int or offset < 0:
             return {"error": "page 和 offset 必须是非负整数；搜索用 page，按 entry_id 阅读用 offset"}
+        if snapshot is not None and (not isinstance(snapshot, str) or not re.fullmatch(r"[A-Za-z0-9_-]{22}", snapshot)):
+            return {"error": "snapshot 必须是查询返回的快照字符串"}
         if entry_ids is not None:
             if (not isinstance(entry_ids, list) or not 1 <= len(entry_ids) <= 3
                     or any(not isinstance(item, str) or not item.strip() for item in entry_ids)
@@ -289,6 +294,28 @@ class Lorebook:
                         approximate = bool(candidates)
         else:
             candidates = []
+
+        def snapshot_for(identifier=None):
+            scope = [entry for entry in candidates if entry.id == identifier] if identifier is not None else candidates
+            payload = [
+                snapshot_scope, "entry" if identifier is not None else "query",
+                identifier if identifier is not None else [query_text, entry_ids],
+                [[asdict(entry), [related for related in entry.related_entries if related in available_ids]]
+                 for entry in scope],
+            ]
+            digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).digest()[:16]
+            return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+        current_snapshot = snapshot_for(entry_id or None)
+        if (((page > 0 or offset > 0) and snapshot is None)
+                or (snapshot is not None and snapshot != current_snapshot)):
+            restart = ({"entry_id": entry_id} if entry_id else
+                       {"entry_ids": entry_ids} if entry_ids is not None else {"keyword": keyword})
+            return {
+                "error": "快照缺失或已失效；丢弃旧正文片段，按 restart 从头重查，再携带新 snapshot 续读。",
+                "error_code": "snapshot_required" if snapshot is None else "snapshot_expired",
+                "restart_required": True, "restart": restart,
+            }
         total_matches = len(candidates)
         start = 0 if entry_id or entry_ids is not None else page * 5
         selected = candidates[start:start + 5]
@@ -319,6 +346,7 @@ class Lorebook:
             content_end = content_start + len(content)
             results.append({
                 "id": entry.id,
+                "snapshot": snapshot_for(entry.id),
                 "title": entry.comment or ", ".join(entry.keys[:2]) or entry.id,
                 "content": content,
                 "offset": content_start,
@@ -330,6 +358,7 @@ class Lorebook:
             })
         return {
             "entries": results, "total_matches": total_matches,
+            "snapshot": current_snapshot,
             "next_page": page + 1 if not entry_id and entry_ids is None and start + 5 < total_matches else None,
             **({"approximate": True} if approximate else {}),
         }

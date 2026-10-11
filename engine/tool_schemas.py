@@ -15,8 +15,9 @@ LOREBOOK_QUERY_PARAMETERS = {"type": "object", "properties": {
     "entry_id": {"type": "string", "description": "读取单条设定的 ID；按 next_offset 续读时使用"},
     "entry_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3,
                   "uniqueItems": True, "description": "一次读取 1-3 个独立条目 ID；不可与 keyword、entry_id、page 或 offset 混用"},
-    "page": {"type": "integer", "minimum": 0, "description": "搜索页码，从 0 开始；有 next_page 时可继续查询"},
-    "offset": {"type": "integer", "minimum": 0, "description": "按 entry_id 阅读时的字符位置，默认 0；按 next_offset 续读"},
+    "page": {"type": "integer", "minimum": 0, "description": "搜索页码，从 0 开始；按 next_page 翻页时携带顶层 snapshot 和原 keyword"},
+    "offset": {"type": "integer", "minimum": 0, "description": "按 entry_id 阅读时的字符位置，默认 0；按 next_offset 续读时携带该条目 snapshot"},
+    "snapshot": {"type": "string", "description": "初查可省略；翻页/续读必填。搜索用顶层快照，按ID阅读用条目快照。失效时丢弃旧片段并按 restart 从头读取，不拼接不同快照；搜索摘要不等于从头读过正文。"},
 }}
 
 # Foreground (narration) tools: retrieval + scene presentation. Mutating tools

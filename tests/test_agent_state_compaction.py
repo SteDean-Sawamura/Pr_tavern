@@ -137,6 +137,9 @@ async def test_compaction_preserves_partial_batch_query_and_repeated_status(sess
 async def test_compaction_distinguishes_missing_error_eof_and_search(session, next_arguments):
     content = "Synthetic evidence. " * 30 + "SYNTHETIC_EVIDENCE_END"
     lorebook = Lorebook([{"id": "test_label", "keys": ["label"], "content": content}])
+    if next_arguments.get("offset", 0) > 0 or next_arguments.get("page", 0) > 0:
+        initial = lorebook.query(**{**next_arguments, "page": 0, "offset": 0})
+        next_arguments = {**next_arguments, "snapshot": initial["snapshot"]}
     result = lorebook.query(**next_arguments)
     summary = await compact(session, [
         ("query_lorebook", {"entry_id": "test_label"}, json.dumps(lorebook.query(entry_id="test_label"))),

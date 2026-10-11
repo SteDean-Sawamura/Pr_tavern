@@ -160,7 +160,10 @@ async def test_cyclic_lore_projection_matches_stream_settlement_after_reload(tmp
                 received = [json.loads(message["content"]) for message in requests[turn_index][3]
                             if message.get("tool_call_id") == f"synthetic-cycle-{turn_index}-2"]
                 assert len(received) == 1
-                assert received[0]["entries"] == settled["entries"]
+                assert received[0]["snapshot"] != settled["snapshot"]
+                assert [{key: value for key, value in entry.items() if key != "snapshot"} for entry in received[0]["entries"]] == [
+                    {key: value for key, value in entry.items() if key != "snapshot"} for entry in settled["entries"]
+                ]
                 assert received[0]["projection"]["event_ids"] == (["test_tick"] if turn_index else ["test_configure"])
                 assert ("SYNTHETIC_CYCLIC_NOTICE" in json.dumps(requests[turn_index][3])) is bool(turn_index)
                 preview, = [json.loads(message["content"]) for message in requests[turn_index][2]
@@ -190,7 +193,10 @@ async def test_cyclic_lore_projection_matches_stream_settlement_after_reload(tmp
                 sessions.append(restored)
                 assert restored.current_state["events"]["test_tick"] == final_snapshot["events"]["test_tick"]
                 recovered = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": "test_notice"}))
-                assert recovered["entries"] == settled["entries"]
+                assert recovered["snapshot"] != settled["snapshot"]
+                assert [{key: value for key, value in entry.items() if key != "snapshot"} for entry in recovered["entries"]] == [
+                    {key: value for key, value in entry.items() if key != "snapshot"} for entry in settled["entries"]
+                ]
                 if dynamic_events:
                     final_id = restored.world_tree.active_node_id
                     await restored.branch_to_node(root_id)
