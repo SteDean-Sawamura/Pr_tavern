@@ -181,7 +181,7 @@ async def test_candidate_query_metadata_survives_bounding_and_compaction(session
     ({"category": "world_properties", "include_candidates": "true"}, {"old_time": "2030-01-01T09:00:00"}),
     ({"category": "one_time_events", "include_candidates": True}, {"old_time": "2030-01-01T09:00:00"}),
     ({"category": "world_properties", "include_candidates": True}, {}),
-    ({"question": "Check the inventory.", "include_candidates": True}, {"old_time": "2030-01-01T09:00:00"}),
+    ({"question": "Check the inventory.", "include_candidates": True}, {}),
 ])
 async def test_candidate_query_rejects_ambiguous_or_unavailable_projection(session, arguments, context):
     original = copy.deepcopy(session.current_state)

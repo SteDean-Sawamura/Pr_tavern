@@ -21,6 +21,7 @@ from engine.game_session import GameSession
     ("traverse_graph", {"entity": "test_librarian"}),
     ("read_director_notes", {}),
     ("consult_rules", {"category": "variables", "query": "test_counter"}),
+    ("consult_rules", {"question": "Librarian 在场吗？", "include_candidates": True}),
     ("trace_causality", {"entity": "test_librarian"}),
     ("preview_choice_outcome", {"choice_text": "Inspect the room."}),
 ])

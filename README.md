@@ -937,6 +937,14 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 `tests/test_declarative_conditions.py` 和 `tests/test_condition_grammar.py` 覆盖类型比较、组合语法、错误条件拒绝及派发路径一致性；完整流式回归分别使用简单、分组和错误条件，验证规则读取、地图条件、事件投影、持久化重载、分支恢复和重放幂等。错误条件不会阻止合法的世界属性更新保存，但不得触发受限事件、解锁地图或读取尚未激活的词条。所有验证均使用假模型与隔离数据，不代表真实模型体验或在线服务已验收。
 
+### 候选在场与物品查询
+
+`consult_rules` 不指定 `category` 时仍使用 `question`：问题含 NPC 姓名及“在场/在这”查询在场关系，含物品名及“可用/有没有”检查持有。默认读取已提交状态；进行中回合显式传 `include_candidates=true`，读取累计接收的候选移动、房间、库存等更新。若已有接收的 `end_time`，复用定时事件投影，按候选时间查询声明式日程覆盖及到期状态；不采用尚未接受的预估时间。响应保留 `answers`，附带 `game_time`；候选另附 `projection.through/event_ids/provisional/scope`。
+
+在场判断复用既有房间感知逻辑，区分“在场”“附近（不同房间）”“不在场”；空地点不算在场，显式 NPC 位置、死亡状态和日程优先级仍走已有位置解析。查询只在副本上初始化房间，不改变正式状态、不结算或揭示信息，也不占用撤销目标。候选投影不是完整回合模拟，不包含接触更新；在场不等于获准互动，持有不等于满足使用条件，幕后位置不代表玩家已知。变量、世界属性及剧情节点类别的原有候选协议不变，仍不包含待结算事件。
+
+更新、撤销或切换分支后须重新查询，不能沿用旧答案。上下文压缩省略旧在场/持有结果并保留候选边界和重查提示。`tests/test_candidate_presence.py`、`tests/test_agent_undo_retrieval.py` 与 `tests/test_scheduled_npc_overrides.py` 使用合成声明、假模型和隔离 SQLite，覆盖时间与房间、物品增减、撤销重查、工具结果驱动的叙事分支、保存失败回滚与重试、重载、分支往返及请求重放；查询正文不进入公开 SSE/trace。这些证据不代表真实模型的自主互动质量或在线体验已验收。
+
 ## 技术栈
 
 - **后端**: FastAPI + Uvicorn + aiosqlite (SQLite WAL 模式)

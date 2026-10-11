@@ -792,7 +792,7 @@ def _unified_tools() -> list[dict]:
             "name": "consult_rules",
             "description": "只读咨询当前分支规则。指定 category 可检索完整声明；locations 包含通行条件、阻止原因和默认房间，不揭示地点或执行移动。story_nodes 默认返回 tree 元数据和完整 node。先用 view=runtime、node_status=active 分页发现当前节点与选项身份/可选性，再用定义视图 query=node_id 查规则，用 preview_choice_outcome 查后果。运行态不激活或结算节点，unlocked 不等于可提交。不指定类别时只检查 NPC 在场和物品持有。幕后信息不是角色已知。",
             "parameters": {"type": "object", "properties": {
-                "question": {"type": "string", "description": "要咨询的问题"},
+                "question": {"type": "string", "description": "不指定 category 时，含 NPC 姓名及在场/在这检查房间感知的在场或附近；含物品名及可用/有没有检查持有，不判断使用条件或互动许可。默认读取已提交状态"},
                 "context": {"type": "string", "description": "相关上下文"},
                 "category": {"type": "string", "enum": ["variables", "triggers", "random_items", "one_time_events", "cyclic_events", "persistent_states", "world_properties", "story_nodes", "locations"],
                              "description": "机制类别；指定后无需 question。每次最多返回5条，每条 content 最多2000字符"},
@@ -802,7 +802,7 @@ def _unified_tools() -> list[dict]:
                                 "description": "仅运行态列表：按当前状态筛选；省略则全部。不是激活预测，不与 rule_index 同传；列表翻页保持此参数"},
                 "query": {"type": "string", "description": "在所选视图的内容中搜索，不区分大小写；空字符串列出该类别或状态"},
                 "include_candidates": {"type": "boolean", "default": False,
-                                        "description": "进行中回合可用：variables/world_properties 附加 candidate_value/candidate_exists，current_value 仍是已提交值；story_nodes 的 runtime 视图改为读取候选状态及其选项可用性。不含未结算事件，不激活节点。运行时世界属性 definition=null。续读须保留此参数、view 和 snapshot；失效时重查列表"},
+                                        "description": "进行中回合可用：variables/world_properties 附加 candidate_value/candidate_exists，current_value 仍是已提交值；story_nodes 的 runtime 视图读取候选条件。这些类别不含未结算事件、不激活节点，运行时世界属性 definition=null；续读保持此参数、view、snapshot。无 category 时按 question 查询候选在场和物品：包含已接收更新及显式 end_time 内的定时事件，不含完整生命周期或接触更新。所有候选均未提交、非角色知情；更新、撤销、切换分支后重查"},
                 "rule_index": {"type": "integer", "minimum": 0,
                                "description": "读取某条查询结果的完整定义时，传入其 rule_index 和该条目 snapshot（offset=0 也必须携带）；不可与 query 混用"},
                 "offset": {"type": "integer", "minimum": 0, "default": 0,

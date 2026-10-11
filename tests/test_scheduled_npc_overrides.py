@@ -168,7 +168,7 @@ async def test_declared_shift_through_stream_restore_branch_and_replay(tmp_path,
             name, arguments = "query_lorebook", {"entry_id": "test_manual"}
         elif index == 2:
             name, arguments = "consult_rules", json.loads(json.loads(completed[1])["entries"][0]["content"])
-        elif index == 3:
+        elif index in (3, 9):
             definition = json.loads(json.loads(completed[2])["entries"][0]["content"])["definition"]
             name, arguments = "update_state", {**definition["preparation"],
                                                "end_time": definition.get("trigger_time", definition.get("first_trigger"))}
@@ -182,9 +182,34 @@ async def test_declared_shift_through_stream_restore_branch_and_replay(tmp_path,
             assert result["projection"]["provisional"] is True
             assert result["projection"]["event_ids"] == ["test_shift"]
             assert result["entries"][0]["content"] == "SYNTHETIC_SHIFT_NOTICE_BODY"
-            name, arguments = "write_narrative", {"text": narrative}
+            name, arguments = "consult_rules", {"question": "Practice guide 在场吗？", "include_candidates": True}
+        elif index == 6:
+            result = json.loads(completed[5])
+            assert result["answers"][0].startswith("Practice guide 不在场")
+            assert result["projection"]["provisional"] is True
+            assert result["projection"]["event_ids"] == ["test_shift"]
+            name, arguments = "consult_rules", {"question": "Practice guide 在场吗？"}
+        elif index == 7:
+            result = json.loads(completed[6])
+            assert result["answers"][0].startswith("Practice guide 在场")
+            assert "projection" not in result
+            name, arguments = "undo_my_last_action", {"reason": "Recheck presence before accepting the proposed wait."}
+        elif index == 8:
+            assert completed[7].startswith("已撤销上一个工具调用（update_state）")
+            name, arguments = "consult_rules", {"question": "Practice guide 在场吗？", "include_candidates": True}
+        elif index == 10:
+            result = json.loads(completed[8])
+            assert result["answers"][0].startswith("Practice guide 在场")
+            assert result["projection"]["event_ids"] == []
+            name, arguments = "consult_rules", {"question": "Practice guide 在场吗？", "include_candidates": True}
+        elif index == 11:
+            result = json.loads(completed[10])
+            assert result["projection"]["event_ids"] == ["test_shift"]
+            text = (narrative if result["answers"][0].startswith("Practice guide 不在场") else
+                    "The guide is still beside your seat, so you ask about the practice shift instead of waiting.")
+            name, arguments = "write_narrative", {"text": text}
         else:
-            assert index == 6
+            assert index == 12
             name, arguments = "finalize_turn", {"summary": "Prepared for the declared practice shift and read the notice."}
         assert name in [tool["function"]["name"] for tool in kwargs["tools"]]
         return {"content": "", "tool_calls": [{"id": f"synthetic-shift-{index}", "name": name, "arguments": arguments}]}
@@ -246,7 +271,7 @@ async def test_declared_shift_through_stream_restore_branch_and_replay(tmp_path,
             events = _stream_events(response.text)
             assert not [event for event in events if event["type"] == "error"]
             final, = [event for event in events if event["type"] == "final"]
-            assert final["narrative"] == narrative and len(requests) == 7
+            assert final["narrative"] == narrative and len(requests) == 13
             expected = {"test_guide": [expected_override(session, category)]}
             assert session.current_state["npc_schedule_overrides"] == expected
             assert session._get_npc_location("test_guide") == "test_desk"
@@ -262,18 +287,21 @@ async def test_declared_shift_through_stream_restore_branch_and_replay(tmp_path,
             sessions.append(restored)
             assert restored.current_state == final_state
             assert restored._get_npc_location("test_guide") == "test_desk"
+            assert json.loads(restored._handle_consult_rules({"question": "Practice guide 在场吗？"}))["answers"][0].startswith("Practice guide 不在场")
             repeated = []
             restored._settle_timed_events(script["start_time"], final_state["game_time"], repeated)
             assert repeated == [] and restored.current_state == final_state
             game_routes._sessions[session.save_id] = restored
             node = await game_routes.get_tree_node(session.save_id, final["node_id"])
-            for marker in ("SYNTHETIC_SHIFT_RULE_BODY", "SYNTHETIC_SHIFT_NOTICE_BODY"):
+            for marker in ("SYNTHETIC_SHIFT_RULE_BODY", "SYNTHETIC_SHIFT_NOTICE_BODY",
+                           "Practice guide 不在场", "accepted_updates_and_scheduled_events"):
                 assert marker in json.dumps(requests, ensure_ascii=False)
                 assert marker not in response.text
                 assert marker not in json.dumps(node["agent_trace"], ensure_ascii=False)
             await restored.branch_to_node(root_id)
             assert "npc_schedule_overrides" not in restored.current_state
             assert restored._get_npc_location("test_guide") == "test_origin"
+            assert json.loads(restored._handle_consult_rules({"question": "Practice guide 在场吗？"}))["answers"][0].startswith("Practice guide 在场")
             await restored.branch_to_node(final["node_id"])
             assert restored.current_state["npc_schedule_overrides"] == expected
             assert restored._get_npc_location("test_guide") == "test_desk"

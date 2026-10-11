@@ -218,6 +218,14 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
             result = json.loads(content)
         except ValueError:
             result = None
+        if isinstance(result, dict) and not result.get("category") and isinstance(result.get("answers"), list):
+            preview = {
+                "answers_omitted": True,
+                "notice": "结果省略；用原 question 和 include_candidates 重新查询。更新、撤销、切换分支后重查；候选未提交、非角色知情。",
+            }
+            if result.get("projection"):
+                preview["projection"] = {"provisional": True}
+            return json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
         if isinstance(result, dict) and result.get("category") and isinstance(result.get("entries"), list):
             preview = {key: result[key] for key in (
                 "category", "source", "game_time", "offset", "next_offset", "total", "projection", "snapshot", "view", "node_status",
@@ -672,6 +680,15 @@ class AgenticMixin:
                                     + "资料仅供推演、非角色自动知情；"
                                     + ("本轮状态投影，非已发生或角色已知；" if tool_result.get("projection") else "")
                                     + "可按 entry_id 从 offset=0 重查正文，携带条目 snapshot 按 next_offset 续读；失效丢弃旧片段按 restart 重查"
+                                )
+                            elif (tool_names.get(m.get("tool_call_id")) == "consult_rules"
+                                  and isinstance(tool_result, dict) and not tool_result.get("category")
+                                  and (isinstance(tool_result.get("answers"), list) or tool_result.get("answers_omitted"))):
+                                summary_parts.append(
+                                    "[在场与物品查询] "
+                                    + ("候选未提交；" if tool_result.get("projection") else "当时已提交状态；")
+                                    + "旧答案省略，非角色知情或互动许可；用原 question 和 include_candidates 重新查询。"
+                                      "更新、撤销或切换分支后必须重查。"
                                 )
                             elif (tool_names.get(m.get("tool_call_id")) == "consult_rules"
                                   and isinstance(tool_result, dict)
@@ -5317,36 +5334,57 @@ class AgenticMixin:
             return json.dumps({"error": "view 和 node_status 须指定 category"}, ensure_ascii=False)
         if "result_path" in args:
             return json.dumps({"error": "result_path 须指定 category、rule_index 和条目 snapshot"}, ensure_ascii=False)
-        if args.get("include_candidates", False) is not False:
-            return json.dumps({"error": "候选值查询须指定 variables 或 world_properties 类别"}, ensure_ascii=False)
+        include_candidates = args.get("include_candidates", False)
+        if type(include_candidates) is not bool:
+            return json.dumps({"error": "include_candidates 必须是布尔值"}, ensure_ascii=False)
+        if include_candidates and not (ctx or {}).get("old_time"):
+            return json.dumps({"error": "候选在场与物品查询仅支持进行中的回合"}, ensure_ascii=False)
         if "snapshot" in args:
             return json.dumps({"error": "snapshot 仅用于指定 category 的规则查询"}, ensure_ascii=False)
         question = args.get("question", "").lower()
-        context_str = args.get("context", "")
+        events = []
+        if include_candidates:
+            updates = ctx.get("_accepted_state_updates", [])
+            if any(update.get("end_time") for update in updates):
+                events, state = self._projected_events(ctx, with_state=True)
+            else:
+                state = self._project_state_tool_updates(updates)
+        else:
+            state = copy.deepcopy(self.current_state)
 
         answers = []
 
         # NPC 在场检查
         if "在场" in question or "在这" in question:
+            present, nearby = self._compute_present_npcs(state)
             for npc in self.script.get("npcs", []):
-                if npc.get("name", "") in question:
-                    loc = self._get_npc_location(npc["id"])
-                    player_loc = self.current_state.get("player", {}).get("location", "")
-                    is_present = loc == player_loc
-                    answers.append(f"{npc['name']} {'在场' if is_present else '不在场'}（当前位置：{loc}）")
+                if npc.get("name") and npc["name"].lower() in question:
+                    loc = self._get_npc_location(npc["id"], state)
+                    status = ("在场" if npc["id"] in present else
+                              "附近（不同房间）" if npc["id"] in nearby else "不在场")
+                    answers.append(f"{npc['name']} {status}（当前位置：{loc}）")
 
         # 物品检查
         if "可用" in question or "有没有" in question:
-            inv = self.current_state.get("inventory", [])
+            inv = state.get("inventory", [])
             for item in inv:
                 item_name = item.get("item", "") if isinstance(item, dict) else str(item)
-                if item_name and item_name in question:
+                if item_name and item_name.lower() in question:
                     answers.append(f"持有 {item_name}")
 
         if not answers:
             answers.append("无法确定，请根据叙事自行判断")
 
-        return json.dumps({"answers": answers}, ensure_ascii=False)
+        result = {"answers": answers, "game_time": state.get("game_time")}
+        if include_candidates:
+            result["projection"] = {
+                "through": state.get("game_time"), "provisional": True,
+                "scope": "accepted_updates_and_scheduled_events",
+                "event_ids": list(dict.fromkeys(event["event_id"] for event in events)),
+                "note": "只读已接收更新及候选结束时间内的定时事件，不含完整回合生命周期或接触更新。"
+                        "未提交，非角色知情；在场不等于获准互动。更新、撤销、切换分支后须重新查询。",
+            }
+        return json.dumps(result, ensure_ascii=False)
 
     def _story_node_runtime(self, definition: dict, state: dict) -> dict:
         node = definition["node"]
