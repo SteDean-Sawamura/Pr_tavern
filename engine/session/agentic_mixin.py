@@ -883,7 +883,8 @@ class AgenticMixin:
                             if getattr(self, '_active_agent_stream', False):
                                 tool_task = asyncio.create_task(result)
                                 stop_task = (asyncio.create_task(stop_event.wait())
-                                             if name == "recall_history" and stop_event is not None else None)
+                                             if name in ("recall_history", "finalize_turn", "delegate_settlement")
+                                             and stop_event is not None else None)
                                 try:
                                     while not tool_task.done():
                                         waiting = {tool_task}

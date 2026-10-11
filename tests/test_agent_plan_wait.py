@@ -398,8 +398,8 @@ async def test_closing_stream_cancels_waiting_tool(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["recall_history", "update_state"])
-async def test_stream_stop_only_cancels_readonly_history_tool(monkeypatch, tool_name):
+@pytest.mark.parametrize("tool_name", ["recall_history", "finalize_turn", "delegate_settlement", "update_state"])
+async def test_stream_stop_cancels_readonly_and_terminal_waits(monkeypatch, tool_name):
     loop = PlanLoop([])
     loop._active_agent_stream = True
     loop._active_agent_stream_id = "slow-tool"
@@ -430,7 +430,7 @@ async def test_stream_stop_only_cancels_readonly_history_tool(monkeypatch, tool_
         assert await game_routes.abort_generation(
             "slow-tool", game_routes.StreamControlRequest(stream_id="slow-tool"),
         ) == {"requested": True}
-        if tool_name == "recall_history":
+        if tool_name != "update_state":
             events = await asyncio.wait_for(asyncio.shield(task), timeout=0.5)
             assert cancelled.is_set()
             assert [event["type"] for event in _control_events(events)] == ["tool_started", "aborted"]
