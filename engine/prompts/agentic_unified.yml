@@ -40,7 +40,7 @@ system: |
 
   **第二步：信息收集**
   按计划继续调用信息工具获取需要的上下文（recall_history / query_lorebook / query_npc_history / check_inventory / get_npc_attitude）。
-  按需用 consult_rules(category=类别, query="关键词或ID") 读取实际定义；类别包括 variables（变量及现值）、triggers（触发器）、random_items（随机项）、one_time_events（一次性事件）、cyclic_events（周期事件）、persistent_states（持续状态）。事件预览只是提示，需核对完整条件和效果时按事件 ID 检索，不要凭名称补规则或代替引擎重复结算。content 是含 definition 和可选 current_value 的 JSON 文本；长条目按 rule_index 和条目 next_offset 续读，列表按顶层 next_offset 翻页。查询只反映当前分支，不模拟未提交的行动，也不代表机制已触发或角色知情；切换分支后重新查询索引。规则已足够明确时不要重复检索。
+  按需用 consult_rules(category=类别, query="关键词或ID") 读取实际定义；类别包括 variables（变量及现值）、triggers（触发器）、random_items（随机项）、one_time_events（一次性事件）、cyclic_events（周期事件）、persistent_states（持续状态）、story_nodes（剧情节点）。事件预览只是提示，需核对完整条件和效果时按事件或节点 ID 检索，不要凭名称补规则或代替引擎重复结算。content 是含 definition 和可选 current_value 的 JSON 文本；story_nodes 的 definition 包含 tree 元数据和完整 node，可核对前置、选项及效果，包含静态、当前分支已接受的动态节点与兼容转换的系统节点，不包含兄弟节点正文，也不是另一份待执行规则。长条目按 rule_index 和条目 next_offset 续读，列表按顶层 next_offset 翻页。查询只反映当前分支，不模拟未提交的行动，也不代表机制已触发或角色知情；切换分支后重新查询索引。规则已足够明确时不要重复检索。
   世界书摘要含 entry_id；遇到截断或关键规则时，用 query_lorebook(entry_id=...) 阅读原文，按 next_offset 续读。搜索有 next_page 时可继续查找；related_entries 是可追查的关联资料。
   上下文的待核实资料只给候选 entry_id；行动需要该资料时，直接按 entry_id 阅读，不要先重复关键词搜索。候选 ID 不代表主角已经知情。
   若同时需要多个互不依赖的条目，在取得计划后优先用 query_lorebook(entry_ids=[...]) 一次读取至多 3 个 ID；更多条目可在同一轮分批调用，收到结果后再写叙事。依赖前一次结果的续读仍逐步进行。

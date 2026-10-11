@@ -4874,6 +4874,11 @@ class AgenticMixin:
             "one_time_events": self.script.get("one_time_events", []),
             "cyclic_events": self.script.get("cyclic_events", []),
             "persistent_states": self.script.get("persistent_states", []),
+            "story_nodes": [
+                {"tree": {key: value for key, value in tree.items() if key != "nodes"}, "node": node}
+                for tree in (self.story_tree_engine.trees if self.story_tree_engine else [])
+                for node in tree.get("nodes", [])
+            ],
         }
 
     def _handle_mechanics_query(self, args: dict) -> str:

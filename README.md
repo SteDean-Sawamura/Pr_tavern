@@ -801,7 +801,9 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 新快照的机制恢复不依赖导演日志是否被裁剪；旧快照兼容仍保留的规则更新日志，但已被裁剪且从未保存的定义无法自动还原。`tests/test_mechanics_persistence.py` 验证变量边界、规则幂等、生命周期触发、SQLite 重载、分支往返和失败回滚；流式 harness 同时验证工具驱动的事件结算、动态机制保存与恢复。这些证据来自合成数据与假模型，不代表真实模型的剧本利用或长期叙事体验已验收。
 
-统一 Agent 的完整推演上下文只提示当前分支有哪些机制类别及其数量，不自动装入全部规则正文。计划阶段结束后，可通过 `consult_rules(category="variables", query="关键词")` 按需查询变量定义与现值；另支持 `triggers`（触发器）、`random_items`（随机项）、`one_time_events`（一次性事件）、`cyclic_events`（周期事件）、`persistent_states`（持续状态）。事件预览只有简短提示，需核对完整条件、效果和规则说明时，可按事件 ID 搜索对应类别，不必重复把规则写进世界书。不传 `category` 时保留原有 `question` 问答检查。
+统一 Agent 的完整推演上下文只提示当前分支有哪些机制类别及其数量，不自动装入全部规则正文。计划阶段结束后，可通过 `consult_rules(category="variables", query="关键词")` 按需查询变量定义与现值；另支持 `triggers`（触发器）、`random_items`（随机项）、`one_time_events`（一次性事件）、`cyclic_events`（周期事件）、`persistent_states`（持续状态）、`story_nodes`（剧情节点）。事件预览只有简短提示，需核对完整条件、效果和规则说明时，可按事件或节点 ID 搜索对应类别，不必重复把规则写进世界书。不传 `category` 时保留原有 `question` 问答检查。
+
+`story_nodes` 直接读取当前剧情树运行时已接受的定义，覆盖静态节点、当前分支动态节点及兼容转换的系统节点；不会旁路读取已被拒绝、未规范化或已离开分支的声明。每条 `definition` 含 `tree`（除节点列表外的树元数据）与 `node`（完整节点），保留前置、条件、选项、效果及作者自定义字段，不重复装入兄弟节点正文。这是现有引擎规则的只读视图，不是额外执行一次系统触发器或剧情效果的授权。
 
 查询结果标记 `source="current_branch"`，反映运行时定义和变量现值，不模拟本轮尚未提交的 `update_state` 或未结算事件，也不代表规则已执行、事件已发生或角色知情。每页最多 5 条，按顶层 `next_offset` 翻页；每条 `content` 是含 `definition` 和可选 `current_value` 的 JSON 文本，最多返回 2000 字符，长内容用该条的 `rule_index` 和 `next_offset` 续读后拼接解析。索引只对当前分支有效，切换分支后须重新查询。
 
@@ -811,7 +813,7 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 动态剧情树同样作为 `dynamic_story_content.trees` 中的有效声明保存，不再按最近 20 棵裁剪。注册时不修改输入，只将去重和规范化后接受的节点同时交给剧情树与事件引擎，再独立保存；同回合新增节点合并到同一棵树，不能覆盖静态树或已有事件。重载、分支切换、再生和失败回滚先清除离开分支的动态树与事件，再恢复目标快照，保留完成状态和计时进度，不误删静态树与系统触发器；旧快照已裁剪且未保存的定义仍无法凭空找回。
 
-`tests/test_dynamic_story_persistence.py` 使用合成声明、假模型和临时 SQLite，验证超过旧裁剪阈值的树、同 ID 的兄弟分支定义、树节点与定时事件跨分支复用 ID、规范化一致性及失败清理。连续流式回合验证节点实际改变变量并激活词条，重载或分支往返后下一次模型请求读到已结算效果，重放请求不重复调用模型或结算；内部词条标记与动态声明不进入 SSE。上述测试不代表真实模型叙事质量或浏览器体验已验收。
+`tests/test_story_rule_retrieval.py` 验证各类型节点的完整声明、运行时规范化、树元数据搜索、跨树分页、长正文续读、分支与失败恢复，以及上下文压缩后的完整重读指引。`tests/test_dynamic_story_persistence.py` 使用合成声明、假模型和临时 SQLite，验证超过旧裁剪阈值的树、同 ID 的兄弟分支定义、树节点与定时事件跨分支复用 ID、规范化一致性及失败清理。连续流式回合中，假模型解析节点查询返回的条件阈值来决定变量操作，而非使用固定操作值；验证节点实际改变变量并激活词条，重载、分支往返或失败回滚后下一次模型请求读到正确规则与已结算效果，重放请求不重复调用模型或结算。内部词条标记、规则正文标记与动态声明不进入 SSE，规则正文标记也不进入保存的公开 trace。上述测试不代表真实模型叙事质量或浏览器体验已验收。
 
 读取规则后，统一 Agent 可通过 `update_state` 或 `finalize_turn` 的 `variable_changes` 提交变量操作，例如 `[{"id":"var_id","op":"inc","value":1}]`。只接受当前分支已声明的变量；`number` 按整数执行 `set/inc/dec` 并遵循定义的 `min/max`，`bool` 支持 `set/toggle`，`string` 或未声明类型只支持 `set`。`set` 必须提供值，`inc/dec` 省略值默认为 1，显式 0 不改变数值。旧式 `state_changes` 中的 `type="variable"` 仍兼容并经过同样的变量校验；同次调用先执行旧字段，再按顺序执行 `variable_changes`。
 

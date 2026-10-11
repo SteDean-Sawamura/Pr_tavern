@@ -236,7 +236,8 @@ def test_target_snapshot_restoration_preserves_timed_progress_and_current_state(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("resume_mode", ["reload", "branch", "failed"])
-async def test_dynamic_story_effects_reach_next_agent_turn_after_stream_reload(tmp_path, monkeypatch, resume_mode):
+@pytest.mark.parametrize("threshold", [7, 13])
+async def test_dynamic_story_effects_reach_next_agent_turn_after_stream_reload(tmp_path, monkeypatch, resume_mode, threshold):
     _, script = make_session(False)
     script["locations"] = [{"id": "test_room", "name": "Reading room"}]
     script["variables"].append({"id": "test_gate", "type": "number", "default": 0})
@@ -264,18 +265,26 @@ async def test_dynamic_story_effects_reach_next_agent_turn_after_stream_reload(t
         operations = [
             ("submit_plan", {"plan": "Inspect the shelf according to the current rules."}),
             ("query_lorebook", {"entry_id": "test_detail"}),
-            ("update_state", {"end_time": f"2030-01-01T09:0{turn_index + 1}:00",
-                              "variable_changes": [{"id": "test_gate", "op": "set", "value": 1}]}),
+            ("update_state", {"end_time": f"2030-01-01T09:0{turn_index + 1}:00"}),
             ("write_narrative", {"text": narrative}),
             ("finalize_turn", {"summary": "Inspected the empty shelf."}),
         ]
         assert index < len(operations)
         name, arguments = operations[index]
+        if index == 2:
+            rules, = [json.loads(message["content"]) for message in messages
+                      if message.get("tool_call_id") == f"synthetic-node-{turn_index}"]
+            node = json.loads(rules["entries"][0]["content"])["definition"]["node"]
+            assert node["condition"].startswith("script_variables.")
+            variable_id, minimum = node["condition"].removeprefix("script_variables.").split(" >= ")
+            arguments["variable_changes"] = [{"id": variable_id, "op": "set", "value": int(minimum)}]
         assert name in [tool["function"]["name"] for tool in kwargs["tools"]]
         calls = [{"id": f"synthetic-story-{turn_index}-{index}", "name": name, "arguments": arguments}]
         if index == 1:
             calls.append({"id": f"synthetic-progress-{turn_index}", "name": "consult_rules",
                           "arguments": {"category": "variables", "query": "test_progress"}})
+            calls.append({"id": f"synthetic-node-{turn_index}", "name": "consult_rules",
+                          "arguments": {"category": "story_nodes", "query": "test_story_step"}})
         return {"content": "", "tool_calls": calls}
 
     provider = SimpleNamespace(
@@ -298,7 +307,8 @@ async def test_dynamic_story_effects_reach_next_agent_turn_after_stream_reload(t
     root_state = copy.deepcopy(session.current_state)
     root_id = session.world_tree.add_node(None, root_state["game_time"], 0, state_snapshot=root_state)
     definition = dynamic_node("test_story_step", 3)
-    definition["condition"] = "script_variables.test_gate >= 1"
+    definition["condition"] = f"script_variables.test_gate >= {threshold}"
+    definition["rule_notes"] = "SYNTHETIC_STORY_RULE_DETAIL"
     definition["effects"]["activate_lore"] = ["test_detail"]
     inject_nodes(session, [definition])
     current = session
@@ -346,9 +356,16 @@ async def test_dynamic_story_effects_reach_next_agent_turn_after_stream_reload(t
                 final, = [event for event in events if event["type"] == "final"]
                 assert final["narrative"] == narrative
                 assert current.current_state["script_variables"]["test_progress"] == 3
+                assert current.current_state["script_variables"]["test_gate"] == threshold
                 assert "test_story_step" in current.current_state["story_tree_state"]["completed"]
                 assert "SYNTHETIC_DYNAMIC_STORY_DETAIL" not in response.text
+                assert "SYNTHETIC_STORY_RULE_DETAIL" not in response.text
+                assert "SYNTHETIC_STORY_RULE_DETAIL" in json.dumps(requests[turn_index][2])
                 assert "dynamic_story_content" not in response.text
+                trace = current.world_tree.get_node(final["node_id"])["agent_trace"]
+                assert trace
+                assert "SYNTHETIC_STORY_RULE_DETAIL" not in json.dumps(trace)
+                assert sum(record["tool"] == "consult_rules" for record in current._agent_traces[-1]["rounds"]) == 2
                 assert ("SYNTHETIC_DYNAMIC_STORY_DETAIL" in json.dumps(requests[turn_index][2])) is bool(turn_index)
                 rules, = [json.loads(message["content"]) for message in requests[turn_index][2]
                           if message.get("tool_call_id") == f"synthetic-progress-{turn_index}"]
