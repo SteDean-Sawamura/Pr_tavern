@@ -867,9 +867,11 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 统一 Agent 可先调用 `consult_rules(category="story_nodes", view="runtime", node_status="active")` 发现当前分支的节点与选择，不必根据少量剧情摘要猜测 ID，也不必逐个模拟全部声明。省略 `node_status` 查询全部节点；支持 `active`、`completed`、`unlocked`、`locked` 四种存档状态筛选，`query` 在运行态响应内容中检索。列表仍每页最多5条，按顶层 `next_offset` 和 `snapshot` 续读，并保留视图、筛选条件与候选参数；`rule_index` 是原类别索引，不是筛选后的序号。
 
-运行态条目只含 `tree_id`、`node_id`、名称、类型、状态、`chosen_choice_id`、选择列表，以及适用的计时或冷却信息，不重复规则正文。`choices` 提供 `choice_id`、标签、`available` 和 `reason`；可用性遵循现有选择结算的激活检查和条件求值，失败区分 `node_not_active` 与 `condition_not_met`，条件格式错误另附诊断。`unlocked` 不等于已激活或可以提交；冷却已结束也不在查询中重置已完成状态。查询不初始化或迁移状态、不运行剧情树求值、不触发事件、不推进计时、不结算效果。
+运行态条目只含 `tree_id`、`node_id`、名称、类型、状态、`chosen_choice_id`、选择列表，以及适用的计时或冷却信息，不重复规则正文。`choices` 提供 `choice_id`、标签、`available` 和 `reason`；可用性遵循现有选择结算的激活检查和条件求值，失败区分 `node_not_active` 与 `condition_not_met`，条件格式错误另附诊断。`unlocked` 不等于已激活或可以提交；冷却已结束也不在查询中重置已完成状态。默认查询不初始化或迁移状态、不触发事件或结算效果；所有视图均不运行剧情树求值、不推进节点计时。
 
-默认仍读取已提交状态。进行中回合可在运行态查询中使用 `include_candidates=true`，按已接收更新的候选状态判断选项条件；`projection` 标记未提交、不含尚未结算事件。它不会预测节点未来激活，也不代表执行选择的最终后果。需要规则时用默认 `view="definition"`、`query=node_id` 重新查询，并使用已有字段读取协议读取相关声明；需要后果时调用 `preview_choice_outcome(node_id=..., choice_id=...)`。正式选择仍沿既有选择接口重新校验与结算，不能把目录或预检当成已提交结果。
+默认仍读取已提交状态。进行中回合可在运行态查询中使用 `include_candidates=true`，与声明式选择预检共用隔离候选基线：累计接受的更新，以及仅在已接受 `end_time` 后、截至该时间的定时事件、附带触发器和剧情解锁。不采用 `new_time` 预估时间。定时部分复用正式结算入口，但仅操作副本，不执行事件掷骰、完整回合生命周期或剧情节点激活；`unlocked` 节点仍返回 `node_not_active`。`projection` 的 `event_ids` 与 `scheduled_through` 说明纳入的事件和时间范围；`excludes_unsettled_events=false` 只表示纳入了该范围的定时部分，`excludes_lifecycle` 和 `excludes_event_dice` 始终为 true。无已接受结束时间时仍只有候选更新，变量与世界属性类别维持原来的“只含候选更新”协议。需要规则时用默认 `view="definition"`、`query=node_id` 重新查询，并使用已有字段读取协议读取相关声明；需要后果时调用 `preview_choice_outcome(node_id=..., choice_id=..., include_candidates=true)`。正式选择仍沿既有选择接口重新校验与结算，不能把目录或预检当成已提交结果。
+
+`tests/test_timed_story_projection.py` 和 `tests/test_timed_story_persistence.py` 使用合成声明、假模型与隔离 SQLite，验证时间条件、定时解锁与已激活选择条件、词条和动态机制、候选撤销、快照失效、异常隔离，以及查询结果驱动叙事后的保存失败回滚、重试、重载和分支往返。候选定时变化不是选择差异，玩家流中不包含内部词条正文；这些测试不证明真实模型会自主发掘全部剧情，也不代表在线验收或完整回合预测。
 
 长运行态条目同样支持 `result_path=[]` 查目录，或 `result_path=["choices"]` 分页读取选择。长标签导致选项不完整时，`summary` 仍保留 `choice_id`、`available`、`reason`，并计入本页预算；不把摘要冒充完整 `value`，`complete` 仍为 false。完整标签可用成员 `key` 作为索引，通过 `result_path=["choices",索引,"label"]` 原样读取；定义视图不增加此摘要。每个条目 `read` 保留 `view="runtime"`、候选参数、快照及从0重读坐标。运行态快照绑定分支、回合、状态与节点声明，同一游戏时间内的变化也会使旧快照失效；列表快照另外绑定搜索和状态筛选。切换定义/运行态视图必须重新查列表，不混用快照；`node_status` 不与 `rule_index` 同传。裁剪和历史压缩保留视图与续读坐标，极小预算明确标记元数据省略。目录和预检均是 GM 内部信息，不是角色已知事实，不进入公开 trace。
 
@@ -897,7 +899,7 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 ### 声明式选择预检
 
-计划提交后，GM 可以先用 `consult_rules(category="story_nodes")` 读取当前分支的节点与选项身份，再调用 `preview_choice_outcome(node_id="test_decision", choice_id="test_open")`。预检保留当前分支的运行时定义，在隔离会话副本中通过与真实选择 API 相同的结算入口检查当前激活节点，应用其选择效果及派发事件；不会按选项文本猜测效果或提交真实选择。`include_candidates=true` 仅在进行中的回合可用，以累计接收但未提交的 `update_state` 候选为基线，不提前结算其他待决事件，也不会提前激活仍待决的节点。
+计划提交后，GM 可以先用 `consult_rules(category="story_nodes")` 读取当前分支的节点与选项身份，再调用 `preview_choice_outcome(node_id="test_decision", choice_id="test_open")`。预检保留当前分支的运行时定义，在隔离会话副本中通过与真实选择 API 相同的结算入口检查当前激活节点，应用其选择效果及派发事件；不会按选项文本猜测效果或提交真实选择。`include_candidates=true` 仅在进行中的回合可用，与剧情运行态共用累计已接收更新及已接收结束时间内定时事件的候选基线；事件词条和动态机制也在副本应用。它不会提前激活待决节点，不执行事件掷骰或完整回合生命周期。`state_changes/lore_changes` 仅比较该基线与选择后的副本，不把定时基线变化误报为选择奖励。
 
 结果包括 `available`、未满足原因、完成/解锁的节点ID、直接声明的 `pending_effects`，以及实际副本结算的 `state_changes`、`lore_changes`。差异使用数组路径和 `add/replace/remove`，区分缺失、null、布尔值与数字；词条按ID比较完整字段。`projection.effects_applied=true` 只表示有效选择已在副本应用，`persisted=false` 明确没有保存；基线和结果状态均返回校验哈希。无效选择不返回初始化或迁移差异。影子事件状态与实际提交一样同步，派发事件可读取选择完成和奖励后的状态；不创建模型、存储或索引资源，不覆盖真实会话及撤销记录。
 

@@ -278,7 +278,11 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
             if result.get("projection"):
                 preview["notice"] = (
                     "正文省略；保留 include_candidates=true 和条目 snapshot，用 category、rule_index 从 offset=0 重读；"
-                    "保留 view；候选值未提交、不含未结算效果、非角色知情；失效时按原 node_status 重查列表。"
+                    "保留 view；候选值未提交、非角色知情；失效时按原 node_status 重查列表。"
+                )
+                preview["notice"] += (
+                    "仅含已接收时间内定时部分，不含事件掷骰或完整生命周期。"
+                    if result["projection"].get("excludes_unsettled_events") is False else "不含未结算效果。"
                 )
             if any(entry.get("read") for entry in preview["entries"]):
                 preview["notice"] += "字段正文也已省略；按条目 read 保留 result_path，从 offset=0 重读该字段，不表示已知全部规则。"
@@ -302,6 +306,7 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
             if isinstance(result.get("projection"), dict):
                 preview["projection"] = {key: result["projection"][key] for key in (
                     "state_view", "effects_applied", "scope", "persisted", "excludes_unsettled_events",
+                    "scheduled_through", "excludes_lifecycle", "excludes_event_dice",
                 ) if key in result["projection"]}
             preview.update(content_omitted=True, changes_omitted=True,
                            state_change_count=len(result["state_changes"]) if "state_changes" in result else result.get("state_change_count", 0),
@@ -738,6 +743,9 @@ class AgenticMixin:
                                 ) if key in tool_result}
                                 if tool_result.get("view") == "runtime":
                                     preview["notice"] = "只读运行态，不推进状态；条件可选性不是已提交后果；候选未提交且不含未结算事件；非角色知情。"
+                                    if tool_result.get("projection", {}).get("excludes_unsettled_events") is False:
+                                        preview["notice"] = ("只读候选运行态，未提交；仅含已接收时间内定时部分，"
+                                                             "不含事件掷骰或完整生命周期，不提前激活节点；非角色知情。")
                                 preview["entries"] = [
                                     {key: entry[key] for key in ("rule_index", "offset", "next_offset", "total_chars", "snapshot", "read")
                                      if key in entry}
@@ -4712,6 +4720,41 @@ class AgenticMixin:
 
         return json.dumps({"error": f"未知工具: {name}"})
 
+    def _story_query_candidate(self, ctx: dict | None = None):
+        from engine.event_scheduler import parse_time
+
+        updates = ctx.get("_accepted_state_updates", []) if ctx is not None else []
+        base_state = self._project_state_tool_updates(updates) if ctx is not None else self.current_state
+        candidate = copy.copy(self)
+        for name, value in self.__dict__.items():
+            if isinstance(value, MethodType) and value.__self__ is self:
+                candidate.__dict__[name] = MethodType(value.__func__, candidate)
+        candidate.__dict__.update(copy.deepcopy({
+            "current_state": base_state, "script": self.script,
+            "script_variables": self.script_variables, "trigger_engine": self.trigger_engine,
+            "story_tree_engine": self.story_tree_engine, "event_engine": self.event_engine,
+            "state_manager": self.state_manager, "prompt_builder": self.prompt_builder,
+            "event_scheduler": self.event_scheduler, "_event_def_by_id": self._event_def_by_id,
+            "_random_item_by_id": self._random_item_by_id,
+        }, {id(self): candidate}))
+        candidate.ai_provider = candidate.vector_memory = candidate.data_bank = None
+        candidate._background_tasks = set()
+        candidate._index_tasks = set()
+        candidate._deferred_tasks = set()
+        candidate._deferred_lore_vector_ids = set()
+        end_time = next((update["end_time"] for update in reversed(updates) if update.get("end_time")), None)
+        includes_scheduled = bool(ctx and ctx.get("old_time") and parse_time(end_time))
+        events = []
+        if includes_scheduled:
+            candidate._settle_timed_events(ctx["old_time"], end_time, events)
+            candidate.current_state["game_time"] = end_time
+        return candidate, {
+            "event_ids": list(dict.fromkeys(event["event_id"] for event in events)),
+            "scheduled_through": end_time if includes_scheduled else None,
+            "excludes_unsettled_events": not includes_scheduled, "excludes_lifecycle": True,
+            "excludes_event_dice": True,
+        }
+
     def _preview_declared_choice(self, args: dict, ctx: dict) -> str:
         node_id, choice_id = args.get("node_id"), args.get("choice_id")
         if not all(isinstance(value, str) and value.strip() for value in (node_id, choice_id)):
@@ -4758,23 +4801,8 @@ class AgenticMixin:
                 return restart_response()
             return json.dumps({"error": "此节点没有该 choice_id；请重新读取当前分支的 story_nodes 声明"}, ensure_ascii=False)
 
-        base_state = (self._project_state_tool_updates(ctx.get("_accepted_state_updates", []))
-                      if include_candidates else copy.deepcopy(self.current_state))
-        candidate = copy.copy(self)
-        for name, value in self.__dict__.items():
-            if isinstance(value, MethodType) and value.__self__ is self:
-                candidate.__dict__[name] = MethodType(value.__func__, candidate)
-        candidate.__dict__.update(copy.deepcopy({
-            "current_state": base_state, "script": self.script,
-            "script_variables": self.script_variables, "trigger_engine": self.trigger_engine,
-            "story_tree_engine": self.story_tree_engine, "event_engine": self.event_engine,
-            "state_manager": self.state_manager, "prompt_builder": self.prompt_builder,
-        }, {id(self): candidate}))
-        candidate.ai_provider = candidate.vector_memory = candidate.data_bank = None
-        candidate._background_tasks = set()
-        candidate._index_tasks = set()
-        candidate._deferred_tasks = set()
-        candidate._deferred_lore_vector_ids = set()
+        candidate, event_projection = self._story_query_candidate(ctx if include_candidates else None)
+        base_state = copy.deepcopy(candidate.current_state)
         before_lore = {entry.id: asdict(entry) for entry in candidate.prompt_builder.lorebook.entries}
         story_state = base_state.get("story_tree_state", {})
         was_active = node_id in story_state.get("active", [])
@@ -4788,7 +4816,8 @@ class AgenticMixin:
             "node_id": node_id, "choice_id": choice_id, "available": available,
             "projection": {
                 "state_view": "candidate" if include_candidates else "committed",
-                "effects_applied": available, "excludes_unsettled_events": True,
+                "effects_applied": available,
+                **(event_projection if include_candidates else {"excludes_unsettled_events": True}),
                 "scope": "choice_and_emitted_events", "persisted": False,
                 "base_state_hash": self.world_tree.state_hash(base_state),
                 "result_state_hash": self.world_tree.state_hash(state),
@@ -4801,10 +4830,13 @@ class AgenticMixin:
                 key: value for key, value in asdict(result).items()
                 if value and key not in {"newly_completed", "newly_active"}
             },
-            "note": "仅在隔离副本结算当前激活剧情树节点的选择及其派发事件，未保存或创建索引任务；"
+            "note": ("仅在隔离副本结算当前激活剧情树节点的选择及其派发事件，未保存或创建索引任务；"
                     "pending_effects 是直接声明效果，state_changes/lore_changes 是副本实际差异。"
-                    "不含其他待结算事件或完整回合生命周期；不是NPC回应或玩家已知信息，不得写入玩家 hint。"
-                    "状态变化后须重新预检，实际提交重新检查条件。",
+                    + ("候选基线仅在接收 end_time 后纳入定时事件；差异不包含基线自身的变化。"
+                       "不含事件掷骰或完整回合生命周期，不提前激活节点；" if include_candidates
+                       else "不含其他待结算事件或完整回合生命周期；")
+                    + "不是NPC回应或玩家已知信息，不得写入玩家 hint。"
+                    "状态变化后须重新预检，实际提交重新检查条件。"),
         }
         if not available:
             response["reason"] = "node_not_active" if not was_active else "condition_not_met"
@@ -5551,7 +5583,16 @@ class AgenticMixin:
             return json.dumps({"error": "include_candidates 必须是布尔值"}, ensure_ascii=False)
         if include_candidates and (not (runtime or category in ("variables", "world_properties")) or not (ctx or {}).get("old_time")):
             return json.dumps({"error": "候选值仅支持进行中回合的 variables、world_properties 或 story_nodes 运行态查询"}, ensure_ascii=False)
-        projected_state = self._project_state_tool_updates(ctx.get("_accepted_state_updates", [])) if include_candidates else None
+        runtime_session = self
+        event_projection = {}
+        projected_state = None
+        if include_candidates:
+            if runtime:
+                runtime_session, event_projection = self._story_query_candidate(ctx)
+                projected_state = runtime_session.current_state
+                definitions = runtime_session._queryable_mechanics_definitions()
+            else:
+                projected_state = self._project_state_tool_updates(ctx.get("_accepted_state_updates", []))
         category_definitions = list(definitions[category])
         if include_candidates and category == "world_properties":
             declared_ids = {definition["id"] for definition in category_definitions}
@@ -5586,7 +5627,7 @@ class AgenticMixin:
         for index, definition in enumerate(category_definitions):
             payload = {"definition": definition}
             if runtime:
-                payload = self._story_node_runtime(definition, projected_state if include_candidates else self.current_state)
+                payload = runtime_session._story_node_runtime(definition, projected_state if include_candidates else self.current_state)
             if category in CONDITION_RULE_SECTIONS:
                 error = condition_error(definition.get("condition", ""))
                 if error:
@@ -5613,6 +5654,7 @@ class AgenticMixin:
             projection = {
                 "provisional": True, "accepted_updates": len(updates), "excludes_unsettled_events": True,
                 "as_of": next((update["end_time"] for update in reversed(updates) if update.get("end_time")), ctx["old_time"]),
+                **event_projection,
             }
         revision = hashlib.sha256(json.dumps([
             self.world_tree.tree_id, self.world_tree.active_node_id, self.current_state.get("game_time"),
@@ -5684,12 +5726,13 @@ class AgenticMixin:
             )
         if runtime:
             result["notice"] = (
-                "当前分支剧情节点运行态；status 只描述存档状态，unlocked 不代表激活，计时和冷却不在查询中推进。"
+                "当前分支剧情节点运行态；status 只描述所选状态视图，unlocked 不代表激活，计时和冷却不在查询中推进。"
                 "choices.available 仅按当前激活状态和选项条件判断，不结算效果，不预测未来激活或NPC回应。"
                 "需要完整规则时改用 definition 视图、query=node_id 从列表重新查询；需要后果时调用 preview_choice_outcome。"
                 "choices 字段的长选项保留 summary 身份与可用性，complete=false 不表示已读标签；按成员 key 下钻读取原文。"
                 "幕后信息不是角色已知；续读保留 view=runtime。"
-                + ("本次为未提交候选状态，不含未结算事件；续读保留 include_candidates=true。" if include_candidates else "本次只读已提交状态。")
+                + ("本次为未提交候选状态，仅在接收 end_time 后纳入定时事件及其剧情解锁；不含事件掷骰或完整生命周期，"
+                   "不提前激活节点；续读保留 include_candidates=true。" if include_candidates else "本次只读已提交状态。")
             )
         result["notice"] += (
             "列表翻页携带顶层 snapshot；指定 rule_index（包括 offset=0）须携带条目 snapshot。"
