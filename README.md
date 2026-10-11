@@ -803,6 +803,8 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 统一 Agent 的完整推演上下文只提示当前分支有哪些机制类别及其数量，不自动装入全部规则正文。计划阶段结束后，可通过 `consult_rules(category="variables", query="关键词")` 按需查询变量定义与现值；另支持 `triggers`（触发器）、`random_items`（随机项）、`one_time_events`（一次性事件）、`cyclic_events`（周期事件）、`persistent_states`（持续状态）、`story_nodes`（剧情节点）。事件预览只有简短提示，需核对完整条件、效果和规则说明时，可按事件或节点 ID 搜索对应类别，不必重复把规则写进世界书。不传 `category` 时保留原有 `question` 问答检查。
 
+持续状态以剧本 `persistent_states` 的精确 ID 声明为准；名称包含天气、时段词不会阻止激活。工具反馈、候选状态与最终结算共用同一过滤规则，未声明的环境状态仍受保护。若剧本显式声明了内置天气状态的 ID，这些 ID 也由剧本规则控制，内置天气维护不再自动增删它们；未声明时保留原有天气行为。
+
 `story_nodes` 直接读取当前剧情树运行时已接受的定义，覆盖静态节点、当前分支动态节点及兼容转换的系统节点；不会旁路读取已被拒绝、未规范化或已离开分支的声明。每条 `definition` 含 `tree`（除节点列表外的树元数据）与 `node`（完整节点），保留前置、条件、选项、效果及作者自定义字段，不重复装入兄弟节点正文。这是现有引擎规则的只读视图，不是额外执行一次系统触发器或剧情效果的授权。
 
 查询结果标记 `source="current_branch"`，反映运行时定义和变量现值，不模拟本轮尚未提交的 `update_state` 或未结算事件，也不代表规则已执行、事件已发生或角色知情。每页最多 5 条，按顶层 `next_offset` 翻页；每条 `content` 是含 `definition` 和可选 `current_value` 的 JSON 文本，最多返回 2000 字符，长内容用该条的 `rule_index` 和 `next_offset` 续读后拼接解析。索引只对当前分支有效，切换分支后须重新查询。

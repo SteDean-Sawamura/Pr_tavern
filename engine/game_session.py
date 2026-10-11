@@ -2171,6 +2171,20 @@ class GameSession(
         "curtain", "drawer", "paper", "document", "书桌", "抽屉",
     )
 
+    def _is_undeclared_environment_state(self, entry: str | dict) -> bool:
+        if isinstance(entry, dict):
+            state_id = entry.get("id", "")
+            state_name = entry.get("name") or ""
+            description = entry.get("description") or ""
+        else:
+            state_id, state_name, description = entry, "", ""
+        if state_id in self._ps_by_id:
+            return False
+        if not state_name or state_name == state_id or (state_name.isascii() and "_" in state_name):
+            state_name += description[:10]
+        identifier = (state_id + state_name).lower()
+        return any(pattern in identifier for pattern in self._REJECT_STATE_PATTERNS_TOOL)
+
     def _project_state_tool_updates(self, updates: list[dict]) -> dict:
         projected = copy.deepcopy(self.current_state)
         dirty_npc_ids: set[str] = set()
@@ -2325,12 +2339,9 @@ class GameSession(
                     issues.append(f"属性变化幅度过大 {sc.get('target', '?')}: {val}, 已钳制到±{MAX_DELTA}")
             # Validate activate_states
             for entry in args.get("activate_states", []):
-                if isinstance(entry, dict):
-                    sid = entry.get("id", "")
-                    s_name = entry.get("name", "")
-                    _low = (sid + s_name).lower()
-                    if any(p in _low for p in self._REJECT_STATE_PATTERNS_TOOL):
-                        issues.append(f"过滤天气/时段状态: {sid}")
+                if self._is_undeclared_environment_state(entry):
+                    state_id = entry.get("id", "") if isinstance(entry, dict) else entry
+                    issues.append(f"过滤天气/时段状态: {state_id}")
             result = "资源状态已接收"
             if issues:
                 result += "（警告: " + "; ".join(issues) + "）"
@@ -2435,12 +2446,8 @@ class GameSession(
                 parsed["inventory_changes"].extend(args.get("inventory_changes", []))
                 # activate_states: filter weather/time-period
                 for entry in args.get("activate_states", []):
-                    if isinstance(entry, dict):
-                        sid = entry.get("id", "")
-                        s_name = entry.get("name", "")
-                        _low = (sid + s_name).lower()
-                        if any(p in _low for p in self._REJECT_STATE_PATTERNS_TOOL):
-                            continue
+                    if self._is_undeclared_environment_state(entry):
+                        continue
                     parsed["activate_states"].append(entry)
                 parsed["deactivate_states"].extend(args.get("deactivate_states", []))
                 go = args.get("game_over")
@@ -2512,7 +2519,7 @@ class GameSession(
             "- 严格根据叙事中实际描写的事件推演，不推测或编造\n"
             "- 物品add限制：只能添加叙事中明确描写角色获得的物品\n"
             "- 仅[检定结果: 大成功]时可额外给予奖励；仅[检定结果: 大失败]时应施加惩罚\n"
-            "- activate_states 不得包含天气或时段\n"
+            "- activate_states 可按精确ID激活剧本声明的持续状态；不得另造未声明的天气或时段状态\n"
             "- world_property_changes 只写宏观世界级变量，不写物件状态\n"
             "- location_change 必须使用已知地点列表中的精确ID\n"
             "- end_time 是绝对时间戳，不是时长\n"

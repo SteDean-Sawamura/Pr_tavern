@@ -232,7 +232,7 @@ STATE_TOOLS_SCHEMA = [
             },
             "activate_states": {
                 "type": "array",
-                "description": '激活持续状态。每项: {"id":"状态ID","name":"中文显示名称（必填）","description":"一句话描述"}',
+                "description": '激活持续状态，优先使用剧本声明的精确ID；不得另造未声明的天气或时段状态。每项: {"id":"状态ID","name":"中文显示名称（必填）","description":"一句话描述"}',
                 "items": {"type": "object", "properties": {
                     "id": {"type": "string"}, "name": {"type": "string"}, "description": {"type": "string"},
                 }, "required": ["id", "name"]},
@@ -509,7 +509,7 @@ CONSOLIDATED_SETTLEMENT_TOOLS = [
             },
             "activate_states": {
                 "type": "array",
-                "description": '激活持续状态。每项: {"id":"状态ID","name":"中文显示名称（必填）","description":"一句话描述"}',
+                "description": '激活持续状态，优先使用剧本声明的精确ID；不得另造未声明的天气或时段状态。每项: {"id":"状态ID","name":"中文显示名称（必填）","description":"一句话描述"}',
                 "items": {"type": "object", "properties": {
                     "id": {"type": "string"}, "name": {"type": "string"}, "description": {"type": "string"},
                 }, "required": ["id", "name"]},
@@ -691,7 +691,7 @@ def _unified_tools() -> list[dict]:
                 },
                 "activate_states": {
                     "type": "array",
-                    "description": '激活持续状态。每项: {"id":"状态ID","name":"中文名称","description":"描述"}',
+                    "description": '激活持续状态，优先使用剧本声明的精确ID；不得另造未声明的天气或时段状态。每项: {"id":"状态ID","name":"中文名称","description":"描述"}',
                     "items": {"type": "object", "properties": {
                         "id": {"type": "string"}, "name": {"type": "string"}, "description": {"type": "string"},
                     }, "required": ["id", "name"]},

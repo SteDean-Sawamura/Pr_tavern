@@ -993,10 +993,9 @@ class StateApplyMixin:
             # Sync significant attitude changes to lorebook
             self._sync_attitude_to_lorebook(npc_att)
 
-        _REJECT_STATE_PATTERNS = ("weather", "天气", "时段", "time_period", "dawn", "dusk",
-                                    "morning", "afternoon", "night", "noon", "黎明", "黄昏",
-                                    "上午", "午后", "夜晚", "深夜", "日出", "日落")
         for entry in parsed.get("activate_states", []):
+            if self._is_undeclared_environment_state(entry):
+                continue
             if isinstance(entry, dict):
                 sid = entry.get("id", "")
                 s_name = entry.get("name", "")
@@ -1013,11 +1012,6 @@ class StateApplyMixin:
                 s_name = ps_def.get("name") or ps_def.get("display_name") or ""
                 s_desc = ps_def.get("description") or ""
             if not sid:
-                continue
-            # Reject weather/time-period states (managed by engine, not AI)
-            _sid_lower = sid.lower()
-            _name_lower = (s_name or "").lower()
-            if any(p in _sid_lower or p in _name_lower for p in _REJECT_STATE_PATTERNS):
                 continue
             active = state.setdefault("active_persistent_states", [])
             if sid not in active:
@@ -1675,7 +1669,7 @@ class StateApplyMixin:
 
         # Remove old weather states
         active = self.current_state.get("active_persistent_states", [])
-        weather_state_ids = {"weather_extreme", "weather_storm", "weather_rain"}
+        weather_state_ids = {"weather_extreme", "weather_storm", "weather_rain"}.difference(self._ps_by_id)
         self.current_state["active_persistent_states"] = [
             s for s in active if s not in weather_state_ids
         ]
@@ -1685,11 +1679,15 @@ class StateApplyMixin:
 
         # Keyword-based matching instead of exact string match
         if any(k in weather for k in ("极端", "灾")):
-            self.current_state["active_persistent_states"].append("weather_extreme")
+            weather_state = "weather_extreme"
         elif any(k in weather for k in ("暴雨", "大雪", "暴风", "台风", "冰雹")):
-            self.current_state["active_persistent_states"].append("weather_storm")
+            weather_state = "weather_storm"
         elif any(k in weather for k in ("阴雨", "小雨", "雨", "雪", "雾")):
-            self.current_state["active_persistent_states"].append("weather_rain")
+            weather_state = "weather_rain"
+        else:
+            return
+        if weather_state in weather_state_ids:
+            self.current_state["active_persistent_states"].append(weather_state)
 
     def _check_attribute_thresholds(self: GameSession, state_changes: list[dict]) -> list[dict]:
         """Check if any attribute crossed a threshold after state changes."""
