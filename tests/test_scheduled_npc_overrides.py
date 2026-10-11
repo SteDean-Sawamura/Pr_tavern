@@ -15,7 +15,7 @@ from engine.script_loader import ScriptLoader
 from test_agent_harness_execution import _stream_events
 
 
-def make_session(category="one_time_events", threshold=2):
+def make_session(category="one_time_events", threshold=2, conditional_schedule=False):
     event = {
         "id": "test_shift", "description": "A practice shift begins.",
         "condition": f"script_variables.test_ready >= {threshold}",
@@ -45,6 +45,12 @@ def make_session(category="one_time_events", threshold=2):
         ],
         category: [event],
     }
+    if conditional_schedule:
+        event["effects"] = [effect for effect in event["effects"] if effect["type"] != "schedule_override"]
+        script["npcs"][0]["schedule"].append({
+            "time_range": "09:00-10:00", "location": "test_desk", "activity": "Practice conditional shift",
+            "condition": "event_fired.test_shift == true", "priority": 100,
+        })
     session = GameSession(script, None)
     session.current_state = ScriptLoader.create_initial_state(script)
     session.script_variables.init_state(session.current_state)

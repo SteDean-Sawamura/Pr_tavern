@@ -473,7 +473,8 @@ class PromptBuilder(PromptKGMixin, PromptSectionsMixin, PromptNpcMixin, PromptNa
 
     def _resolve_npc_location(self, npc_id: str, state: dict, game_time: str,
                               condition_eval=None) -> str:
-        condition_eval = condition_eval or self.condition_eval
+        if condition_eval is None and self.condition_eval is not None:
+            condition_eval = lambda condition: self.condition_eval(condition, state)
         """获取NPC当前位置：动态位置 > schedule > default_location。"""
         npc_st = state.get("npcs", {}).get(npc_id, {})
         if npc_st.get("alive") is False:

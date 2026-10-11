@@ -17,8 +17,10 @@ from test_scheduled_npc_overrides import make_session
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("depart,fail_save", [(False, False), (True, False), (False, True), (True, True)])
-async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_branch_replay(tmp_path, monkeypatch, depart, fail_save):
-    session = make_session()
+@pytest.mark.parametrize("conditional_schedule", [False, True])
+async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_branch_replay(
+        tmp_path, monkeypatch, depart, fail_save, conditional_schedule):
+    session = make_session(conditional_schedule=conditional_schedule)
     session.save_id = "synthetic-contact-save"
     session.current_state["npcs"]["test_guide"].update(known=False, met=False)
     script = session.script

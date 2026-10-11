@@ -244,7 +244,10 @@ class PromptNpcMixin:
             rel_text = f"关系值: {rel}"
 
         # NPC schedule/current activity
-        schedule_text = self._get_npc_schedule_text(npc_script, state.get("game_time", ""))
+        schedule_text = self._get_npc_schedule_text(
+            npc_script, state.get("game_time", ""),
+            overrides=state.get("npc_schedule_overrides", {}).get(npc_id), state=state,
+        )
 
         # Location
         player_loc = player.get("location", "")
@@ -371,9 +374,13 @@ class PromptNpcMixin:
         messages = [{"role": "user", "content": "\n\n".join(user_parts)}]
         return {"messages": messages, "system": system}
 
-    def _get_npc_schedule_text(self, npc_script: dict, game_time: str, overrides: list | None = None) -> str:
+    def _get_npc_schedule_text(self, npc_script: dict, game_time: str, overrides: list | None = None,
+                               *, state: dict | None = None) -> str:
         """Get NPC's current activity based on schedule and game time."""
-        entry = self._get_schedule_entry(npc_script, game_time, condition_eval=self.condition_eval, overrides=overrides)
+        condition_eval = self.condition_eval
+        if state is not None and condition_eval is not None:
+            condition_eval = lambda condition: self.condition_eval(condition, state)
+        entry = self._get_schedule_entry(npc_script, game_time, condition_eval=condition_eval, overrides=overrides)
         if not entry:
             return ""
         loc = entry.get("location", "")
@@ -437,7 +444,7 @@ class PromptNpcMixin:
         _overrides = (state or {}).get("npc_schedule_overrides", {}).get(npc_id) if state else None
         for npc in self.script.get("npcs", []):
             if npc["id"] == npc_id:
-                text = self._get_npc_schedule_text(npc, game_time, overrides=_overrides)
+                text = self._get_npc_schedule_text(npc, game_time, overrides=_overrides, state=state)
                 if text:
                     lines = text.split("\n")
                     loc = ""

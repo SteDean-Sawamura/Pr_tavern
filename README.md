@@ -975,6 +975,12 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 `tests/test_candidate_contacts.py` 和 `tests/test_candidate_contact_persistence.py` 使用合成声明、假模型与隔离 SQLite，覆盖日程离场/到期、房间、累计声明与撤销、压缩及大结果重查；真实工具反馈驱动假 GM 的叙事分支，并验证正式保存、保存拒绝回滚与重试、重载、分支往返和请求重放。候选工具正文不进入公开 SSE/trace。这些测试不代表完整生命周期、真实模型交互质量或线上/浏览器验收。
 
+### 条件日程的状态边界
+
+NPC 日程中的 `condition` 按所查询的状态快照求值，不借用当前会话的变量、事件标记或其他状态。候选更新改变条件，或候选定时事件触发后，位置、日程房间、在场提示与接触反馈会据此重算；历史节点的公开接触和对话检查也只读取对应快照。查询不会临时替换或修改正式会话状态，显式指定的位置与房间仍高于日程推断。
+
+角色对话提示读取同一快照的日程条件及 `npc_schedule_overrides`，沿用既有优先级和到期规则，避免接触检查与对话活动描述使用两套日程。不新增剧本专用判断或字段，也不扩展候选生命周期和角色知识传播。`tests/test_schedule_snapshots.py` 与接触持久化回归使用合成条件、假模型和隔离 SQLite，覆盖相反状态快照、事件触发后的日程、保存失败回滚、重载、分支与请求重放；不代表真实模型或浏览器体验验收。
+
 ## 技术栈
 
 - **后端**: FastAPI + Uvicorn + aiosqlite (SQLite WAL 模式)
