@@ -926,6 +926,28 @@ class StateApplyMixin:
             elif parts[2] == "current_room":
                 npc_state.pop("_derived_room", None)
 
+    def _apply_player_location_change(self, state: dict, location_change) -> None:
+        if isinstance(location_change, dict):
+            location_change = location_change.get("id", location_change.get("location_id", ""))
+        if not location_change:
+            return
+        if not self._can_use_location_id(state, location_change):
+            logger.warning("AI location_change=%r 尚未发现，跳过", location_change)
+            return
+        location = self._location_by_id.get(location_change, {})
+        access_condition = location.get("access_condition", "")
+        if access_condition and not self._evaluate_condition(access_condition, state):
+            state["location_access_blocked"] = {
+                "location_id": location_change,
+                "reason": location.get("access_blocked_reason", "声望不足，无法进入此区域"),
+            }
+            return
+        player = state.setdefault("player", {})
+        if location_change != player.get("location"):
+            player["current_room"] = location.get("default_room", "")
+        player["location"] = location_change
+        state.pop("location_access_blocked", None)
+
     def _apply_entity_spatial_changes(self, state: dict, parsed: dict) -> None:
         for change in parsed.get("npc_location_changes", []):
             npc_id = change.get("npc_id", "")
@@ -1123,26 +1145,7 @@ class StateApplyMixin:
                                 {"entry_type": kg_entry.entry_type, "comment": kg_entry.comment},
                             ))
 
-        if parsed.get("location_change"):
-            new_loc_id = parsed["location_change"]
-            if isinstance(new_loc_id, dict):
-                new_loc_id = new_loc_id.get("id", new_loc_id.get("location_id", ""))
-            if new_loc_id and not self._can_use_location_id(state, new_loc_id):
-                logger.warning("AI location_change=%r 尚未发现，跳过", new_loc_id)
-            elif new_loc_id:
-                new_loc_def = self._location_by_id.get(new_loc_id, {})
-                access_cond = new_loc_def.get("access_condition", "")
-                if access_cond and not self._evaluate_condition(access_cond):
-                    state["location_access_blocked"] = {
-                        "location_id": new_loc_id,
-                        "reason": new_loc_def.get("access_blocked_reason", "声望不足，无法进入此区域"),
-                    }
-                else:
-                    player_state = state.setdefault("player", {})
-                    if new_loc_id != player_state.get("location"):
-                        player_state["current_room"] = new_loc_def.get("default_room", "")
-                    player_state["location"] = new_loc_id
-                    state.pop("location_access_blocked", None)
+        self._apply_player_location_change(state, parsed.get("location_change"))
 
         for inv in parsed.get("inventory_changes", []):
             item_name = inv.get("item", "")

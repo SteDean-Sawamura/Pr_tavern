@@ -2198,8 +2198,13 @@ class GameSession(
         dirty_npc_ids: set[str] = set()
         resource_log = []
         spatial_changes = {"npc_location_changes": [], "room_changes": []}
+        location_change = None
+        inventory_changes = []
         for update in updates:
             parsed = self._merge_state_tool_results(self._explode_update_state(update), state=projected)
+            if parsed.get("location_change"):
+                location_change = parsed["location_change"]
+            inventory_changes.extend(parsed.get("inventory_changes", []))
             for key in spatial_changes:
                 spatial_changes[key].extend(parsed.get(key, []))
             changes = parsed.get("state_changes", [])
@@ -2228,27 +2233,6 @@ class GameSession(
                 resource_log.extend(log)
                 if any(change.get("target") == "player.relationships" for change in regular):
                     dirty_npc_ids.update(projected.get("player", {}).get("relationships", {}))
-            for change in parsed.get("inventory_changes", []):
-                item_name = change.get("item", "")
-                if not item_name:
-                    continue
-                inventory = projected.setdefault("inventory", [])
-                entry = next((item for item in inventory if item.get("item") == item_name), None)
-                quantity = change.get("quantity", 1)
-                if change.get("action", "add") == "add":
-                    if entry:
-                        entry["quantity"] = entry.get("quantity", 1) + quantity
-                        if change.get("description"):
-                            entry["description"] = change["description"]
-                    else:
-                        new_entry = {"item": item_name, "quantity": quantity}
-                        if change.get("description"):
-                            new_entry["description"] = change["description"]
-                        inventory.append(new_entry)
-                elif change.get("action") == "remove" and entry:
-                    entry["quantity"] = entry.get("quantity", 1) - quantity
-                    if entry["quantity"] <= 0:
-                        inventory.remove(entry)
             active_states = projected.setdefault("active_persistent_states", [])
             for entry in parsed.get("activate_states", []):
                 state_id = entry.get("id") if isinstance(entry, dict) else entry
@@ -2266,11 +2250,31 @@ class GameSession(
                     location_name = (entry.get("name", location_id) if isinstance(entry, dict)
                                      else self._location_by_id.get(location_id, {}).get("name", location_id))
                     projected.setdefault("display_names", {})[location_id] = location_name
-            if parsed.get("location_change"):
-                projected.setdefault("player", {})["location"] = parsed["location_change"]
             if parsed.get("world_property_changes"):
                 self._update_dynamic_connections(projected)
         self._clear_derived_npc_positions(projected, resource_log)
+        self._apply_player_location_change(projected, location_change)
+        for change in inventory_changes:
+            item_name = change.get("item", "")
+            if not item_name:
+                continue
+            inventory = projected.setdefault("inventory", [])
+            entry = next((item for item in inventory if item.get("item") == item_name), None)
+            quantity = change.get("quantity", 1)
+            if change.get("action", "add") == "add":
+                if entry:
+                    entry["quantity"] = entry.get("quantity", 1) + quantity
+                    if change.get("description"):
+                        entry["description"] = change["description"]
+                else:
+                    new_entry = {"item": item_name, "quantity": quantity}
+                    if change.get("description"):
+                        new_entry["description"] = change["description"]
+                    inventory.append(new_entry)
+            elif change.get("action") == "remove" and entry:
+                entry["quantity"] = entry.get("quantity", 1) - quantity
+                if entry["quantity"] <= 0:
+                    inventory.remove(entry)
         self._apply_entity_spatial_changes(projected, spatial_changes)
         self._sync_dirty_npc_attitudes(projected, dirty_npc_ids)
         return projected
