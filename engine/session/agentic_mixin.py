@@ -729,6 +729,8 @@ class AgenticMixin:
                                     summary_parts.append(f"[工具失败] {name}: {mc}")
                                 else:
                                     receipt = mc.split(" | ", 1)[0]
+                                    for marker in state_feedback_markers:
+                                        receipt = receipt.split(marker, 1)[0]
                                     summary_parts.append(f"[工具执行记录] {name}: {receipt}")
                                     if m is latest_state_result:
                                         start = min(mc.find(marker) for marker in state_feedback_markers if marker in mc)

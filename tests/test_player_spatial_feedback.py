@@ -115,7 +115,8 @@ async def test_rejected_update_does_not_replace_feedback_during_compaction():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("level", [0, 2])
-async def test_undo_and_repeated_compaction_replace_previous_space_feedback(level):
+@pytest.mark.parametrize("budget", [None, 1000])
+async def test_undo_and_repeated_compaction_replace_previous_space_feedback(level, budget):
     session = make_session()
     session.current_state["script_variables"]["test_access_level"] = level
     session.ai_provider = SimpleNamespace(generate_with_tools=AsyncMock(return_value={"content": "Done.", "tool_calls": []}))
@@ -128,15 +129,20 @@ async def test_undo_and_repeated_compaction_replace_previous_space_feedback(leve
     }
     arguments = {"location_change": "test_gate"}
     result = session._handle_update_state(arguments, context)
+    if budget:
+        result = _bounded_tool_content(result, "update_state", budget)
     summary = await compact(session, [("update_state", arguments, result)])
     assert spatial_feedback(state_feedback(summary))["requested_location_id"] == "test_gate"
     session._last_tool_result = {"name": "update_state", "args": arguments}
     undo = {"reason": "Withdraw the provisional move."}
     result = await session._dispatch_unified_tool(context, "undo_my_last_action", undo)
+    if budget:
+        result = _bounded_tool_content(result, "undo_my_last_action", budget)
     summary = await compact(session, [("undo_my_last_action", undo, result)], summary)
     feedback = spatial_feedback(state_feedback(summary))
     assert feedback == {"requested_location_id": None, "location_id": "test_origin", "room_id": "seat", "movement_status": "none"}
     assert "已接受 0 次状态更新" in state_feedback(summary)
+    assert '"requested_location_id":"test_gate"' not in summary.replace(" ", "")
     assert session.current_state == baseline
 
 
