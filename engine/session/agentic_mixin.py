@@ -4292,10 +4292,10 @@ class AgenticMixin:
                 if parse_time(fire_time) == parse_time(start_time):
                     start_time = (parse_time(fire_time) - timedelta(microseconds=1)).isoformat()
                 while True:
-                    firing = [event for event in self.event_scheduler.check_events(
-                        self.current_state, start_time, fire_time,
-                        condition_eval=self._evaluate_condition,
-                    ) if event["fire_time"] == fire_time]
+                    firing = [event for event in self.event_engine._tick_scheduled(
+                        self.current_state, self.current_state.setdefault("events", {}),
+                        start_time, fire_time, self._evaluate_condition,
+                    ).scheduled_events if event["fire_time"] == fire_time]
                     if not firing:
                         break
                     eligible.extend(firing)

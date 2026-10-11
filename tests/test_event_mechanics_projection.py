@@ -4,6 +4,7 @@ import json
 import pytest
 
 from engine.game_session import GameSession
+from engine.script_loader import ScriptLoader
 
 
 @pytest.fixture(params=["add_variable", "add_trigger", "update_trigger"])
@@ -104,6 +105,72 @@ async def test_projected_mechanics_unlock_the_same_lore_as_settlement(mechanics_
     previous = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": "gate_notice"}))
     assert previous["entries"] == []
     await restored.branch_to_node(final_id)
+    recovered = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": "gate_notice"}))
+    assert recovered["entries"] == settled["entries"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configure_time,end_time,expected_ticks", [
+    ("09:05:00", "09:05:00", []),
+    ("09:05:00", "09:06:00", ["09:06:00"]),
+    ("09:04:00", "09:05:00", ["09:05:00"]),
+    ("09:07:00", "09:06:00", []),
+])
+async def test_cyclic_condition_projection_matches_settlement(
+    mechanics_script, configure_time, end_time, expected_ticks,
+):
+    script = copy.deepcopy(mechanics_script)
+    script["start_time"] = "2030-01-01T09:00:00"
+    script["one_time_events"][0]["trigger_time"] = f"2030-01-01T{configure_time}"
+    notice = script["one_time_events"].pop()
+    notice.pop("trigger_time")
+    script["cyclic_events"] = [{
+        **notice, "first_trigger": "2030-01-01T09:05:00",
+        "frequency_value": 1, "frequency_unit": "minute",
+    }]
+    session = GameSession(copy.deepcopy(script), None)
+    session.current_state = ScriptLoader.create_initial_state(script)
+    session.script_variables.init_state(session.current_state)
+    session.event_engine.tick(
+        session.current_state, 0, game_time=script["start_time"], old_time=script["start_time"],
+        condition_eval=session._evaluate_condition,
+    )
+    original_state = session.current_state
+    original_snapshot = copy.deepcopy(original_state)
+    original_mechanics = copy.deepcopy(session._mechanics_definitions())
+    original_variables = session.script_variables
+    original_triggers = session.trigger_engine
+    end_time = f"2030-01-01T{end_time}"
+    context = {
+        "old_time": script["start_time"], "_accepted_state_updates": [{"end_time": end_time}],
+    }
+    projected = json.loads(await session._query_lorebook_for_turn(context, {"entry_id": "gate_notice"}))
+    repeated = json.loads(await session._query_lorebook_for_turn(context, {"entry_id": "gate_notice"}))
+    projected_events, projected_state = session._projected_events(context, with_state=True)
+    assert repeated == projected
+    assert session.current_state is original_state
+    assert session.current_state == original_snapshot
+    assert session.script_variables is original_variables
+    assert session.trigger_engine is original_triggers
+    assert session._mechanics_definitions() == original_mechanics
+    session.current_state["game_time"] = end_time
+    fired = []
+    session._settle_timed_events(context["old_time"], end_time, fired)
+    settled = json.loads(await session._run_tool_native_async("query_lorebook", {"entry_id": "gate_notice"}))
+    assert [event["fire_time"] for event in fired if event["event_id"] == "release_notice"] == [
+        f"2030-01-01T{fire_time}" for fire_time in expected_ticks
+    ]
+    assert bool(settled["entries"]) is bool(expected_ticks)
+    assert projected["entries"] == settled["entries"]
+    assert [(event["event_id"], event["fire_time"]) for event in projected_events] == [
+        (event["event_id"], event["fire_time"]) for event in fired
+    ]
+    assert projected_state["events"] == session.current_state["events"]
+    assert projected_state["cyclic_event_trackers"] == session.current_state["cyclic_event_trackers"]
+    assert projected_state["script_variables"] == session.current_state["script_variables"]
+    restored = GameSession(copy.deepcopy(script), None)
+    restored.current_state = json.loads(json.dumps(session.current_state))
+    restored._hydrate_branch_runtime(restored.current_state)
     recovered = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": "gate_notice"}))
     assert recovered["entries"] == settled["entries"]
 
