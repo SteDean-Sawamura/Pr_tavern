@@ -60,6 +60,37 @@ def _clean_narrative_text(text: str, ctx: dict) -> str:
 
 
 def _bounded_tool_content(content: str, name: str, limit: int) -> str:
+    if name == "query_lorebook":
+        try:
+            result = json.loads(content)
+        except ValueError:
+            result = None
+        if isinstance(result, dict) and isinstance(result.get("entries"), list) and not _tool_result_failed(result):
+            preview = {key: result[key] for key in (
+                "total_matches", "next_page", "approximate", "projection",
+            ) if key in result}
+            preview["entries"] = [
+                {key: entry[key] for key in (
+                    "id", "visibility", "offset", "next_offset", "total_length", "truncated", "related_entries",
+                ) if key in entry}
+                for entry in result["entries"] if isinstance(entry, dict)
+            ]
+            preview["content_omitted"] = True
+            preview["notice"] = (
+                "正文已省略，不是已读完；按 entry_id 从 offset=0 完整重读，再按新结果 next_offset 续读。"
+                "资料仅供推演，非已发生或角色已知。"
+            )
+            encoded = json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
+            if len(encoded) <= limit:
+                return encoded
+            preview = {
+                "content_omitted": True, "metadata_omitted": True,
+                "notice": "正文和元数据已省略，不表示词条未返回；按原调用参数缩小范围重查，精确阅读从 offset=0 开始。"
+                          "资料仅供推演，非已发生或角色已知。",
+            }
+            if result.get("projection"):
+                preview["projection"] = {"provisional": True}
+            return json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
     if name == "consult_rules":
         try:
             result = json.loads(content)
@@ -351,6 +382,7 @@ class AgenticMixin:
                         for message in msgs if message.get("role") == "assistant"
                         for call in message.get("tool_calls", [])
                     }
+                    lore_queries = {}
                     exact_lore_queries = {}
                     for message in msgs:
                         for call in message.get("tool_calls", []):
@@ -360,8 +392,10 @@ class AgenticMixin:
                                 arguments = json.loads(call["function"].get("arguments", "{}"))
                             except (TypeError, ValueError):
                                 continue
-                            if isinstance(arguments, dict) and (arguments.get("entry_id") or arguments.get("entry_ids")):
-                                exact_lore_queries[call.get("id")] = arguments
+                            if isinstance(arguments, dict):
+                                lore_queries[call.get("id")] = arguments
+                                if arguments.get("entry_id") or arguments.get("entry_ids"):
+                                    exact_lore_queries[call.get("id")] = arguments
                     latest_exact_lore_result = None
                     for message in reversed(msgs):
                         if (message.get("role") != "tool"
@@ -417,9 +451,14 @@ class AgenticMixin:
                                         "也不能用旧片段证明本次仍可用。"
                                     )
                                 summary_parts.append("[世界书查询状态] " + json.dumps(query_status, ensure_ascii=False))
-                                if not entry_ids:
+                                if not entry_ids and not tool_result.get("content_omitted"):
                                     continue
-                            if entry_ids:
+                            if (tool_names.get(m.get("tool_call_id")) == "query_lorebook"
+                                    and isinstance(tool_result, dict) and tool_result.get("content_omitted")):
+                                summary_parts.append("[世界书正文省略] " + json.dumps({
+                                    "query": lore_queries.get(m.get("tool_call_id"), {}), **tool_result,
+                                }, ensure_ascii=False))
+                            elif entry_ids:
                                 is_latest_exact = m is latest_exact_lore_result
                                 is_exact_read = m.get('tool_call_id') in exact_lore_queries
                                 read_spans = [
