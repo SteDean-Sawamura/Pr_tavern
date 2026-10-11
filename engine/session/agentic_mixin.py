@@ -59,6 +59,18 @@ def _clean_narrative_text(text: str, ctx: dict) -> str:
     return strip_think_tags(re.sub(r'<reflect>.*?</reflect>', '', text, flags=re.DOTALL)).strip()
 
 
+def _candidate_value_feedback(category: str, values: dict, missing=()) -> str:
+    label = "变量" if category == "variables" else "世界属性"
+    content = json.dumps(values, ensure_ascii=False)
+    if missing:
+        content += "；未设置: " + json.dumps(missing, ensure_ascii=False)
+    if len(content) > 4000:
+        content = ("候选值全文过长已省略，不是空值；用 consult_rules(category=\"" + category
+                   + "\", include_candidates=true) 查询，按 rule_index 和 next_offset 完整续读；"
+                     "每次更新或撤销后从 offset=0 重查，不要重复执行已接收的更新")
+    return f" | {label}候选值（未提交，不含尚未结算的事件效果）: {content}"
+
+
 def _bounded_tool_content(content: str, name: str, limit: int) -> str:
     if name == "query_lorebook":
         try:
@@ -98,7 +110,7 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
             result = None
         if isinstance(result, dict) and result.get("category") and isinstance(result.get("entries"), list):
             preview = {key: result[key] for key in (
-                "category", "source", "game_time", "offset", "next_offset", "total",
+                "category", "source", "game_time", "offset", "next_offset", "total", "projection",
             ) if key in result}
             preview["entries"] = [
                 {key: entry[key] for key in ("rule_index", "offset", "next_offset", "total_chars") if key in entry}
@@ -109,6 +121,12 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
                 "正文已省略；用 consult_rules(category=类别, rule_index=索引, offset=0) 完整重读；"
                 "切换分支后重查索引。只反映已提交分支，不代表已触发或角色已知。"
             )
+            if result.get("projection"):
+                preview["notice"] = (
+                    "正文已省略；保留 include_candidates=true，用 category 和 rule_index 从 offset=0 重读；"
+                    "当前值仍是已提交值，候选值仅为查询时投影、不含未结算事件效果、非角色知情；"
+                    "更新、撤销或切换分支后重查索引和正文。"
+                )
             return json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
     if name == "read_director_notes":
         try:
@@ -412,7 +430,7 @@ class AgenticMixin:
                             latest_exact_lore_result = message
                             break
                     state_feedback_tools = ("update_state", "undo_my_last_action", "write_narrative")
-                    state_feedback_markers = ("变量候选值", "本轮候选结算", "状态投影显示条件事件可能触发")
+                    state_feedback_markers = ("变量候选值", "世界属性候选值", "本轮候选结算", "状态投影显示条件事件可能触发")
                     state_results = [message for message in msgs
                                      if message.get("role") == "tool"
                                       and tool_names.get(message.get("tool_call_id")) in state_feedback_tools
@@ -489,7 +507,7 @@ class AgenticMixin:
                                   and tool_result.get("category") in self._queryable_mechanics_definitions()
                                   and isinstance(entries, list)):
                                 preview = {key: tool_result[key] for key in (
-                                    "category", "source", "game_time", "offset", "next_offset", "total", "notice",
+                                    "category", "source", "game_time", "offset", "next_offset", "total", "notice", "projection",
                                 ) if key in tool_result}
                                 preview["entries"] = [
                                     {key: entry[key] for key in ("rule_index", "offset", "next_offset", "total_chars")
@@ -2023,6 +2041,8 @@ class AgenticMixin:
 
     def _dispatch_settlement_tool(self, name: str, args: dict, ctx: dict | None = None) -> str:
         """Execute a consolidated settlement tool. Routes to existing validators."""
+        if name == "consult_rules":
+            return self._handle_consult_rules(args, ctx)
         if name == "write_narrative" and ctx is not None:
             text = _clean_narrative_text(args.get("text") or "", ctx)
             args["text"] = text
@@ -2136,18 +2156,29 @@ class AgenticMixin:
             return ""
         updates = ctx.get("_accepted_state_updates", [])
         variable_ids = list(ctx.get("_state_feedback_variable_ids", []))
+        property_ids = list(ctx.get("_state_feedback_world_property_ids", []))
         for update in updates:
             variable_ids.extend(change["id"] for change in update.get("state_changes", [])
                                 if change.get("type") == "variable")
             variable_ids.extend(change["id"] for change in update.get("variable_changes", []))
+            property_ids.extend(change["id"] for change in update.get("world_property_changes", [])
+                                if change.get("id") and not self._is_undeclared_object_property(change["id"]))
         variable_ids = list(dict.fromkeys(variable_ids))
+        property_ids = list(dict.fromkeys(property_ids))
         ctx["_state_feedback_variable_ids"] = variable_ids
+        ctx["_state_feedback_world_property_ids"] = property_ids
         result = ""
-        if variable_ids:
+        if variable_ids or property_ids:
             projected_state = self._project_state_tool_updates(updates)
+        if variable_ids:
             values = {variable_id: self.script_variables.get(projected_state, variable_id)
                       for variable_id in variable_ids}
-            result += " | 变量候选值（未提交，不含尚未结算的事件效果）: " + json.dumps(values, ensure_ascii=False)
+            result += _candidate_value_feedback("variables", values)
+        if property_ids:
+            properties = projected_state.get("world_properties", {})
+            values = {property_id: properties.get(property_id) for property_id in property_ids}
+            missing = [property_id for property_id in property_ids if property_id not in properties]
+            result += _candidate_value_feedback("world_properties", values, missing)
         end_time = next((update["end_time"] for update in reversed(updates) if update.get("end_time")), None)
         projected = self._projected_events(ctx) if end_time else []
         event_times = ", ".join(
@@ -2437,9 +2468,11 @@ class AgenticMixin:
         # 按 route skip 标志裁剪后台工具集
         # 合并工具后，NPC态度是 manage_npcs 的子操作，不再单独移除工具
         # skip 标志通过 skip_hints 文本传递给 Agent
-        narrative_tool = next(tool for tool in _unified_tools()
+        unified_tools = _unified_tools()
+        narrative_tool = next(tool for tool in unified_tools
                               if tool["function"]["name"] == "write_narrative")
-        tools = [*CONSOLIDATED_SETTLEMENT_TOOLS, {
+        rules_tool = next(tool for tool in unified_tools if tool["function"]["name"] == "consult_rules")
+        tools = [*CONSOLIDATED_SETTLEMENT_TOOLS, rules_tool, {
             **narrative_tool, "function": {
                 **narrative_tool["function"],
                 "description": "仅在玩家插话要求改写已展示叙事，或结算发现叙事必须修正时，提交完整的新叙事。",
@@ -4277,7 +4310,7 @@ class AgenticMixin:
 
         # --- #6 规则咨询 ---
         if name == "consult_rules":
-            return self._handle_consult_rules(args)
+            return self._handle_consult_rules(args, ctx)
 
         # --- #8 事件预演 ---
         if name == "peek_upcoming_events":
@@ -4895,10 +4928,12 @@ class AgenticMixin:
         return ("已接收结算委托。词条声明仍需在最终状态和叙事中复核。"
                 if args.get("lore_reveals") else "已接收结算委托。叙事先展示，结算完成后保存本轮状态。")
 
-    def _handle_consult_rules(self, args: dict) -> str:
+    def _handle_consult_rules(self, args: dict, ctx: dict | None = None) -> str:
         """纯规则检查（不调 LLM）：NPC 在场、物品持有等。"""
         if "category" in args:
-            return self._handle_mechanics_query(args)
+            return self._handle_mechanics_query(args, ctx)
+        if args.get("include_candidates", False) is not False:
+            return json.dumps({"error": "候选值查询须指定 variables 或 world_properties 类别"}, ensure_ascii=False)
         question = args.get("question", "").lower()
         context_str = args.get("context", "")
 
@@ -4940,11 +4975,24 @@ class AgenticMixin:
             ],
         }
 
-    def _handle_mechanics_query(self, args: dict) -> str:
+    def _handle_mechanics_query(self, args: dict, ctx: dict | None = None) -> str:
         definitions = self._queryable_mechanics_definitions()
         category = args.get("category")
         if not isinstance(category, str) or category not in definitions:
             return json.dumps({"error": "category 必须是：" + "、".join(definitions)}, ensure_ascii=False)
+        include_candidates = args.get("include_candidates", False)
+        if type(include_candidates) is not bool:
+            return json.dumps({"error": "include_candidates 必须是布尔值"}, ensure_ascii=False)
+        if include_candidates and (category not in ("variables", "world_properties") or not (ctx or {}).get("old_time")):
+            return json.dumps({"error": "候选值仅支持进行中回合的 variables 或 world_properties 查询"}, ensure_ascii=False)
+        projected_state = self._project_state_tool_updates(ctx.get("_accepted_state_updates", [])) if include_candidates else None
+        category_definitions = list(definitions[category])
+        if include_candidates and category == "world_properties":
+            declared_ids = {definition["id"] for definition in category_definitions}
+            runtime_ids = dict.fromkeys([
+                *projected_state.get("world_properties", {}), *ctx.get("_state_feedback_world_property_ids", []),
+            ])
+            category_definitions.extend({"id": property_id} for property_id in runtime_ids if property_id not in declared_ids)
         offset = args.get("offset", 0)
         if type(offset) is not int or offset < 0:
             return json.dumps({"error": "offset 必须是非负整数"}, ensure_ascii=False)
@@ -4953,13 +5001,13 @@ class AgenticMixin:
             return json.dumps({"error": "query 必须是字符串"}, ensure_ascii=False)
         detailed = "rule_index" in args
         rule_index = args.get("rule_index")
-        if detailed and (type(rule_index) is not int or not 0 <= rule_index < len(definitions[category])):
+        if detailed and (type(rule_index) is not int or not 0 <= rule_index < len(category_definitions)):
             return json.dumps({"error": "rule_index 超出当前类别的范围"}, ensure_ascii=False)
         if detailed and query:
             return json.dumps({"error": "rule_index 不能与 query 混用；切换分支后请重新查询索引"}, ensure_ascii=False)
 
         records = []
-        for index, definition in enumerate(definitions[category]):
+        for index, definition in enumerate(category_definitions):
             if detailed and index != rule_index:
                 continue
             payload = {"definition": definition}
@@ -4967,6 +5015,16 @@ class AgenticMixin:
                 payload["current_value"] = self.script_variables.get(self.current_state, definition["id"])
             elif category == "world_properties":
                 payload["current_value"] = self.current_state.get("world_properties", {}).get(definition["id"])
+            if include_candidates:
+                if category == "variables":
+                    payload["candidate_value"] = self.script_variables.get(projected_state, definition["id"])
+                    payload["candidate_exists"] = True
+                else:
+                    properties = projected_state.get("world_properties", {})
+                    payload["candidate_value"] = properties.get(definition["id"])
+                    payload["candidate_exists"] = definition["id"] in properties
+                    if index >= len(definitions[category]):
+                        payload.update({"definition": None, "id": definition["id"]})
             content = json.dumps(payload, ensure_ascii=False)
             if not detailed and query.casefold() not in content.casefold():
                 continue
@@ -4980,12 +5038,24 @@ class AgenticMixin:
             "offset": content_offset, "total_chars": len(content),
             "next_offset": content_offset + 2000 if len(content) > content_offset + 2000 else None,
         } for index, content in page]
-        return json.dumps({
+        result = {
             "category": category, "source": "current_branch", "game_time": self.current_state.get("game_time"),
             "notice": "当前分支定义与现值；不模拟未提交的行动，不代表机制已触发或角色已知。",
             "entries": entries, "total": len(records), "offset": offset,
             "next_offset": offset + 5 if not detailed and len(records) > offset + 5 else None,
-        }, ensure_ascii=False)
+        }
+        if include_candidates:
+            updates = ctx.get("_accepted_state_updates", [])
+            result["projection"] = {
+                "provisional": True, "accepted_updates": len(updates), "excludes_unsettled_events": True,
+                "as_of": next((update["end_time"] for update in reversed(updates) if update.get("end_time")), ctx["old_time"]),
+            }
+            result["notice"] = (
+                "current_value 为已提交值；candidate_value 为查询时累计候选值，不含未结算事件效果、非角色知情。"
+                "candidate_exists=false 表示未设置，definition=null 表示仅运行时属性、不是剧本声明。"
+                "续读保留 include_candidates=true；更新、撤销或切换分支后从 offset=0 重查索引和正文。"
+            )
+        return json.dumps(result, ensure_ascii=False)
 
     def _handle_peek_upcoming_events(self, args: dict) -> str:
         """预览即将触发的事件（hint 级别，不剧透）。"""

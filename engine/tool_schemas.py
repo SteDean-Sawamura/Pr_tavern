@@ -789,13 +789,15 @@ def _unified_tools() -> list[dict]:
         }},
         {"type": "function", "function": {
             "name": "consult_rules",
-            "description": "只读咨询当前分支规则。指定 category 可检索变量及现值、世界属性及现值、触发器、随机项、一次性事件、周期事件、持续状态或剧情节点的完整声明；story_nodes 返回含树元数据的 tree 和完整 node，不重复包含兄弟节点。不指定时按 question 检查 NPC 在场和物品持有。不会执行规则或模拟未提交的行动。",
+            "description": "只读咨询当前分支规则。指定 category 可检索变量及现值、世界属性及现值、触发器、随机项、一次性事件、周期事件、持续状态或剧情节点的完整声明；story_nodes 返回含树元数据的 tree 和完整 node，不重复包含兄弟节点。不指定时按 question 检查 NPC 在场和物品持有。默认只读已提交状态；不会执行规则，可显式附加本轮候选变量或世界属性值。",
             "parameters": {"type": "object", "properties": {
                 "question": {"type": "string", "description": "要咨询的问题"},
                 "context": {"type": "string", "description": "相关上下文"},
                 "category": {"type": "string", "enum": ["variables", "triggers", "random_items", "one_time_events", "cyclic_events", "persistent_states", "world_properties", "story_nodes"],
                              "description": "机制类别；指定后无需 question。每次最多返回5条，每条 content 最多2000字符"},
                 "query": {"type": "string", "description": "在定义和变量或世界属性现值中搜索，不区分大小写；空字符串列出该类别"},
+                "include_candidates": {"type": "boolean", "default": False,
+                                       "description": "仅 variables/world_properties：附加本轮已接收更新的 candidate_value 和 candidate_exists，current_value 仍是已提交值；不含未结算事件效果。运行时世界属性 definition=null，不是声明。续读须保留此参数；更新、撤销后从 offset=0 重查"},
                 "rule_index": {"type": "integer", "minimum": 0,
                                "description": "读取某条查询结果的完整定义时，传入其 rule_index；不可与 query 混用，切换分支后须重新查询索引"},
                 "offset": {"type": "integer", "minimum": 0, "default": 0,

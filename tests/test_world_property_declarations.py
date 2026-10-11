@@ -214,10 +214,15 @@ async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_br
             }
         elif index == 3:
             assert "过滤" not in completed[2]
-            name, arguments = "consult_rules", {"category": "world_properties"}
+            assert f'"{property_id}": "open"' in completed[2]
+            name, arguments = "consult_rules", {"category": "world_properties", "include_candidates": True}
         elif index == 4:
-            payload = json.loads(json.loads(completed[3])["entries"][0]["content"])
+            result = json.loads(completed[3])
+            assert result["projection"]["provisional"] is True
+            payload = json.loads(result["entries"][0]["content"])
             assert payload["current_value"] == "closed"
+            assert payload["candidate_value"] == "open"
+            assert payload["candidate_exists"] is True
             assert session.current_state["world_properties"][property_id] == "closed"
             name, arguments = "query_lorebook", {"entry_id": "test_notice"}
         elif index == 5:
