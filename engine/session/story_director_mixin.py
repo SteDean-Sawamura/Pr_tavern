@@ -499,7 +499,7 @@ class StoryDirectorMixin:
         prompt = (
             f"各势力当前目标:\n{ctx['goals_text']}\n"
             f"近期关键事件: {ctx['recent_events']}\n\n"
-            "任务：根据剧情进展，判断是否需要新增/调整目标。\n"
+            "任务：根据剧情进展，判断是否需要新增目标。只新增，不覆盖已有目标ID。\n"
             '返回JSON: {"npc_goals":[{"npc_id":"","goals":[{"id":"","description":"","type":"short_term|long_term","priority":"low|medium|high"}]}],'
             '"org_goals":[{"org_id":"","goals":[{"id":"","description":"","priority":"medium"}]}]}\n'
             "不需要变更则返回空: {}"
@@ -845,25 +845,60 @@ class StoryDirectorMixin:
 
     def _apply_goal_updates(self, updates: dict):
         """更新 NPC/组织的 goals。"""
-        for npc_update in updates.get("npc_goals", []):
-            npc_id = npc_update.get("npc_id")
-            new_goals = npc_update.get("goals", [])
-            npc_def = self._npc_by_id.get(npc_id)
-            if npc_def and new_goals:
-                existing = {g.get("id") for g in npc_def.get("goals", [])}
-                for g in new_goals:
-                    if g.get("id") not in existing:
-                        npc_def.setdefault("goals", []).append(g)
-        for org_update in updates.get("org_goals", []):
-            org_id = org_update.get("org_id")
-            new_goals = org_update.get("goals", [])
-            for org in self.script.get("organizations", []):
-                if org.get("id") == org_id:
-                    existing = {g.get("id") for g in org.get("goals", [])}
-                    for g in new_goals:
-                        if g.get("id") not in existing:
-                            org.setdefault("goals", []).append(g)
-                    break
+        organizations = {org["id"]: org for org in self.script.get("organizations", [])
+                         if isinstance(org, dict) and org.get("id")}
+        for section, key, id_key, actors in (
+            ("npcs", "npc_goals", "npc_id", self._npc_by_id),
+            ("organizations", "org_goals", "org_id", organizations),
+        ):
+            entries = updates.get(key, [])
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                actor_id = entry.get(id_key)
+                new_goals = entry.get("goals")
+                if not isinstance(actor_id, str) or actor_id not in actors or not isinstance(new_goals, list):
+                    continue
+                actor = actors[actor_id]
+                goals = copy.deepcopy(actor.get("goals") or [])
+                existing = {goal.get("id") for goal in goals if isinstance(goal, dict)
+                            and isinstance(goal.get("id"), str)}
+                accepted = []
+                for goal in new_goals:
+                    if not isinstance(goal, dict):
+                        continue
+                    goal_id = goal.get("id")
+                    if not isinstance(goal_id, str) or not goal_id.strip() or goal_id in existing:
+                        continue
+                    existing.add(goal_id)
+                    accepted.append(copy.deepcopy(goal))
+                if accepted:
+                    actor["goals"] = goals + accepted
+                    overrides = self.current_state.setdefault("dynamic_story_content", {}).setdefault("goal_overrides", {})
+                    overrides.setdefault(section, {})[actor_id] = copy.deepcopy(actor["goals"])
+                    self._dynamic_actor_goal_ids[section].add(actor_id)
+
+    def _hydrate_actor_goals(self, state: dict):
+        overrides = state.get("dynamic_story_content", {}).get("goal_overrides", {})
+        for section in ("npcs", "organizations"):
+            changed_ids = self._dynamic_actor_goal_ids[section] | overrides.get(section, {}).keys()
+            for actor in self.script.get(section, []):
+                if not isinstance(actor, dict):
+                    continue
+                actor_id = actor.get("id")
+                if actor_id not in changed_ids:
+                    continue
+                initial = self._initial_actor_goals[section]
+                if actor_id in initial:
+                    if initial[actor_id] is None:
+                        actor.pop("goals", None)
+                    else:
+                        actor["goals"] = copy.deepcopy(initial[actor_id])
+                if actor_id in overrides.get(section, {}):
+                    actor["goals"] = copy.deepcopy(overrides[section][actor_id])
+            self._dynamic_actor_goal_ids[section] = set(overrides.get(section, {}))
 
     def _apply_lorebook_updates(self, updates: dict):
         """更新已有 lorebook 条目的 content。"""
@@ -1033,6 +1068,9 @@ class StoryDirectorMixin:
         for entry in dsc.get("lorebook", []):
             self.prompt_builder.lorebook.add_entries([entry])
         self._hydrate_mechanics_runtime(self.current_state)
+
+        self._index_dynamic_npcs_from_state(self.current_state)
+        self._hydrate_actor_goals(self.current_state)
 
     def _extract_name_keywords(self, text: str) -> list[str]:
         """Extract NPC/org/location names from text as lorebook keywords."""

@@ -186,6 +186,8 @@ async def _rollback_generation_state(session, snapshot):
             setattr(owner, name, value)
     if hasattr(session, "_index_dynamic_npcs_from_state"):
         session._index_dynamic_npcs_from_state(session.current_state)
+    if hasattr(session, "_hydrate_actor_goals"):
+        session._hydrate_actor_goals(session.current_state)
     if hasattr(session, "prompt_builder"):
         session.prompt_builder.sync_shelved_pc_knowledge(session.current_state)
 

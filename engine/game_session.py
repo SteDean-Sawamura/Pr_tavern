@@ -120,6 +120,12 @@ class GameSession(
         self._initial_mechanics = copy.deepcopy({
             key: script.get(key, []) for key in ("random_items", "variables", "triggers")
         })
+        self._initial_actor_goals = copy.deepcopy({
+            section: {actor["id"]: actor.get("goals") for actor in script.get(section, [])
+                      if isinstance(actor, dict) and actor.get("id")}
+            for section in ("npcs", "organizations")
+        })
+        self._dynamic_actor_goal_ids = {"npcs": set(), "organizations": set()}
         self.ai_provider = ai_provider
         self.pipeline_mode = config.PIPELINE_MODE
         self.stage_models = stage_models or {}

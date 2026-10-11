@@ -5749,6 +5749,8 @@ class AgenticMixin:
         npc_name = actor.get("name", npc_id)
         completed_goals = {goal.get("id") if isinstance(goal, dict) else goal
                            for goal in state.get("completed_npc_goals", [])}
+        actor_goals = state.get("dynamic_story_content", {}).get("goal_overrides", {}).get(
+            "npcs", {}).get(npc_id, actor.get("goals", []))
         character_context = {
             "in_contact": self._npc_contact_is_current(npc_id, state),
             "location": self._get_npc_location(npc_id, state),
@@ -5758,7 +5760,7 @@ class AgenticMixin:
             "relationship": state.get("player", {}).get("relationships", {}).get(npc_id),
             "active_goals": [
                 {"id": goal.get("id", ""), "description": goal.get("description", "")}
-                for goal in actor.get("goals", [])
+                for goal in actor_goals
                 if f"{npc_id}:{goal.get('id', '')}" not in completed_goals
             ],
         }

@@ -157,6 +157,7 @@ class RegenerateMixin:
             if initial is not None:
                 self.prompt_builder.lorebook.add_entries([copy.deepcopy(initial)])
         self._index_dynamic_npcs_from_state(state)
+        self._hydrate_actor_goals(state)
         active_lore_ids = {entry.id for entry in self.prompt_builder.lorebook.entries
                            if entry.entry_type == "story_active" and entry.id.startswith("_st_active_")}
         for entry_id in active_lore_ids:
