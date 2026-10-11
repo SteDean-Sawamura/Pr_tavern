@@ -92,7 +92,7 @@ def _choice_preview_changes(before: dict, after: dict, path: tuple = ()) -> list
     return changes
 
 
-def _choice_preview_section(result: dict, result_path: list, offset: int) -> dict:
+def _json_result_section(result: dict, result_path: list, offset: int) -> dict:
     selected = result
     for part in result_path:
         if isinstance(selected, dict) and isinstance(part, str) and part in selected:
@@ -189,7 +189,7 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
                 "category", "source", "game_time", "offset", "next_offset", "total", "projection", "snapshot",
             ) if key in result}
             preview["entries"] = [
-                {key: entry[key] for key in ("rule_index", "offset", "next_offset", "total_chars", "snapshot") if key in entry}
+                {key: entry[key] for key in ("rule_index", "offset", "next_offset", "total_chars", "snapshot", "read") if key in entry}
                 for entry in result["entries"] if isinstance(entry, dict)
             ]
             preview["truncated"] = True
@@ -202,6 +202,8 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
                     "正文省略；保留 include_candidates=true 和条目 snapshot，用 category、rule_index 从 offset=0 重读；"
                     "候选值未提交、不含未结算效果、非角色知情；失效时丢弃旧片段重查列表。"
                 )
+            if any(entry.get("read") for entry in preview["entries"]):
+                preview["notice"] += "字段正文也已省略；按条目 read 保留 result_path，从 offset=0 重读该字段，不表示已知全部规则。"
             serialized = json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
             if len(serialized) <= limit:
                 return serialized
@@ -620,14 +622,15 @@ class AgenticMixin:
                                     "category", "source", "game_time", "offset", "next_offset", "total", "notice", "projection", "snapshot",
                                 ) if key in tool_result}
                                 preview["entries"] = [
-                                    {key: entry[key] for key in ("rule_index", "offset", "next_offset", "total_chars", "snapshot")
+                                    {key: entry[key] for key in ("rule_index", "offset", "next_offset", "total_chars", "snapshot", "read")
                                      if key in entry}
                                     for entry in entries[:5] if isinstance(entry, dict)
                                 ]
                                 summary_parts.append(
                                     "[剧本机制检索] " + json.dumps(preview, ensure_ascii=False)
                                     + "；本次匹配的规则正文已省略；用 consult_rules 的 category、rule_index 和条目 snapshot "
-                                      "从 offset=0 重新完整读取，不得只续读尾段；快照失效时丢弃旧片段重查列表。"
+                                      "从 offset=0 重读；字段读取按条目 read 保留 result_path，从0重读该字段，不表示已知全部规则；"
+                                      "不得只续读尾段；快照失效时丢弃旧片段重查列表。"
                                 )
                             elif (tool_names.get(m.get("tool_call_id")) == "preview_choice_outcome"
                                   and isinstance(tool_result, dict) and tool_result.get("mode") == "declared_choice"):
@@ -4632,7 +4635,7 @@ class AgenticMixin:
         if "result_path" in args:
             read["result_path"] = result_path
             try:
-                section = _choice_preview_section(json.loads(content), result_path, offset)
+                section = _json_result_section(json.loads(content), result_path, offset)
             except ValueError as error:
                 return json.dumps({"error": str(error), "error_code": "invalid_result_path"}, ensure_ascii=False)
             return json.dumps({
@@ -5196,6 +5199,8 @@ class AgenticMixin:
         """纯规则检查（不调 LLM）：NPC 在场、物品持有等。"""
         if "category" in args:
             return self._handle_mechanics_query(args, ctx)
+        if "result_path" in args:
+            return json.dumps({"error": "result_path 须指定 category、rule_index 和条目 snapshot"}, ensure_ascii=False)
         if args.get("include_candidates", False) is not False:
             return json.dumps({"error": "候选值查询须指定 variables 或 world_properties 类别"}, ensure_ascii=False)
         if "snapshot" in args:
@@ -5271,6 +5276,13 @@ class AgenticMixin:
             return json.dumps({"error": "rule_index 超出当前类别的范围"}, ensure_ascii=False)
         if detailed and query:
             return json.dumps({"error": "rule_index 不能与 query 混用；切换分支后请重新查询索引"}, ensure_ascii=False)
+        scoped = "result_path" in args
+        result_path = args.get("result_path")
+        if scoped and (not isinstance(result_path, list) or any(
+                not isinstance(part, str) and not (type(part) is int and part >= 0) for part in result_path)):
+            return json.dumps({"error": "result_path 必须是字符串键和非负整数索引组成的列表"}, ensure_ascii=False)
+        if scoped and not detailed:
+            return json.dumps({"error": "result_path 须指定 rule_index 和条目 snapshot，不能用于列表翻页"}, ensure_ascii=False)
         supplied_snapshot = args.get("snapshot")
         if "snapshot" in args and (not isinstance(supplied_snapshot, str) or not re.fullmatch(r"[A-Za-z0-9_-]{22}", supplied_snapshot)):
             return json.dumps({"error": "snapshot 必须原样使用查询返回的快照标识"}, ensure_ascii=False)
@@ -5331,14 +5343,26 @@ class AgenticMixin:
         ]
         page = records if detailed else records[offset:offset + 5]
         content_offset = offset if detailed else 0
-        if detailed and content_offset > len(page[0][1]):
+        if detailed and not scoped and content_offset > len(page[0][1]):
             return json.dumps({"error": "offset 超出机制正文长度"}, ensure_ascii=False)
-        entries = [{
-            "rule_index": index, "content": content[content_offset:content_offset + 2000],
-            "snapshot": snapshot_for(index),
-            "offset": content_offset, "total_chars": len(content),
-            "next_offset": content_offset + 2000 if len(content) > content_offset + 2000 else None,
-        } for index, content in page]
+        if scoped:
+            index, content = page[0]
+            try:
+                section = _json_result_section(json.loads(content), result_path, offset)
+            except ValueError as error:
+                return json.dumps({"error": str(error)}, ensure_ascii=False)
+            entries = [{
+                "rule_index": index, "snapshot": snapshot, "total_chars": len(content), **section,
+                "read": {"category": category, "rule_index": index, "snapshot": snapshot,
+                         "include_candidates": include_candidates, "result_path": result_path, "offset": 0},
+            }]
+        else:
+            entries = [{
+                "rule_index": index, "content": content[content_offset:content_offset + 2000],
+                "snapshot": snapshot_for(index),
+                "offset": content_offset, "total_chars": len(content),
+                "next_offset": content_offset + 2000 if len(content) > content_offset + 2000 else None,
+            } for index, content in page]
         result = {
             "category": category, "source": "current_branch", "game_time": self.current_state.get("game_time"),
             "notice": "当前分支定义与现值；不模拟未提交的行动，不代表机制已触发或角色已知。",
@@ -5354,6 +5378,7 @@ class AgenticMixin:
             )
         result["notice"] += (
             "列表翻页携带顶层 snapshot；指定 rule_index（包括 offset=0）须携带条目 snapshot。"
+            "长规则可加 result_path=[] 读取条目目录，再按键/索引下钻；字段 next_offset 只表示本层进度，不等于整条规则已读完。"
             "更新、撤销、切换分支或查询视图可使快照失效；收到 restart_required 时丢弃旧片段，按 restart 重查，不得拼接不同快照。"
         )
         return json.dumps(result, ensure_ascii=False)

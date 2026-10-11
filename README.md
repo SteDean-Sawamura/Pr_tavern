@@ -841,6 +841,14 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 `tests/test_agent_variable_updates.py` 验证字段契约、边界与零增量、类型校验、错误恢复、投影和结算一致性、最终提交修订回滚及分支定义隔离。流式 harness 通过假模型和临时 SQLite 验证规则读取、变量操作、撤销、错误恢复、条件事件、重放去重、保存恢复和分支往返；不调用外部模型、不包含真实剧本，也不代表实际推演流畅性或叙事质量已验收。
 
+### 规则字段按需读取
+
+`consult_rules` 的八类声明支持在 `category`、`rule_index` 和条目 `snapshot` 上增加 `result_path=[]`，读取规范化条目 JSON 的根目录，再按返回的字符串键或非负整数索引下钻。例如剧情节点规则位于 `["definition", "node"]`，变量现值位于 `["current_value"]`；不需要为读取条件或效果先拼接超长描述。字段路径只能访问本次规则条目的 JSON，不访问文件、属性或表达式，缺少身份、非法路径和失效快照均报错，不退回普通问答。
+
+字段响应仍放在外层 `entries` 的对应规则条目中，条目 `content_format="result_section"`；容器提供成员目录，小值附完整 `value`，长值只描述类型、长度和完整性，字符串返回最多2000字符的 `content`，标量保留原类型。容器成员负载按约2000字符分页，并非整个响应的严格长度上限。`offset` 对容器表示成员偏移，对字符串表示字符偏移，标量只接受0；条目 `next_offset=null` 仅表示当前层结束，不表示长子值已读完。条目 `read` 保留当前字段从0重读的完整坐标；压缩后仍须重读省略的字段，不能把目录当成全部规则。候选查询保留 `include_candidates=true`，不把候选值当作已保存或已触发。未传 `result_path` 时保留原始 JSON 字符分页协议。
+
+`tests/test_rule_inspection.py` 使用合成声明与假模型验证超预算规则读取、字段分页、候选隔离、快照失效、压缩重读和公开 trace 裁剪；隔离流式 API 测试从规则中读取行动后执行通用状态更新，验证 SQLite 保存重载、分支往返及请求重放不重复结算。假模型不在请求外拼接或积累规则正文；这些证据不代表真实模型自主检索质量或线上体验已验收。
+
 ### 声明式选择预检
 
 计划提交后，GM 可以先用 `consult_rules(category="story_nodes")` 读取当前分支的节点与选项身份，再调用 `preview_choice_outcome(node_id="test_decision", choice_id="test_open")`。预检保留当前分支的运行时定义，在隔离会话副本中通过与真实选择 API 相同的结算入口检查当前激活节点，应用其选择效果及派发事件；不会按选项文本猜测效果或提交真实选择。`include_candidates=true` 仅在进行中的回合可用，以累计接收但未提交的 `update_state` 候选为基线，不提前结算其他待决事件，也不会提前激活仍待决的节点。

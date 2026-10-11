@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from api import game_routes
-from engine.session.agentic_mixin import _AgentResult, _bounded_tool_content, _choice_preview_section, _public_agent_trace
+from engine.session.agentic_mixin import _AgentResult, _bounded_tool_content, _json_result_section, _public_agent_trace
 from engine.tool_schemas import _unified_tools
 from test_agent_rule_context import model_call
 from test_agent_state_compaction import compact
@@ -144,25 +144,25 @@ async def test_real_agent_consumes_relevant_changes_larger_than_context_without_
 @pytest.mark.parametrize("value,value_type", [(None, "null"), (False, "boolean"), (True, "boolean"),
                                             (0, "number"), (-3, "number"), (0.5, "number"), ("", "string")])
 def test_leaf_types_are_preserved(value, value_type):
-    result = _choice_preview_section({"field": value}, ["field"], 0)
+    result = _json_result_section({"field": value}, ["field"], 0)
     assert result["value_type"] == value_type and result["complete"] is True
     actual = result["content"] if value_type == "string" else result["value"]
     assert actual == value and type(actual) is type(value)
     assert result["next_offset"] is None
     with pytest.raises(ValueError):
-        _choice_preview_section({"field": value}, ["field"], 1)
+        _json_result_section({"field": value}, ["field"], 1)
 
 
 @pytest.mark.parametrize("value", [{}, [], [None, False, 0, ""], {"0": 7, "": None}])
 def test_small_containers_are_complete_but_empty_tail_is_not(value):
-    result = _choice_preview_section({"field": value}, ["field"], 0)
+    result = _json_result_section({"field": value}, ["field"], 0)
     assert result["complete"] is True and result["size"] == len(value)
     assert len(result["entries"]) == len(value)
-    tail = _choice_preview_section({"field": value}, ["field"], len(value))
+    tail = _json_result_section({"field": value}, ["field"], len(value))
     assert tail["entries"] == [] and tail["next_offset"] is None
     assert tail["complete"] is (not value)
     with pytest.raises(ValueError):
-        _choice_preview_section({"field": value}, ["field"], len(value) + 1)
+        _json_result_section({"field": value}, ["field"], len(value) + 1)
 
 
 @pytest.mark.asyncio
@@ -295,6 +295,6 @@ async def test_path_can_start_without_offset_and_empty_directory_does_not_hide_l
     initial = await preview(session)
     page = await preview(session, snapshot=initial["snapshot"], result_path=["available"])
     assert page["offset"] == 0 and page["value"] is True
-    directory = _choice_preview_section({"field": "SYNTHETIC_LONG_VALUE" * 1000}, [], 0)
+    directory = _json_result_section({"field": "SYNTHETIC_LONG_VALUE" * 1000}, [], 0)
     assert directory["next_offset"] is None and directory["complete"] is False
     assert directory["entries"][0]["complete"] is False and "value" not in directory["entries"][0]
