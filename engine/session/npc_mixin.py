@@ -88,8 +88,33 @@ class NpcMixin:
                     "turn": self.turn_number,
                 }
 
+    def _npc_talk_block_reason(self, npc_id: str, state: dict | None = None) -> str:
+        state = self.current_state if state is None else state
+        npc = state.get("npcs", {}).get(npc_id)
+        if not isinstance(npc, dict) or npc.get("known") is False:
+            return "尚未认识"
+        if npc.get("met") is False:
+            return "未接触"
+        if npc.get("alive") is False:
+            return "当前无法对话"
+        if npc_id in state.get("companions", []):
+            return ""
+        player = state.get("player", {})
+        location = player.get("location", "")
+        npc_location = self._get_npc_location(npc_id, state)
+        if not location or not npc_location:
+            return "位置待确认"
+        if not self._locations_match(location, npc_location):
+            return "不在当前位置"
+        player_room = player.get("current_room", "")
+        npc_room = npc.get("current_room", "")
+        if player_room and npc_room and player_room != npc_room:
+            return "不在同一房间"
+        return ""
+
     def _npc_contact_is_current(self, npc_id: str, state: dict) -> bool:
-        contact = state.get("npc_contacts", {}).get(npc_id)
+        contacts = state.get("npc_contacts", {})
+        contact = contacts.get(npc_id) if isinstance(contacts, dict) else None
         npc = state.get("npcs", {}).get(npc_id)
         player = state.get("player", {})
         location = player.get("location", "")
@@ -98,6 +123,8 @@ class NpcMixin:
                 and contact.get("location") == location
                 and contact.get("player_room", "") == player.get("current_room", "")
                 and contact.get("npc_room", "") == npc.get("current_room", "")
+                and not (player.get("current_room") and npc.get("current_room")
+                         and player["current_room"] != npc["current_room"])
                 and self._get_npc_location(npc_id, state) == location)
 
     def _prune_npc_contacts(self, state: dict) -> None:
@@ -300,24 +327,11 @@ class NpcMixin:
         await self._drain_background_tasks()  # P0-3
         if on_background_drained is not None:
             on_background_drained()
-        # Validate NPC exists
-        npc_state = self.current_state.get("npcs", {}).get(npc_id)
-        if not npc_state:
-            return {"error": f"NPC not found: {npc_id}"}
-        if npc_state.get("alive") is False:
-            return {"error": "该角色已故，无法对话"}
-
-        npc_name = npc_state.get("name", npc_id) if isinstance(npc_state, dict) else npc_id
-
-        # Check if NPC is at the same location as the player
-        player_loc = self.current_state.get("player", {}).get("location", "")
-        npc_location = self._get_npc_location(npc_id)
-        if player_loc and npc_location:
-            if not self._locations_match(player_loc, npc_location):
-                # FLOW-4: Use AI as fallback to check if locations semantically match
-                ai_match = await self._ai_check_same_location(player_loc, npc_location)
-                if not ai_match:
-                    return {"error": f"{npc_name}不在你当前的位置（{npc_location}）"}
+        reason = self._npc_talk_block_reason(npc_id)
+        if reason:
+            return {"error": reason}
+        npc_state = self.current_state["npcs"][npc_id]
+        npc_name = npc_state.get("name", npc_id)
 
         # 记录对话前关系快照（用于阈值跨越检测）
         rels_before = copy.deepcopy(
@@ -373,21 +387,12 @@ class NpcMixin:
         await self._drain_background_tasks()
         if on_background_drained is not None:
             on_background_drained()
-        npc_state = self.current_state.get("npcs", {}).get(npc_id)
-        if not npc_state:
-            yield {"type": "final", "error": f"NPC not found: {npc_id}"}
+        reason = self._npc_talk_block_reason(npc_id)
+        if reason:
+            yield {"type": "final", "error": reason}
             return
-
-        npc_name = npc_state.get("name", npc_id) if isinstance(npc_state, dict) else npc_id
-
-        player_loc = self.current_state.get("player", {}).get("location", "")
-        npc_location = self._get_npc_location(npc_id)
-        if player_loc and npc_location:
-            if not self._locations_match(player_loc, npc_location):
-                ai_match = await self._ai_check_same_location(player_loc, npc_location)
-                if not ai_match:
-                    yield {"type": "final", "error": f"{npc_name}不在你当前的位置（{npc_location}）"}
-                    return
+        npc_state = self.current_state["npcs"][npc_id]
+        npc_name = npc_state.get("name", npc_id)
 
         rels_before = copy.deepcopy(
             self.current_state.get("player", {}).get("relationships", {}).get(npc_id, {})
@@ -610,6 +615,7 @@ class NpcMixin:
         rels_after = self.current_state.get("player", {}).get("relationships", {}).get(npc_id, {})
         crossed = self._detect_relationship_crossings(rels_before, rels_after)
 
+        self._refresh_npc_locations()
         self._ensure_rooms_initialized()
         self._apply_npc_contact_changes(self.current_state, [{"npc_id": npc_id, "in_contact": True}])
 
@@ -646,7 +652,8 @@ class NpcMixin:
             "relationship_crossings": crossed,
             "dialogue_count": dlg_counts[npc_id],
             "talk_check": talk_check,
-            "quick_replies": self._generate_npc_quick_replies(npc_id, npc_name, history),
+            "quick_replies": ([] if self._npc_talk_block_reason(npc_id)
+                              else self._generate_npc_quick_replies(npc_id, npc_name, history)),
             "state": self.current_state,
         }
 

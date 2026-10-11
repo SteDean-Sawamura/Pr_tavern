@@ -26,12 +26,18 @@ globalThis.NpcPresence = (() => {
         const npc = state.npcs?.[npcId];
         if (npc == null || (typeof npc === 'object' && npc.known === false)) return '尚未认识';
         if (typeof npc === 'object' && npc.met === false) return '未接触';
+        const reason = state.npc_talk_block_reasons?.[npcId];
+        if (typeof reason === 'string') return reason;
+        if (typeof npc === 'object' && npc.alive === false) return '当前无法对话';
         if ((state.companions || []).includes(npcId)) return '';
         if (schedules && !schedules[npcId]) return '不在当前位置';
         const location = (schedules?.[npcId]?.location || (typeof npc === 'object' &&
             (npc.current_location || npc.default_location)) || '').toLowerCase();
         const playerLocation = (state.player?.location || '').toLowerCase();
         if (!schedules && !location) return '位置待确认';
+        if (!playerLocation) return '位置待确认';
+        const playerRoom = state.player?.current_room;
+        if (playerRoom && npc.current_room && playerRoom !== npc.current_room) return '不在同一房间';
         return location && location !== playerLocation ? '不在当前位置' : '';
     }
 

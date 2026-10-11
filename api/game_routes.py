@@ -1396,7 +1396,7 @@ def _player_adventure_log(log: list, script: dict) -> list:
     return public_log
 
 
-def _player_state(current_state: dict, script: dict | None = None) -> dict:
+def _player_state(current_state: dict, script: dict | None = None, session: GameSession | None = None) -> dict:
     state = copy.deepcopy(current_state)
     script = script or {}
     if isinstance(state.get("pc_event_reports"), list):
@@ -1437,18 +1437,15 @@ def _player_state(current_state: dict, script: dict | None = None) -> dict:
             if key not in private_properties
         }
     player_location = state.get("player", {}).get("location")
-    player_room = state.get("player", {}).get("current_room", "")
     contacts = current_state.get("npc_contacts", {})
     state["npc_contacts"] = {
-        npc_id: True for npc_id, contact in contacts.items()
-        if isinstance(contact, dict) and contact.get("location") == player_location
-        and contact.get("player_room", "") == player_room
-        and isinstance(current_state.get("npcs", {}).get(npc_id), dict)
-        and current_state["npcs"][npc_id].get("known") is not False
-        and current_state["npcs"][npc_id].get("met") is not False
-        and current_state["npcs"][npc_id].get("current_location", player_location) == player_location
-        and contact.get("npc_room", "") == current_state["npcs"][npc_id].get("current_room", "")
-    } if isinstance(contacts, dict) else {}
+        npc_id: True for npc_id in contacts if session._npc_contact_is_current(npc_id, current_state)
+    } if isinstance(session, GameSession) and isinstance(contacts, dict) else {}
+    state["npc_talk_block_reasons"] = {
+        npc_id: session._npc_talk_block_reason(npc_id, current_state)
+        for npc_id, npc in current_state.get("npcs", {}).items()
+        if isinstance(npc, dict) and npc.get("known") is not False
+    } if isinstance(session, GameSession) else {}
     visible_npc_fields = ("name", "known", "met", "attitude_toward_player", "bio",
                           "personality", "title", "organizations", "superior", "opinion",
                           "relationship_desc")
@@ -1552,7 +1549,7 @@ def _public_result(result: dict, session: GameSession) -> dict:
         public["activated_lore"] = [entry for entry in result["activated_lore"]
                                     if isinstance(entry, dict) and entry.get("id") in discovered]
     if isinstance(result.get("state"), dict):
-        public["state"] = _player_state(result["state"], session.script)
+        public["state"] = _player_state(result["state"], session.script, session)
     if isinstance(result.get("state_changes"), list):
         state = result.get("state") if isinstance(result.get("state"), dict) else session.current_state
         public["state_changes"] = _player_state_changes(result["state_changes"], session.script, state)
@@ -1573,7 +1570,7 @@ def _public_agent_progress(chunk: dict) -> dict:
 
 
 def _enrich_state(session: GameSession, current_state: dict) -> dict:
-    state = {**_player_state(current_state, session.script), "_pipeline_mode": session._get_pipeline_mode()}
+    state = {**_player_state(current_state, session.script, session), "_pipeline_mode": session._get_pipeline_mode()}
     # G1: 注入 skill_check_map 供前端使用（构造新 dict 避免污染 session state）
     skill_map = session.script.get("settings", {}).get("skill_check_map")
     if skill_map:
@@ -1666,7 +1663,7 @@ async def get_tree_node(save_id: str, node_id: str):
                          "swipes", "active_swipe_index", "scene_image_path", "agent_trace")
         public_node = {key: node[key] for key in public_fields if key in node}
         if isinstance(node.get("state_snapshot"), dict):
-            public_node["state_snapshot"] = _player_state(node["state_snapshot"], session.script)
+            public_node["state_snapshot"] = _player_state(node["state_snapshot"], session.script, session)
         if isinstance(node.get("triggered_events"), list):
             public_node["triggered_events"] = _player_triggered_events(node["triggered_events"], session.script)
         if node.get("swipes"):
@@ -1679,7 +1676,7 @@ async def get_tree_node(save_id: str, node_id: str):
             ]
             for swipe in public_node["swipes"]:
                 if isinstance(swipe.get("state_snapshot"), dict):
-                    swipe["state_snapshot"] = _player_state(swipe["state_snapshot"], session.script)
+                    swipe["state_snapshot"] = _player_state(swipe["state_snapshot"], session.script, session)
                 if isinstance(swipe.get("triggered_events"), list):
                     swipe["triggered_events"] = _player_triggered_events(swipe["triggered_events"], session.script)
                 if isinstance(swipe.get("agent_trace"), dict):

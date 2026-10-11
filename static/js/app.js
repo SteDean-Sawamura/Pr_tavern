@@ -5314,12 +5314,28 @@ function closeNpcChat() {
     if (currentState) updateStatusPanel(currentState);
 }
 
+function _npcChatBlockReason(npcId, state) {
+    const reason = NpcPresence.talkBlockReason(npcId, state,
+        NpcPresence.getCachedSchedules(currentSaveId, state));
+    if (reason) return reason;
+    if (document.getElementById('main-map-view')?.hidden === false &&
+        !(state.companions || []).includes(npcId) && !NpcPresence.hasCurrentContact(npcId, state)) {
+        return '接触已中断，请重新寻找该角色';
+    }
+    return '';
+}
+
 async function sendNpcMessage() {
-    if (!currentSaveId || !_npcChatId) return;
+    if (!currentSaveId || !_npcChatId || !currentState) return;
     const input = document.getElementById('npc-chat-input');
     if (input.disabled || isStreaming) return;
     const msg = input.value.trim();
     if (!msg) return;
+    const reason = _npcChatBlockReason(_npcChatId, currentState);
+    if (reason) {
+        alert(reason);
+        return;
+    }
     const saveId = currentSaveId;
     const npcId = _npcChatId;
     const chatVersion = _npcChatVersion;
@@ -5438,9 +5454,12 @@ async function sendNpcMessage() {
                 }
                 document.getElementById('npc-chat-info').innerHTML = infoHtml;
             }
-            if (finalResult.quick_replies && finalResult.quick_replies.length > 0) {
-                const oldQr = msgArea.querySelector('.npc-quick-replies');
-                if (oldQr) oldQr.remove();
+            const oldQr = msgArea.querySelector('.npc-quick-replies');
+            if (oldQr) oldQr.remove();
+            const blocked = _npcChatBlockReason(npcId, currentState);
+            if (blocked) {
+                msgArea.insertAdjacentHTML('beforeend', `<div class="npc-msg system-msg">${escapeHtml(blocked)}</div>`);
+            } else if (finalResult.quick_replies && finalResult.quick_replies.length > 0) {
                 const qrDiv = document.createElement('div');
                 qrDiv.className = 'npc-quick-replies';
                 finalResult.quick_replies.forEach(text => {
