@@ -709,6 +709,7 @@ class GameSession(
         if self.trigger_engine and self.trigger_engine.triggers:
             actions = self.trigger_engine.fire(
                 event_name, self.current_state, include_event_triggers=self.event_engine is None,
+                condition_eval=self._evaluate_condition,
             )
             if actions:
                 effects = self.trigger_engine.execute_actions(actions, self.current_state)
@@ -3534,6 +3535,7 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
         if self.trigger_engine and self.trigger_engine.triggers:
             actions = self.trigger_engine.fire(
                 event_name, st, include_event_triggers=self.event_engine is None,
+                condition_eval=self._evaluate_condition,
             )
             if actions:
                 effects = self.trigger_engine.execute_actions(actions, st)

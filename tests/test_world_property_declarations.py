@@ -17,8 +17,10 @@ from engine.script_loader import ScriptLoader
 from test_agent_harness_execution import _stream_events
 
 
-def make_session(property_id="test_flight_capacity"):
+def make_session(property_id="test_flight_capacity", gate_value=None):
     condition = f"world_properties.{property_id} == open"
+    if gate_value is not None:
+        condition += f" AND script_variables.test_inspected == {str(gate_value).lower()}"
     script = {
         "script_id": "synthetic-world-declarations", "name": "Synthetic world declarations", "settings": {},
         "start_time": "2030-01-01T09:00:00",
@@ -38,6 +40,11 @@ def make_session(property_id="test_flight_capacity"):
             "effects": [{"type": "activate_lore", "id": "test_notice"}],
         }],
     }
+    if gate_value is not None:
+        script["variables"] = [{"id": "test_inspected", "type": "bool", "default": not gate_value}]
+        script["world_properties"][0]["inspection_changes"] = {
+            "variable_changes": [{"id": "test_inspected", "op": "set", "value": gate_value}],
+        }
     session = GameSession(script, None)
     session.current_state = ScriptLoader.create_initial_state(script)
     session.current_state["_pipeline_mode"] = "agentic_unified"
@@ -180,8 +187,9 @@ def test_rule_query_searches_and_rereads_full_committed_world_values():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cursor_change", [None, "update", "undo"])
-async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_branches(tmp_path, monkeypatch, cursor_change):
-    session, script = make_session()
+@pytest.mark.parametrize("gate_value", [None, True, False])
+async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_branches(tmp_path, monkeypatch, cursor_change, gate_value):
+    session, script = make_session(gate_value=gate_value)
     session.save_id = "synthetic-world-save"
     property_id = script["world_properties"][0]["id"]
     narrative = (
@@ -289,6 +297,7 @@ async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_br
             name, arguments = "update_state", {
                 "world_property_changes": [{"id": definition["id"], "value": definition["inspection_result"]}],
                 "end_time": "2030-01-01T09:01:00",
+                **copy.deepcopy(definition.get("inspection_changes", {})),
             }
         elif index == 3:
             assert "过滤" not in completed[2]
@@ -378,6 +387,9 @@ async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_br
             final, = [event for event in events if event["type"] == "final"]
             assert final["narrative"] == narrative
             assert final["state"]["world_properties"][property_id] == "open"
+            if gate_value is not None:
+                assert "script_variables" not in final["state"]
+                assert session.current_state["script_variables"]["test_inspected"] is gate_value
             assert final["state"]["location_connections"]["test_room"] == ["test_archive"]
             assert session.current_state["fired_one_time_events"] == ["test_check_access"]
             assert len(requests) == 7 + cursor_calls
@@ -406,6 +418,8 @@ async def test_retrieved_world_rule_reaches_projection_stream_persistence_and_br
             for node_id, value in ((root_id, "closed"), (final["node_id"], "open")):
                 await restored.branch_to_node(node_id)
                 assert restored.current_state["world_properties"][property_id] == value
+                if gate_value is not None:
+                    assert restored.current_state["script_variables"]["test_inspected"] is (gate_value if value == "open" else not gate_value)
                 rules = json.loads(restored._handle_consult_rules({"category": "world_properties"}))
                 payload = json.loads(rules["entries"][0]["content"])
                 assert payload["definition"] == script["world_properties"][0]

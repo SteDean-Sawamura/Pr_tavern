@@ -21,7 +21,7 @@ class TriggerEngine:
         self.variables = script_variables
 
     def fire(self, event: str, state: dict,
-             include_event_triggers: bool = True) -> list[dict]:
+             include_event_triggers: bool = True, condition_eval=None) -> list[dict]:
         """Fire triggers matching event. Returns list of action dicts to execute."""
         results = []
         for t in self.triggers:
@@ -29,7 +29,7 @@ class TriggerEngine:
                 continue
             # Schema A: {"event": "xxx", "action": "xxx", "params": {...}}
             if t.get("event") == event:
-                if include_event_triggers and self._check_condition(t, state):
+                if include_event_triggers and self._check_condition(t, state, condition_eval):
                     results.append({"action": t["action"], "params": t.get("params", {})})
                 continue
             # Schema B (剧本格式): {"condition": "event.xxx.fired", "actions": [{type, target}]}
@@ -41,21 +41,29 @@ class TriggerEngine:
                         results.append({"action": act.get("type", ""), "params": act})
         return results
 
-    def _check_condition(self, trigger: dict, state: dict) -> bool:
+    def _check_condition(self, trigger: dict, state: dict, condition_eval=None) -> bool:
         cond = trigger.get("condition", "")
         if not cond:
             return True
+        if condition_eval is not None:
+            return condition_eval(cond, state)
         m = _COND_RE.match(cond.strip())
         if not m:
             return True
-        var_id, op_str, raw_val = m.group(1), m.group(2), m.group(3).strip()
+        var_id, op_str, raw_val = m.group(1), m.group(2), m.group(3).strip().strip('"').strip("'")
         current = self.variables.get(state, var_id)
         if current is None:
             return False
+        boolean_target = {"true": True, "false": False, "1": True, "0": False,
+                          "yes": True, "no": False}.get(raw_val.casefold())
+        if isinstance(current, bool) and boolean_target is not None:
+            raw_val = str(int(boolean_target))
         try:
             target = int(raw_val) if raw_val.lstrip('-').isdigit() else raw_val
         except (ValueError, TypeError):
             target = raw_val
+        if isinstance(current, bool) and not isinstance(target, int):
+            return False
         op_fn = _OPS.get(op_str)
         if not op_fn:
             return True

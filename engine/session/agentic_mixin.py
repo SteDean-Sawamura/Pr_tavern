@@ -4465,6 +4465,7 @@ class AgenticMixin:
                                     self._persist_mechanics_runtime()
                         trigger_actions = self.trigger_engine.fire(
                             event["event_id"], self.current_state,
+                            condition_eval=self._evaluate_condition,
                         )
                         if trigger_actions:
                             trigger_effects = self.trigger_engine.execute_actions(

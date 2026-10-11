@@ -693,7 +693,9 @@ class StateApplyMixin:
                             })
                             if len(network) > 30:
                                 self.current_state["information_network"] = network[-30:]
-                    trigger_actions = self.trigger_engine.fire(event_id, self.current_state)
+                    trigger_actions = self.trigger_engine.fire(
+                        event_id, self.current_state, condition_eval=self._evaluate_condition,
+                    )
                     if trigger_actions:
                         trigger_effects = self.trigger_engine.execute_actions(
                             trigger_actions, self.current_state,

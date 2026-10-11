@@ -962,13 +962,17 @@ class PrepareMixin:
         if not m:
             return True  # No parseable condition — always trigger
         path, op, raw_val = m.group(1), m.group(2), m.group(3).strip().strip('"').strip("'")
+        boolean_target = {"true": True, "false": False, "1": True, "0": False,
+                          "yes": True, "no": False}.get(raw_val.casefold())
 
         # node_completed.{node_id} == true
         if path.startswith("node_completed."):
             node_id = path[len("node_completed."):]
             sts = state.get("story_tree_state", {})
             is_done = node_id in sts.get("completed", [])
-            target = raw_val.lower() in ("true", "1", "yes")
+            target = boolean_target
+            if target is None:
+                return False
             if op == "==":
                 return is_done == target
             elif op == "!=":
@@ -979,7 +983,9 @@ class PrepareMixin:
         if path.startswith("milestone."):
             ms_id = path[len("milestone."):]
             is_achieved = ms_id in state.get("achieved_milestones", [])
-            target = raw_val.lower() in ("true", "1", "yes")
+            target = boolean_target
+            if target is None:
+                return False
             if op == "==":
                 return is_achieved == target
             elif op == "!=":
@@ -991,7 +997,9 @@ class PrepareMixin:
             fired_ot = state.get("fired_one_time_events", [])
             trackers = state.get("cyclic_event_trackers", {})
             is_fired = event_id in fired_ot or bool(trackers.get(event_id, {}).get("last_fired"))
-            target = raw_val.lower() in ("true", "1", "yes")
+            target = boolean_target
+            if target is None:
+                return False
             if op == "==":
                 return is_fired == target
             elif op == "!=":
@@ -1003,8 +1011,12 @@ class PrepareMixin:
             actual = "active" if state_id in state.get("active_persistent_states", []) else "inactive"
         else:
             actual = self.state_manager._get_value(state, path)
+            if actual is None and "." not in path and path in self.script_variables.definitions:
+                actual = self.script_variables.get(state, path)
         if actual is None:
             return False
+        if isinstance(actual, bool) and boolean_target is not None:
+            raw_val = int(boolean_target)
 
         # Try numeric comparison
         try:
@@ -1016,6 +1028,9 @@ class PrepareMixin:
             return ops.get(op, False)
         except (ValueError, TypeError):
             pass
+
+        if isinstance(actual, bool):
+            return False
 
         # String comparison
         str_actual = str(actual)
