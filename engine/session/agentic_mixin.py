@@ -700,7 +700,26 @@ class AgenticMixin:
                                 summary_parts.append("\n".join(previous_lines))
                             else:
                                 summary_parts.append(f"[玩家消息] {mc}")
-                    summary = "\n".join(summary_parts)
+                    summary_lines = []
+                    mechanics_reads = set()
+                    for line in reversed("\n".join(summary_parts).splitlines()):
+                        if line.startswith("[剧本机制检索] "):
+                            try:
+                                retrieval, _ = json.JSONDecoder().raw_decode(line.removeprefix("[剧本机制检索] "))
+                            except ValueError:
+                                retrieval = None
+                            entries = retrieval.get("entries") if isinstance(retrieval, dict) else None
+                            if (isinstance(entries, list) and all(isinstance(entry, dict) for entry in entries)
+                                    and isinstance(retrieval.get("snapshot"), str)):
+                                read_key = json.dumps([
+                                    {key: retrieval.get(key) for key in ("category", "view", "node_status", "snapshot")},
+                                    [{key: entry.get(key) for key in ("rule_index", "snapshot", "read")} for entry in entries],
+                                ], ensure_ascii=False, sort_keys=True)
+                                if read_key in mechanics_reads:
+                                    continue
+                                mechanics_reads.add(read_key)
+                        summary_lines.append(line)
+                    summary = "\n".join(reversed(summary_lines))
                     compressed = {"role": "user", "content": f"[上下文压缩] 之前的 {len(middle)} 条消息摘要：\n{summary}"}
                     old_count = len(msgs)
                     msgs = kept_head + [compressed] + kept_tail

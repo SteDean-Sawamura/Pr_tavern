@@ -315,8 +315,8 @@ async def test_large_runtime_choice_list_supports_field_pages_and_repeated_compa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("long_choices", [False, True])
-async def test_stream_discovers_late_choice_then_reads_previews_and_survives_reload(tmp_path, monkeypatch, long_choices):
+@pytest.mark.parametrize("long_choices,repeat_reads", [(False, False), (True, False), (True, True)])
+async def test_stream_discovers_late_choice_then_reads_previews_and_survives_reload(tmp_path, monkeypatch, long_choices, repeat_reads):
     session = discovery_session()
     session.save_id = "synthetic-runtime-discovery-save"
     session.script["locations"] = [{"id": "test_room", "name": "Reading room"}]
@@ -449,7 +449,10 @@ async def test_stream_discovers_late_choice_then_reads_previews_and_survives_rel
             assert phase == "finalize"
             phase = "finished"
             name, arguments = "finalize_turn", {"summary": "Inspected the synthetic shelf."}
-        return {"content": "", "tool_calls": [model_call(name, arguments, f"synthetic_discovery_{len(requests)}")]}
+        repeat_count = 3 if repeat_reads and name == "consult_rules" and arguments.get("result_path") == ["choices"] else 1
+        return {"content": "", "tool_calls": [
+            model_call(name, arguments, f"synthetic_discovery_{len(requests)}_{index}") for index in range(repeat_count)
+        ]}
 
     provider = SimpleNamespace(
         generate_with_tools=AsyncMock(side_effect=respond),
@@ -478,6 +481,8 @@ async def test_stream_discovers_late_choice_then_reads_previews_and_survives_rel
         if long_choices:
             assert any("[剧本机制检索]" in str(message.get("content", ""))
                        for request in requests for message in request)
+        if repeat_reads:
+            assert any(len(message.get("tool_calls", [])) == 3 for request in requests for message in request)
         assert session.current_state["script_variables"]["test_progress"] == 0
         assert (await stored_state(session))["script_variables"]["test_progress"] == 0
         assert "SYNTHETIC_UNREAD_DISCOVERY_RULE" not in response.text and "result_path" not in response.text
@@ -514,3 +519,74 @@ async def test_stream_discovers_late_choice_then_reads_previews_and_survives_rel
         await restored.branch_to_node(final["node_id"])
         assert runtime_query(restored, query=payload["node_id"], node_status="completed")["total"] == 1
         assert restored.current_state["script_variables"]["test_progress"] == 3
+
+
+def mechanics_summaries(summary):
+    prefix = "[剧本机制检索] "
+    return [json.JSONDecoder().raw_decode(line.removeprefix(prefix))[0]
+            for line in summary.splitlines() if line.startswith(prefix)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("view", ["definition", "runtime"])
+async def test_repeated_field_pages_compact_to_latest_progress_and_reread(view):
+    session = discovery_session()
+    session.ai_provider = SimpleNamespace(generate_with_tools=AsyncMock(return_value={"content": "Done.", "tool_calls": []}))
+    content = "SYNTHETIC_PAGED_RULE_TEXT " * 2400
+    node = session.story_tree_engine._nodes["test_decision_1"]
+    node["rule_notes"] = content
+    node["choices"][0]["label"] = content
+    catalog = json.loads(session._handle_consult_rules({
+        "category": "story_nodes", "view": view, "query": node["id"],
+    }))
+    entry, = catalog["entries"]
+    arguments = {
+        "category": "story_nodes", "view": view, "rule_index": entry["rule_index"], "snapshot": entry["snapshot"],
+        "result_path": ["choices", 0, "label"] if view == "runtime" else ["definition", "node", "rule_notes"],
+    }
+    summary = None
+    for offset in range(0, len(content), 6000):
+        records = []
+        for page_offset in range(offset, min(offset + 6000, len(content)), 2000):
+            query = {**arguments, "offset": page_offset}
+            records.append(("consult_rules", query, session._handle_consult_rules(query)))
+        summary = await compact(session, records, summary)
+        result, = mechanics_summaries(summary)
+        latest = json.loads(records[-1][2])
+        assert result["snapshot"] == latest["snapshot"]
+        assert result["entries"][0]["offset"] == latest["entries"][0]["offset"]
+        assert result["entries"][0]["next_offset"] == latest["entries"][0]["next_offset"]
+        assert result["entries"][0]["read"] == latest["entries"][0]["read"]
+        assert result["entries"][0]["read"]["offset"] == 0
+        assert "SYNTHETIC_PAGED_RULE_TEXT" not in summary
+        reread = json.loads(session._handle_consult_rules(result["entries"][0]["read"]))
+        assert reread["entries"][0]["content"] == content[:2000]
+    assert result["entries"][0]["next_offset"] is None
+    assert "不表示已知全部规则" in summary
+
+
+@pytest.mark.asyncio
+async def test_compaction_keeps_distinct_views_fields_pages_and_candidate_snapshots():
+    session = discovery_session()
+    session.ai_provider = SimpleNamespace(generate_with_tools=AsyncMock(return_value={"content": "Done.", "tool_calls": []}))
+    context = {"old_time": session.current_state["game_time"]}
+    records = []
+    for view, candidates in [("definition", False), ("runtime", False), ("runtime", True)]:
+        query = {"category": "story_nodes", "view": view, "include_candidates": candidates}
+        catalog = json.loads(session._handle_consult_rules(query, context))
+        records.append(("consult_rules", query, json.dumps(catalog)))
+        next_query = {**query, "offset": catalog["next_offset"], "snapshot": catalog["snapshot"]}
+        records.append(("consult_rules", next_query, session._handle_consult_rules(next_query, context)))
+        for result_path in (["definition", "node", "id"], ["definition", "node", "name"]) if view == "definition" else (["node_id"], ["name"]):
+            entry = catalog["entries"][0]
+            read = {**query, "rule_index": entry["rule_index"], "snapshot": entry["snapshot"], "result_path": result_path}
+            records.append(("consult_rules", read, session._handle_consult_rules(read, context)))
+    summary = await compact(session, records)
+    retained = mechanics_summaries(summary)
+    assert len(retained) == len(records)
+    assert [result["snapshot"] for result in retained] == [json.loads(record[2])["snapshot"] for record in records]
+    assert [result["entries"][0].get("read") for result in retained] == [
+        json.loads(record[2])["entries"][0].get("read") for record in records
+    ]
+    repeated = await compact(session, records, summary)
+    assert mechanics_summaries(repeated) == retained
