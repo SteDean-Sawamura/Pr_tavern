@@ -288,10 +288,15 @@ class RegenerateMixin:
                             )
                             changes.extend(log)
 
+            world_events = []
             event_changes, _, scheduled_result = self._settle_timed_events(
                 base_time, final_time, triggered_events, on_event=settle_event_dice,
+                world_events=world_events,
             )
             changes.extend(event_changes)
+            world_events = copy.copy(self.world_clock).advance(base_time, final_time, schedule_events=world_events)
+            if world_events:
+                state.setdefault("_pending_world_events", []).extend(world_events)
             if destination_dice:
                 for item_id, item in destination_dice["items"].items():
                     if not self._random_item_condition_matches(

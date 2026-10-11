@@ -102,7 +102,7 @@ _ROLLBACK_FIELDS = (
     ("npc_autonomy", ("npc_states",)),
     ("narrative_graph", ("nodes", "edges")),
     ("director_notes", ("notes",)),
-    ("world_clock", ("last_tick_time", "pending_events")),
+    ("world_clock", ("last_tick_time",)),
     ("prompt_builder", ("_npc_name_map", "_branch_lore_ids", "_branch_npc_ids", "_lorebook_override_ids")),
     ("prompt_builder.lorebook", ("entries", "_precomputed")),
     ("", ("_pending_world_events", "_last_tool_result",

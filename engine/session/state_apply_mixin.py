@@ -225,8 +225,10 @@ class StateApplyMixin:
                         )
                         all_state_changes.extend(log)
 
+        world_events = []
         event_changes, ctx["expired"], scheduled_result = self._settle_timed_events(
             ctx["old_time"], new_time, triggered_events, on_event=settle_event_dice,
+            world_events=world_events,
         )
         if self.current_state.get("dice_check_enabled", True):
             for item_id, item in ctx.get("candidate_conditional_items", {}).items():
@@ -291,7 +293,7 @@ class StateApplyMixin:
 
         # G3: 世界时钟推进 — NPC 后台日程事件
         if ctx.get("old_time") and new_time and hasattr(self, 'world_clock'):
-            world_events = self.world_clock.advance(ctx["old_time"], new_time)
+            world_events = self.world_clock.advance(ctx["old_time"], new_time, schedule_events=world_events)
             if world_events:
                 self.current_state.setdefault("_pending_world_events", []).extend(world_events)
 
@@ -636,8 +638,29 @@ class StateApplyMixin:
         valid = {"joy", "sadness", "anger", "fear", "surprise", "love", "tension", "calm", "excitement", "melancholy"}
         return word if word in valid else ""
 
+    def _world_clock_npcs_at(self, game_time: str) -> dict:
+        snapshot = {**self.current_state, "game_time": game_time,
+                    "active_persistent_states": list(self.current_state.get("active_persistent_states", []))}
+        self.state_manager.check_expirations(snapshot, game_time, inplace=True)
+        return {npc_id: self._get_npc_autonomy_info(npc_id, snapshot)
+                for npc_id in self._npc_by_id}
+
+    def _observe_world_clock_changes(self, before: dict, game_time: str, events: list[dict]) -> dict:
+        after = self._world_clock_npcs_at(game_time)
+        for npc_id, info in after.items():
+            previous = before.get(npc_id)
+            if not previous or not info or previous == info:
+                continue
+            events.append({
+                "type": "npc_schedule_change", "npc_id": npc_id,
+                "npc_name": self._npc_by_id[npc_id].get("name", npc_id), "time": game_time,
+                "previous_location": previous["location"], "previous_activity": previous["activity"],
+                "location": info["location"], "activity": info["activity"],
+            })
+        return after
+
     def _settle_timed_events(self, old_time: str, new_time: str,
-                             triggered_events: list[dict], on_event=None):
+                             triggered_events: list[dict], on_event=None, *, world_events=None):
         event_times = self.event_scheduler.iter_event_times(
             self.current_state, old_time, new_time,
         )
@@ -646,9 +669,15 @@ class StateApplyMixin:
         fired_events = []
         expired = []
         cursor = old_time
+        world_npcs = self._world_clock_npcs_at(old_time) if world_events is not None else None
         for fire_time, is_event_time in chain(
             ((event_time, True) for event_time in event_times), [(new_time, False)],
         ):
+            if world_events is not None:
+                for schedule_time in self.world_clock.schedule_boundaries(
+                    cursor, fire_time, self._npc_by_id.values(), self.current_state, self.state_manager._ps_expires,
+                ):
+                    world_npcs = self._observe_world_clock_changes(world_npcs, schedule_time.isoformat(), world_events)
             self.current_state, newly_expired = self.state_manager.check_expirations(
                 self.current_state, fire_time, inplace=True,
             )
@@ -717,6 +746,8 @@ class StateApplyMixin:
                             )
                 fired_events.extend(segment.scheduled_events)
                 segment_start = (boundary - timedelta(microseconds=1)).isoformat()
+            if world_events is not None:
+                world_npcs = self._observe_world_clock_changes(world_npcs, fire_time, world_events)
             cursor = fire_time
         triggered_events[:] = fired_events
         return event_changes, expired, scheduled_result

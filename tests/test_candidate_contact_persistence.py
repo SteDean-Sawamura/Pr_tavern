@@ -25,6 +25,18 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
     session.save_id = "synthetic-contact-save"
     session.current_state["npcs"]["test_guide"].update(known=False, met=False)
     script = session.script
+    history_activity = "SYNTHETIC_CLOCK_ACTIVITY"
+    for slot in script["npcs"][0]["schedule"]:
+        if slot["location"] == "test_desk":
+            slot["activity"] = history_activity
+    for effect in script["one_time_events"][0]["effects"]:
+        if effect["type"] == "schedule_override":
+            effect["activity"] = history_activity
+    expected_world_events = [{
+        "type": "npc_schedule_change", "npc_id": "test_guide", "npc_name": "Practice guide",
+        "time": "2030-01-01T09:05:00", "previous_location": "test_origin",
+        "previous_activity": "Practice rest", "location": "test_desk", "activity": history_activity,
+    }] if depart else []
     requests = []
     expected_contact = not depart
     narratives = {True: (
@@ -85,6 +97,8 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
             name, arguments = "finalize_turn", {"summary": "Checked contact and completed the practice wait."}
         assert "npc_contacts" not in session.current_state
         assert session.current_state["npcs"]["test_guide"]["met"] is False
+        assert session.current_state.get("_pending_world_events", []) == []
+        assert session.world_clock.snapshot() == initial_clock
         assert name in tool_names
         return {"content": "", "tool_calls": [{"id": f"synthetic-contact-{index}", "name": name, "arguments": arguments}]}
 
@@ -101,6 +115,7 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
     session.ai_provider = provider
     baseline = copy.deepcopy(session.current_state)
     initial_autonomy = copy.deepcopy(session.npc_autonomy.snapshot())
+    initial_clock = session.world_clock.snapshot()
     root_id = session.world_tree.add_node(None, script["start_time"], 0,
                                          ai_response="You are seated at the practice area.", state_snapshot=baseline)
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "candidate-contact.db")
@@ -136,6 +151,8 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
                     assert current.current_state["npcs"]["test_guide"]["met"] is expected_contact
                     assert current.world_tree.active_node_id != root_id
                     assert current.npc_autonomy.get_npc_status("test_guide")["location"] == current._get_npc_location("test_guide")
+                    assert current.current_state.get("_pending_world_events", []) == expected_world_events
+                    assert current.world_clock.last_tick_time == timed["end_time"]
                     save_failures.append(action_id)
                     raise RuntimeError("Synthetic contact save interruption")
 
@@ -146,6 +163,7 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
                 assert save_failures == [action["action_id"]]
                 assert session.current_state == baseline
                 assert session.npc_autonomy.snapshot() == initial_autonomy
+                assert session.world_clock.snapshot() == initial_clock
                 assert session.world_tree.active_node_id == root_id
                 requests.clear()
                 monkeypatch.setattr(game_routes, "_save_node", save_node)
@@ -158,6 +176,11 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
             assert session._npc_contact_is_current("test_guide", session.current_state) is expected_contact
             assert session.current_state["npcs"]["test_guide"]["met"] is expected_contact
             settled = copy.deepcopy(session.current_state)
+            assert settled.get("_pending_world_events", []) == expected_world_events
+            assert "_pending_world_events" not in final["state"]
+            assert "npc_schedule_change" not in response.text
+            assert "previous_activity" not in response.text
+            assert history_activity not in json.dumps([event for event in events if event["type"] != "final"], ensure_ascii=False)
             autonomy = copy.deepcopy(session.npc_autonomy.snapshot())
             assert autonomy["npc_states"]["test_guide"]["location"] == session._get_npc_location("test_guide")
             assert settled["_npc_autonomy"] == autonomy
@@ -178,19 +201,28 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
             inspect_action = {"type": "system", "text": "Inspect the saved position."}
             context = restored._prepare_turn(inspect_action)
             assert context["npc_autonomy_events"] == []
-            assert "<npc_movements>" not in restored._build_unified_context(context, inspect_action)
+            prompt = restored._build_unified_context(context, inspect_action)
+            assert "<npc_movements>" not in prompt
+            assert (history_activity in prompt) is depart
+            if depart:
+                assert "2030-01-01T09:05:00" in prompt
+                assert "test_origin / Practice rest → test_desk" in prompt
+            assert "<world_events>" not in restored._build_unified_context(context, inspect_action)
             assert consult_contacts(restored)["contacts"]["test_guide"]["in_contact"] is expected_contact
             game_routes._sessions[session.save_id] = restored
             node = await game_routes.get_tree_node(session.save_id, final["node_id"])
+            assert history_activity not in json.dumps(node["agent_trace"], ensure_ascii=False)
             for marker in (LABEL, "requested_in_contact", "accepted_updates_and_scheduled_events"):
                 assert marker in json.dumps(requests, ensure_ascii=False)
                 assert marker not in response.text
                 assert marker not in json.dumps(node["agent_trace"], ensure_ascii=False)
             await restored.branch_to_node(root_id)
+            assert restored.current_state.get("_pending_world_events", []) == []
             assert restored.npc_autonomy.snapshot() == initial_autonomy
             assert consult_contacts(restored)["contacts"]["test_guide"]["in_contact"] is False
             assert restored.current_state["npcs"]["test_guide"]["met"] is False
             await restored.branch_to_node(final["node_id"])
+            assert restored.current_state.get("_pending_world_events", []) == expected_world_events
             assert restored.npc_autonomy.snapshot() == autonomy
             assert restored._prepare_turn(inspect_action)["npc_autonomy_events"] == []
             assert consult_contacts(restored)["contacts"]["test_guide"]["in_contact"] is expected_contact

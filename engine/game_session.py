@@ -226,12 +226,6 @@ class GameSession(
         self.player_model = PlayerModel()
         self.director_notes = DirectorNotes()
         self.world_clock = WorldClock()
-        for npc in self.script.get("npcs", []):
-            schedule = npc.get("schedule")
-            if schedule and isinstance(schedule, list):
-                self.world_clock.register_npc_schedule(
-                    npc["id"], npc.get("name", npc["id"]), schedule,
-                )
         self._last_tool_result: dict | None = None  # D1: 上一次工具调用记录（供 undo 回退）
         self._settlement_messages: list[dict] = []  # D3: 后台→前台消息队列
         # #5: 任务合批 + 模型路由

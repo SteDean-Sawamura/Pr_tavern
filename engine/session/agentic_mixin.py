@@ -3776,12 +3776,15 @@ class AgenticMixin:
         world_events = self.current_state.pop("_pending_world_events", [])
         if world_events:
             event_lines = [
-                f"- {e.get('npc_name', '')}开始{e.get('activity', '')}（{e.get('location', '')}）"
-                for e in world_events if e.get("type") == "npc_schedule_start"
+                f"- {e.get('time', '')} {e.get('npc_name', '')}："
+                f"{e.get('previous_location', '')} / {e.get('previous_activity', '')} → "
+                f"{e.get('location', '')} / {e.get('activity', '')}"
+                for e in world_events if e.get("type") == "npc_schedule_change"
             ]
             if event_lines:
-                parts.append("<world_events>\n世界内部已发生的事；不代表主角已知。仅在主角有可靠获知途径时才能写入主角视角：\n"
-                             + "\n".join(event_lines[:5]) + "\n</world_events>")
+                parts.append("<world_events>\n结算时核对的位置/活动变化，不包含途中经过，也不代表主角已知。"
+                             "仅在主角有可靠获知途径时才能写入主角视角：\n"
+                             + "\n".join(event_lines[-5:]) + "\n</world_events>")
         # 导演笔记（自动 Push 最近 3 条）
         if hasattr(self, 'director_notes'):
             dn_summary = self.director_notes.get_summary(limit=3)
