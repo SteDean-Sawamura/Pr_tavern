@@ -278,7 +278,7 @@ STATE_TOOLS_SCHEMA = [
             },
             "npc_contact_changes": {
                 "type": "array",
-                "description": '仅在叙事明确写出当面接触或告别时填写: [{"npc_id":"角色ID","in_contact":true/false}]；同区不等于已接触',
+                "description": '仅在叙事明确写出当面接触或告别时填写: [{"npc_id":"角色ID","in_contact":true/false}]；同区不等于已接触，已接收不等于正式接触成立',
                 "items": {"type": "object", "properties": {
                     "npc_id": {"type": "string"}, "in_contact": {"type": "boolean"},
                 }, "required": ["npc_id", "in_contact"]},
@@ -549,7 +549,7 @@ CONSOLIDATED_SETTLEMENT_TOOLS = [
             },
             "npc_contact_changes": {
                 "type": "array",
-                "description": '仅在叙事明确写出当面接触或告别时填写: [{"npc_id":"角色ID","in_contact":true/false}]；同区不等于已接触',
+                "description": '仅在叙事明确写出当面接触或告别时填写: [{"npc_id":"角色ID","in_contact":true/false}]；同区不等于已接触。按工具返回的接触候选值核对，后续更新或撤销会重算；不得把已接收当作正式接触成立',
                 "items": {"type": "object", "properties": {
                     "npc_id": {"type": "string"}, "in_contact": {"type": "boolean"},
                 }, "required": ["npc_id", "in_contact"]},
@@ -790,9 +790,9 @@ def _unified_tools() -> list[dict]:
         }},
         {"type": "function", "function": {
             "name": "consult_rules",
-            "description": "只读咨询当前分支规则。指定 category 可检索完整声明；locations 包含通行条件、阻止原因和默认房间，不揭示地点或执行移动。story_nodes 默认返回 tree 元数据和完整 node。先用 view=runtime、node_status=active 分页发现当前节点与选项身份/可选性，再用定义视图 query=node_id 查规则，用 preview_choice_outcome 查后果。运行态不激活或结算节点，unlocked 不等于可提交。不指定类别时只检查 NPC 在场和物品持有。幕后信息不是角色已知。",
+            "description": "只读咨询当前分支规则。指定 category 可检索完整声明；locations 包含通行条件、阻止原因和默认房间，不揭示地点或执行移动。story_nodes 默认返回 tree 元数据和完整 node。先用 view=runtime、node_status=active 分页发现当前节点与选项身份/可选性，再用定义视图 query=node_id 查规则，用 preview_choice_outcome 查后果。运行态不激活或结算节点，unlocked 不等于可提交。不指定类别时检查 NPC 在场、接触和物品持有。幕后信息不是角色已知。",
             "parameters": {"type": "object", "properties": {
-                "question": {"type": "string", "description": "不指定 category 时，含 NPC 姓名及在场/在这检查房间感知的在场或附近；含物品名及可用/有没有检查持有，不判断使用条件或互动许可。默认读取已提交状态"},
+                "question": {"type": "string", "description": "不指定 category 时，含 NPC 姓名及在场/在这检查房间感知的在场或附近；含 NPC ID或姓名及接触返回 contacts 中的 in_contact 和建立接触的 block_reason，支持运行时角色；含物品名及可用/有没有检查持有。不判断使用条件或互动许可，默认读取已提交状态"},
                 "context": {"type": "string", "description": "相关上下文"},
                 "category": {"type": "string", "enum": ["variables", "triggers", "random_items", "one_time_events", "cyclic_events", "persistent_states", "world_properties", "story_nodes", "locations"],
                              "description": "机制类别；指定后无需 question。每次最多返回5条，每条 content 最多2000字符"},
@@ -802,7 +802,7 @@ def _unified_tools() -> list[dict]:
                                 "description": "仅运行态列表：按当前状态筛选；省略则全部。不是激活预测，不与 rule_index 同传；列表翻页保持此参数"},
                 "query": {"type": "string", "description": "在所选视图的内容中搜索，不区分大小写；空字符串列出该类别或状态"},
                 "include_candidates": {"type": "boolean", "default": False,
-                                        "description": "进行中回合可用：variables/world_properties 附加 candidate_value/candidate_exists，current_value 仍是已提交值；story_nodes 的 runtime 视图读取候选条件。这些类别不含未结算事件、不激活节点，运行时世界属性 definition=null；续读保持此参数、view、snapshot。无 category 时按 question 查询候选在场和物品：包含已接收更新及显式 end_time 内的定时事件，不含完整生命周期或接触更新。所有候选均未提交、非角色知情；更新、撤销、切换分支后重查"},
+                                        "description": "进行中回合可用：variables/world_properties 附加 candidate_value/candidate_exists，current_value 仍是已提交值；story_nodes 的 runtime 视图读取候选条件。这些类别不含未结算事件、不激活节点，运行时世界属性 definition=null；续读保持此参数、view、snapshot。无 category 时按 question 查询候选在场、接触和物品：已接收更新及显式 end_time 内的定时事件后，刷新日程、房间并重算接触；不含完整生命周期。所有候选均未提交、非角色知情；更新、撤销、切换分支后重查"},
                 "rule_index": {"type": "integer", "minimum": 0,
                                "description": "读取某条查询结果的完整定义时，传入其 rule_index 和该条目 snapshot（offset=0 也必须携带）；不可与 query 混用"},
                 "offset": {"type": "integer", "minimum": 0, "default": 0,
@@ -869,7 +869,7 @@ def _unified_tools() -> list[dict]:
             "parameters": {"type": "object", "properties": {
                 "npc_id": {"type": "string", "description": "NPC的ID"},
                 "situation": {"type": "string", "description": "给NPC看的可感知刺激或明确假设，不要塞入其未知的GM秘密"},
-                "include_candidates": {"type": "boolean", "description": "默认false。true仅限进行中回合，投影已接收更新及已接收结束时间内定时事件；不采用预估时间，不包含完整生命周期、接触更新或候选知识传播"},
+                "include_candidates": {"type": "boolean", "description": "默认false。true仅限进行中回合，投影已接收更新及已接收结束时间内定时事件，随后刷新日程、房间并重算接触；不采用预估时间，不包含完整生命周期或候选知识传播"},
             }, "required": ["npc_id", "situation"]},
         }},
         {"type": "function", "function": {

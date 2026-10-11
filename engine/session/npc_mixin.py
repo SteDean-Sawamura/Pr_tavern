@@ -58,14 +58,15 @@ class NpcMixin:
     _ORG_MUTABLE_FIELDS = frozenset({"leader", "stance", "description"})
     _REL_NET_MAX = 80
 
-    def _refresh_npc_locations(self) -> None:
-        for npc_id, npc_data in self.current_state.get("npcs", {}).items():
+    def _refresh_npc_locations(self, state: dict | None = None) -> None:
+        state = self.current_state if state is None else state
+        for npc_id, npc_data in state.get("npcs", {}).items():
             if not isinstance(npc_data, dict):
                 continue
             current = npc_data.get("current_location")
             if current and current != npc_data.get("_derived_location"):
                 continue
-            resolved = self._get_npc_location(npc_id)
+            resolved = self._get_npc_location(npc_id, state)
             if resolved:
                 npc_data["current_location"] = resolved
                 npc_data["_derived_location"] = resolved
@@ -112,6 +113,23 @@ class NpcMixin:
             return "不在同一房间"
         return ""
 
+    def _npc_contact_block_reason(self, npc_id: str, state: dict) -> str:
+        npc = state.get("npcs", {}).get(npc_id)
+        if not isinstance(npc, dict):
+            return "角色不存在"
+        if npc.get("alive") is False:
+            return "当前无法接触"
+        player = state.get("player", {})
+        location = player.get("location", "")
+        npc_location = self._get_npc_location(npc_id, state)
+        if not location or not npc_location:
+            return "位置待确认"
+        if npc_location != location:
+            return "不在当前位置"
+        if player.get("current_room") and npc.get("current_room") and player["current_room"] != npc["current_room"]:
+            return "不在同一房间"
+        return ""
+
     def _npc_contact_is_current(self, npc_id: str, state: dict) -> bool:
         contacts = state.get("npc_contacts", {})
         contact = contacts.get(npc_id) if isinstance(contacts, dict) else None
@@ -120,6 +138,7 @@ class NpcMixin:
         location = player.get("location", "")
         return (isinstance(contact, dict) and isinstance(npc, dict) and bool(location)
                 and npc.get("known") is not False and npc.get("met") is not False
+                and npc.get("alive") is not False
                 and contact.get("location") == location
                 and contact.get("player_room", "") == player.get("current_room", "")
                 and contact.get("npc_room", "") == npc.get("current_room", "")
@@ -144,22 +163,20 @@ class NpcMixin:
             if not isinstance(change, dict):
                 continue
             npc_id = change.get("npc_id", "")
-            if not npc_id:
+            if not isinstance(npc_id, str) or not npc_id:
                 continue
             if change.get("in_contact") is False:
                 state.get("npc_contacts", {}).pop(npc_id, None)
                 continue
             if change.get("in_contact") is not True:
                 continue
+            if self._npc_contact_block_reason(npc_id, state):
+                continue
             npc = state.get("npcs", {}).get(npc_id)
             player = state.get("player", {})
             location = player.get("location", "")
-            if not isinstance(npc, dict) or not location or self._get_npc_location(npc_id, state) != location:
-                continue
             player_room = player.get("current_room", "")
             npc_room = npc.get("current_room", "")
-            if player_room and npc_room and player_room != npc_room:
-                continue
             npc["known"] = True
             npc["met"] = True
             state.setdefault("npc_contacts", {})[npc_id] = {

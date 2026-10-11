@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _MODEL_WAIT_HEARTBEAT_SECONDS = 10
 _PLAYER_SPATIAL_FEEDBACK_LABEL = "玩家空间候选值（未提交，不含尚未结算的事件效果，非主角知情）: "
+_NPC_CONTACT_FEEDBACK_LABEL = "NPC接触候选（未提交，非角色知情）: "
 _PRE_PLAN_READ_TOOLS = frozenset({
     "recall_history", "query_lorebook", "query_npc_history",
     "check_inventory", "get_npc_attitude", "peek_upcoming_events",
@@ -151,6 +152,26 @@ def _json_result_section(result: dict, result_path: list, offset: int, summary_k
 
 
 def _bounded_tool_content(content: str, name: str, limit: int) -> str:
+    if name in ("update_state", "undo_my_last_action", "write_narrative") and _NPC_CONTACT_FEEDBACK_LABEL in content:
+        prefix, contact_content = content.split(_NPC_CONTACT_FEEDBACK_LABEL, 1)
+        try:
+            feedback, end = json.JSONDecoder().raw_decode(contact_content)
+        except ValueError:
+            feedback = None
+        if isinstance(feedback, dict):
+            note = "；候选不等于已接触；详情省略时用 consult_rules(question=角色ID+接触, include_candidates=true) 重新查询。"
+            encoded = _NPC_CONTACT_FEEDBACK_LABEL + json.dumps(feedback, ensure_ascii=False, separators=(",", ":"))
+            if len(encoded) + len(note) > limit - 160:
+                encoded = _NPC_CONTACT_FEEDBACK_LABEL + json.dumps({
+                    "through": feedback.get("through"), "feedback_omitted": True,
+                }, ensure_ascii=False, separators=(",", ":"))
+            available = limit - len(encoded) - len(note) - 1
+            remainder = prefix + contact_content[end:]
+            if len(remainder) <= available:
+                return encoded + note + "\n" + remainder
+            if available >= 400:
+                return encoded + note + "\n" + _bounded_tool_content(remainder, name, available)
+            return encoded + note
     if name in ("update_state", "undo_my_last_action", "write_narrative") and _PLAYER_SPATIAL_FEEDBACK_LABEL in content:
         prefix, spatial_content = content.split(_PLAYER_SPATIAL_FEEDBACK_LABEL, 1)
         try:
@@ -598,7 +619,7 @@ class AgenticMixin:
                             latest_exact_lore_result = message
                             break
                     state_feedback_tools = ("update_state", "undo_my_last_action", "write_narrative")
-                    state_feedback_markers = ("玩家空间候选值", "变量候选值", "世界属性候选值", "本轮候选结算", "状态投影显示条件事件可能触发")
+                    state_feedback_markers = ("玩家空间候选值", "NPC接触候选", "变量候选值", "世界属性候选值", "本轮候选结算", "状态投影显示条件事件可能触发")
                     state_results = [message for message in msgs
                                      if message.get("role") == "tool"
                                       and tool_names.get(message.get("tool_call_id")) in state_feedback_tools
@@ -2350,6 +2371,13 @@ class AgenticMixin:
         return ""
 
     def _handle_update_state(self, args: dict, ctx: dict | None = None) -> str:
+        contacts = args.get("npc_contact_changes", [])
+        if not isinstance(contacts, list):
+            return "错误: npc_contact_changes 必须是数组"
+        for index, change in enumerate(contacts):
+            if (not isinstance(change, dict) or not isinstance(change.get("npc_id"), str)
+                    or not change["npc_id"].strip() or type(change.get("in_contact")) is not bool):
+                return f"错误: npc_contact_changes[{index}] 须提供非空 npc_id 和布尔值 in_contact"
         error = self._validate_variable_changes(args, ctx)
         if error:
             return error
@@ -2389,8 +2417,16 @@ class AgenticMixin:
         updates = ctx.get("_accepted_state_updates", [])
         variable_ids = list(ctx.get("_state_feedback_variable_ids", []))
         property_ids = list(ctx.get("_state_feedback_world_property_ids", []))
+        contact_ids = list(ctx.get("_state_feedback_npc_contact_ids", []))
+        current_contacts = self.current_state.get("npc_contacts", {})
+        if isinstance(current_contacts, dict):
+            contact_ids.extend(current_contacts)
+        contact_requests = {}
         player_spatial = ctx.get("_state_feedback_player_spatial", False)
         for update in updates:
+            for change in update.get("npc_contact_changes", []):
+                contact_ids.append(change["npc_id"])
+                contact_requests[change["npc_id"]] = change["in_contact"]
             player_spatial = player_spatial or bool(
                 update.get("location_change")
                 or any(change.get("id") == "player" for change in update.get("room_changes", []))
@@ -2404,8 +2440,10 @@ class AgenticMixin:
                                 if change.get("id") and not self._is_undeclared_object_property(change["id"]))
         variable_ids = list(dict.fromkeys(variable_ids))
         property_ids = list(dict.fromkeys(property_ids))
+        contact_ids = list(dict.fromkeys(contact_ids))
         ctx["_state_feedback_variable_ids"] = variable_ids
         ctx["_state_feedback_world_property_ids"] = property_ids
+        ctx["_state_feedback_npc_contact_ids"] = contact_ids
         ctx["_state_feedback_player_spatial"] = player_spatial
         result = ""
         spatial = {} if player_spatial else None
@@ -2428,7 +2466,24 @@ class AgenticMixin:
             missing = [property_id for property_id in property_ids if property_id not in properties]
             result += _candidate_value_feedback("world_properties", values, missing)
         end_time = next((update["end_time"] for update in reversed(updates) if update.get("end_time")), None)
-        projected = self._projected_events(ctx) if end_time else []
+        if contact_ids:
+            projected, contact_state = self._project_interaction_state(ctx)
+            contact_feedback = {"through": contact_state.get("game_time"), "contacts": {
+                npc_id: {"requested_in_contact": contact_requests.get(npc_id),
+                         "in_contact": self._npc_contact_is_current(npc_id, contact_state),
+                         "block_reason": self._npc_contact_block_reason(npc_id, contact_state)}
+                for npc_id in contact_ids
+            }}
+            encoded = json.dumps(contact_feedback, ensure_ascii=False)
+            if len(encoded) > 4000:
+                encoded = json.dumps({"through": contact_state.get("game_time"),
+                                      "feedback_omitted": True, "contact_count": len(contact_ids)}, ensure_ascii=False)
+            result += (" | " + _NPC_CONTACT_FEEDBACK_LABEL + encoded
+                       + "；仅按已接收更新及已接受时间内的定时事件、日程、房间重算，不含完整回合生命周期；"
+                         "声明已接收不等于接触成立，候选仍未提交。详情省略时用 "
+                         "consult_rules(question=角色ID+接触, include_candidates=true) 查询；更新或撤销后重查。")
+        else:
+            projected = self._projected_events(ctx) if end_time else []
         event_times = ", ".join(
             f"{event['event_id']} ({event['fire_time']})" for event in projected[:20]
         ) or "无"
@@ -4896,6 +4951,19 @@ class AgenticMixin:
             self.script_variables, self.trigger_engine = original_mechanics
         return eligible
 
+    def _project_interaction_state(self, ctx: dict) -> tuple[list[dict], dict]:
+        updates = ctx.get("_accepted_state_updates", [])
+        if any(update.get("end_time") for update in updates):
+            events, state = self._projected_events(ctx, with_state=True)
+        else:
+            events, state = [], self._project_state_tool_updates(updates)
+        self._refresh_npc_locations(state)
+        self._ensure_rooms_initialized(state)
+        self._apply_npc_contact_changes(state, [
+            change for update in updates for change in update.get("npc_contact_changes", [])
+        ])
+        return events, state
+
     def _projected_conditional_events(self, ctx: dict) -> list[dict]:
         candidates = ctx.get("conditional_event_candidates") or []
         if not candidates:
@@ -5355,21 +5423,26 @@ class AgenticMixin:
         if type(include_candidates) is not bool:
             return json.dumps({"error": "include_candidates 必须是布尔值"}, ensure_ascii=False)
         if include_candidates and not (ctx or {}).get("old_time"):
-            return json.dumps({"error": "候选在场与物品查询仅支持进行中的回合"}, ensure_ascii=False)
+            return json.dumps({"error": "候选在场、接触与物品查询仅支持进行中的回合"}, ensure_ascii=False)
         if "snapshot" in args:
             return json.dumps({"error": "snapshot 仅用于指定 category 的规则查询"}, ensure_ascii=False)
         question = args.get("question", "").lower()
         events = []
         if include_candidates:
-            updates = ctx.get("_accepted_state_updates", [])
-            if any(update.get("end_time") for update in updates):
-                events, state = self._projected_events(ctx, with_state=True)
-            else:
-                state = self._project_state_tool_updates(updates)
+            events, state = self._project_interaction_state(ctx)
         else:
             state = copy.deepcopy(self.current_state)
 
         answers = []
+        contacts = {}
+        if "接触" in question:
+            self._ensure_rooms_initialized(state)
+            for npc_id, npc in state.get("npcs", {}).items():
+                if (isinstance(npc, dict) and (npc_id.lower() in question
+                        or (npc.get("name") and npc["name"].lower() in question))):
+                    contacts[npc_id] = {"in_contact": self._npc_contact_is_current(npc_id, state),
+                                        "block_reason": self._npc_contact_block_reason(npc_id, state)}
+                    answers.append(f"{npc.get('name', npc_id)} " + ("已接触" if contacts[npc_id]["in_contact"] else "未接触"))
 
         # NPC 在场检查
         if "在场" in question or "在这" in question:
@@ -5393,12 +5466,14 @@ class AgenticMixin:
             answers.append("无法确定，请根据叙事自行判断")
 
         result = {"answers": answers, "game_time": state.get("game_time")}
+        if "接触" in question:
+            result["contacts"] = contacts
         if include_candidates:
             result["projection"] = {
                 "through": state.get("game_time"), "provisional": True,
                 "scope": "accepted_updates_and_scheduled_events",
                 "event_ids": list(dict.fromkeys(event["event_id"] for event in events)),
-                "note": "只读已接收更新及候选结束时间内的定时事件，不含完整回合生命周期或接触更新。"
+                "note": "只读已接收更新及候选结束时间内的定时事件，随后刷新日程、房间并重算接触；不含完整回合生命周期。"
                         "未提交，非角色知情；在场不等于获准互动。更新、撤销、切换分支后须重新查询。",
             }
         return json.dumps(result, ensure_ascii=False)
@@ -5708,11 +5783,7 @@ class AgenticMixin:
             return json.dumps({"error": "候选角色推演仅支持进行中的回合"}, ensure_ascii=False)
         events = []
         if include_candidates:
-            updates = ctx.get("_accepted_state_updates", [])
-            if any(update.get("end_time") for update in updates):
-                events, state = self._projected_events(ctx, with_state=True)
-            else:
-                state = self._project_state_tool_updates(updates)
+            events, state = self._project_interaction_state(ctx)
         else:
             state = copy.deepcopy(self.current_state)
         self._ensure_rooms_initialized(state)
@@ -5727,6 +5798,7 @@ class AgenticMixin:
         completed_goals = {goal.get("id") if isinstance(goal, dict) else goal
                            for goal in state.get("completed_npc_goals", [])}
         character_context = {
+            "in_contact": self._npc_contact_is_current(npc_id, state),
             "location": self._get_npc_location(npc_id, state),
             "current_room": actor.get("current_room", ""),
             "current_mood": actor.get("current_mood", ""),
@@ -5750,7 +5822,7 @@ class AgenticMixin:
                 "scope": "accepted_updates_and_scheduled_events",
                 "event_ids": list(dict.fromkeys(event["event_id"] for event in events)),
                 "note": "候选未提交，只含已接收更新及候选结束时间内的定时事件，"
-                        "不含完整生命周期、接触更新或候选信息传播；候选事件不自动成为角色知识。",
+                        "随后刷新日程、房间并重算接触；不含完整生命周期或候选信息传播，候选事件不自动成为角色知识。",
             }
         knowledge = self._build_npc_knowledge_context(
             {"present_npc_ids": [npc_id], "action_text": situation}, self.current_state,
