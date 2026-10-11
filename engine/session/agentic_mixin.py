@@ -3677,7 +3677,7 @@ class AgenticMixin:
             parts.append(
                 "<script_mechanics>\n当前分支可查询的剧本机制："
                 + json.dumps(mechanics, ensure_ascii=False)
-                + "。涉及这些规则时，用 consult_rules(category=类别, query=关键词) 按需读取定义和变量现值，"
+                + "。涉及这些规则时，用 consult_rules(category=类别, query=关键词) 按需读取定义、变量现值与目标完成记录，"
                   "不要凭名称猜测规则。查询不会执行机制，也不模拟本轮未提交的行动；"
                   "幕后规则不等于角色已知事实。\n</script_mechanics>"
             )
@@ -5453,6 +5453,10 @@ class AgenticMixin:
         return result
 
     def _queryable_mechanics_definitions(self):
+        npcs = list(self.script.get("npcs", []))
+        npcs.extend({"id": npc_id, "name": npc.get("name", npc_id), "goals": npc.get("goals", [])}
+                    for npc_id, npc in self.current_state.get("npcs", {}).items()
+                    if npc_id not in self._npc_by_id and isinstance(npc, dict))
         return {
             **self._mechanics_definitions(),
             "one_time_events": self.script.get("one_time_events", []),
@@ -5460,6 +5464,10 @@ class AgenticMixin:
             "persistent_states": self.script.get("persistent_states", []),
             "world_properties": self.script.get("world_properties", []),
             "locations": self.script.get("locations", []),
+            **{category: [
+                {"actor_id": actor.get("id", ""), "actor_name": actor.get("name", actor.get("id", "")), "goal": goal}
+                for actor in actors for goal in (actor.get("goals") or [])
+            ] for category, actors in (("npc_goals", npcs), ("org_goals", self.script.get("organizations", [])))},
             "story_nodes": [
                 {"tree": {key: value for key, value in tree.items() if key != "nodes"}, "node": node}
                 for tree in (self.story_tree_engine.trees if self.story_tree_engine else [])
@@ -5526,9 +5534,19 @@ class AgenticMixin:
         if "snapshot" in args and (not isinstance(supplied_snapshot, str) or not re.fullmatch(r"[A-Za-z0-9_-]{22}", supplied_snapshot)):
             return json.dumps({"error": "snapshot 必须原样使用查询返回的快照标识"}, ensure_ascii=False)
 
+        completed_goals = {
+            (record["id"] if isinstance(record, dict) else record): record
+            for record in self.current_state.get(f"completed_{category}", [])
+        } if category in ("npc_goals", "org_goals") else {}
         records = []
         for index, definition in enumerate(category_definitions):
             payload = {"definition": definition}
+            if category in ("npc_goals", "org_goals"):
+                goal_key = f"{definition['actor_id']}:{definition['goal'].get('id', '')}"
+                payload.update({
+                    "goal_key": goal_key, "status": "completed" if goal_key in completed_goals else "pending",
+                    "completion": completed_goals.get(goal_key),
+                })
             if runtime:
                 payload = runtime_session._story_node_runtime(definition, projected_state if include_candidates else self.current_state)
             if category in CONDITION_RULE_SECTIONS:
@@ -5620,6 +5638,12 @@ class AgenticMixin:
             "entries": entries, "total": len(records), "offset": offset, "snapshot": snapshot, **list_args,
             "next_offset": offset + 5 if not detailed and len(records) > offset + 5 else None,
         }
+        if category in ("npc_goals", "org_goals"):
+            result["notice"] = (
+                "当前分支完整目标声明与正式完成记录；goal_key 为 actor_id:目标id。"
+                "pending 仅表示没有完成记录，不检查当前条件，也不预判本轮未结算结果。"
+                "查询不执行效果、推进离屏进度或更新状态，非角色知情；NPC 与组织仍使用各自既有结算规则。"
+            )
         if include_candidates:
             result["projection"] = projection
             result["notice"] = (

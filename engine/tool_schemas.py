@@ -794,8 +794,8 @@ def _unified_tools() -> list[dict]:
             "parameters": {"type": "object", "properties": {
                 "question": {"type": "string", "description": "不指定 category 时，含 NPC 姓名及在场/在这检查房间感知的在场或附近；含 NPC ID或姓名及接触返回 contacts 中的 in_contact 和建立接触的 block_reason，支持运行时角色；含物品名及可用/有没有检查持有。不判断使用条件或互动许可，默认读取已提交状态"},
                 "context": {"type": "string", "description": "相关上下文"},
-                "category": {"type": "string", "enum": ["variables", "triggers", "random_items", "one_time_events", "cyclic_events", "persistent_states", "world_properties", "story_nodes", "locations"],
-                             "description": "机制类别；指定后无需 question。每次最多返回5条，每条 content 最多2000字符"},
+                "category": {"type": "string", "enum": ["variables", "triggers", "random_items", "one_time_events", "cyclic_events", "persistent_states", "world_properties", "story_nodes", "locations", "npc_goals", "org_goals"],
+                             "description": "机制类别；指定后无需 question。npc_goals/org_goals 返回所属 actor_id/actor_name、完整 goal 声明及正式 status/completion；pending 仅指没有完成记录，不判断条件、不执行效果，非角色知情，不支持候选或 runtime 视图。每次最多返回5条，每条 content 最多2000字符"},
                 "view": {"type": "string", "enum": ["definition", "runtime"], "default": "definition",
                          "description": "runtime 仅用于 story_nodes，返回紧凑的节点身份、状态、choices 中的 choice_id/available/reason、已选项和计时/冷却信息；无规则正文。available 只检查激活和选项条件，不模拟效果。默认 definition 保持完整规则查询。切换视图须重新查列表，不能复用 snapshot"},
                 "node_status": {"type": "string", "enum": ["active", "completed", "unlocked", "locked"],
