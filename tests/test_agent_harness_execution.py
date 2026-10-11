@@ -493,6 +493,11 @@ async def test_retrieval_settlement_stream_and_reload(
         ("finalize_turn", {"summary": "Reached the Archive and read the shelf label.",
                            "variable_changes": [{"id": "test_capacity", "op": "inc", "value": 0}]}),
     ]
+    narrative_call_index = len(operations) - 2
+    if interjection_phase == "tool":
+        operations.extend([
+            ("write_narrative", {"text": narrative}), copy.deepcopy(operations[-1]),
+        ])
     requests = []
     waiting = asyncio.Event()
     retrieved = asyncio.Event()
@@ -514,7 +519,7 @@ async def test_retrieval_settlement_stream_and_reload(
         tool_calls = [{
             "id": f"synthetic-call-{index}", "name": name, "arguments": arguments,
         }]
-        if name == "write_narrative" and interjection_phase == "tool":
+        if index == narrative_call_index and interjection_phase == "tool":
             tool_calls.append({
                 "id": "stale-decision", "name": "finalize_turn",
                 "arguments": {"summary": "Outdated decision", "variable_changes": [
@@ -534,6 +539,8 @@ async def test_retrieval_settlement_stream_and_reload(
         })),
     )
     session = GameSession(script, provider, save_id="synthetic-harness-save")
+    review_narrative = AsyncMock(wraps=session._review_narrative)
+    monkeypatch.setattr(session, "_review_narrative", review_narrative)
     dispatched = []
     dispatch = session._dispatch_unified_tool
 
@@ -652,10 +659,18 @@ async def test_retrieval_settlement_stream_and_reload(
                 assert final["state"]["active_persistent_states"] == ["test_arrived"]
                 assert final["state"]["npc_schedule_overrides"] == session.current_state["npc_schedule_overrides"]
                 assert all(args.get("summary") != "Outdated decision" for name, args in dispatched)
+                assert sum(name == "finalize_turn" for name, _ in dispatched) == 1
+                assert review_narrative.await_args.args[0] == narrative
+                assert action["text"] in review_narrative.await_args.args[1]
+                assert interjection in review_narrative.await_args.args[1]
                 if interjection_phase == "tool":
                     deferred_results = [message["content"] for messages in requests for message in messages
                                         if message.get("tool_call_id") == "stale-decision"]
                     assert deferred_results and all(json.loads(result).get("error") for result in deferred_results)
+                    unreviewed_results = [message["content"] for messages in requests for message in messages
+                                          if message.get("tool_call_id") == f"synthetic-call-{narrative_call_index + 1}"]
+                    assert unreviewed_results
+                    assert all("write_narrative" in json.loads(result)["error"] for result in unreviewed_results)
                 assert "SYNTHETIC_UNREAD_DETAILS" not in response.text
                 assert "SYNTHETIC_MECHANICS_PRIVATE" not in response.text
                 assert "SYNTHETIC_LIFECYCLE_DETAILS" not in response.text
@@ -789,7 +804,7 @@ async def test_retrieval_settlement_stream_and_reload(
         assert "SYNTHETIC_LIFECYCLE_DETAILS" not in json.dumps(trace)
         expected_tools = [name for name, _ in operations]
         if interjection_phase == "tool":
-            expected_tools.insert(-1, "finalize_turn")
+            expected_tools.insert(narrative_call_index + 1, "finalize_turn")
         assert [round_record["tool"] for round_record in trace["rounds"]] == expected_tools
         assert trace["plan_waits"] == 1
         assert trace["lore_queries"] == 4

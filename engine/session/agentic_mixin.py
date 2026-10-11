@@ -885,11 +885,18 @@ class AgenticMixin:
                                 stop_task = (asyncio.create_task(stop_event.wait())
                                              if name in ("recall_history", "finalize_turn", "delegate_settlement")
                                              and stop_event is not None else None)
+                                control_event = getattr(self, '_agent_control_event', None)
+                                control_task = (asyncio.create_task(control_event.wait())
+                                                if name in ("finalize_turn", "delegate_settlement")
+                                                and control_event is not None else None)
+                                interrupted_for_injection = False
                                 try:
                                     while not tool_task.done():
                                         waiting = {tool_task}
                                         if stop_task is not None:
                                             waiting.add(stop_task)
+                                        if control_task is not None:
+                                            waiting.add(control_task)
                                         done, _ = await asyncio.wait(
                                             waiting, timeout=_MODEL_WAIT_HEARTBEAT_SECONDS,
                                             return_when=asyncio.FIRST_COMPLETED,
@@ -901,16 +908,30 @@ class AgenticMixin:
                                                 yield {"type": "aborted", "round": round_num + 1, "label": label}
                                                 return
                                             stop_task = None
+                                        if control_task is not None and control_task in done:
+                                            control_event.clear()
+                                            if (len(getattr(self, '_inject_queue', ()) or ()) > queued_after_response
+                                                    and not tool_task.done()):
+                                                tool_task.cancel()
+                                                await asyncio.gather(tool_task, return_exceptions=True)
+                                                interrupted_for_injection = True
+                                                result = json.dumps({"error": "玩家补充了新指令，此调用未执行；请先读取插话，再根据已完成工具结果重新推演"}, ensure_ascii=False)
+                                                break
+                                            control_task = asyncio.create_task(control_event.wait())
                                         if not done:
                                             yield {"type": "heartbeat"}
-                                    result = await tool_task
+                                    if not interrupted_for_injection:
+                                        result = await tool_task
                                 finally:
                                     if stop_task is not None:
                                         stop_task.cancel()
+                                    if control_task is not None:
+                                        control_task.cancel()
                                     if not tool_task.done():
                                         tool_task.cancel()
                                     await asyncio.gather(
                                         tool_task, *((stop_task,) if stop_task is not None else ()),
+                                        *((control_task,) if control_task is not None else ()),
                                         return_exceptions=True,
                                     )
                             else:
@@ -3509,8 +3530,10 @@ class AgenticMixin:
                         ctx["_semantic_review_status"] = "passed" if review and review.get("pass") else "unavailable"
                     else:
                         ctx["_semantic_review_status"] = "stale"
+                if getattr(self, '_inject_queue', None):
+                    return json.dumps({"error": "玩家补充了新指令，此调用未执行；请先读取插话，再根据已完成工具结果重新推演"}, ensure_ascii=False)
                 if ctx.get("_finalize_narrative", "") != reviewed_narrative:
-                    return json.dumps({"error": "当前叙事未经过语义审查，无法结算本轮。"}, ensure_ascii=False)
+                    return json.dumps({"error": "当前叙事未经过语义审查，请调用 write_narrative 确认或修订叙事后重新结算。"}, ensure_ascii=False)
                 if semantic_revision_required and ctx.get("_finalize_narrative", "") == reviewed_narrative:
                     return json.dumps({"error": "请先调用 write_narrative 修订审查未通过的叙事。"}, ensure_ascii=False)
             is_read_only = name in _PRE_PLAN_READ_TOOLS or name in (
@@ -3600,6 +3623,7 @@ class AgenticMixin:
                                            "previous_timed_event_ids": previous_timed_event_ids}
             if name in ("finalize_turn", "delegate_settlement") and not _tool_result_failed(result):
                 terminal_completed = True
+                self._agent_inject_enabled = False
             return result
 
         holder = _AgentResult()
@@ -3642,6 +3666,7 @@ class AgenticMixin:
                             review = None
                         if (current_review is semantic_review_task
                                 and review and review.get("pass") is True
+                                and not getattr(self, '_inject_queue', None)
                                 and ctx.get("_finalize_narrative", "") == reviewed_narrative
                                 and not self._map_travel_revision_feedback(ctx, reviewed_narrative)):
                             yield {"type": "_early_reviewed_text", "content": reviewed_narrative}
@@ -3683,6 +3708,16 @@ class AgenticMixin:
             async for event in agent_events:
                 if semantic_review_exhausted:
                     raise SemanticReviewError()
+                if event.get("type") == "user_inject":
+                    action_text += "\n玩家补充：" + event["message"]
+                    ctx["action_text"] = action_text
+                    if semantic_review_task is not None:
+                        semantic_review_task.cancel()
+                        await asyncio.gather(semantic_review_task, return_exceptions=True)
+                    semantic_review_task = None
+                    reviewed_narrative = ""
+                    review_ready_for_stream = False
+                    ctx["_semantic_review_status"] = "stale"
                 if event.get("type") == "_early_reviewed_text":
                     submitted = event["content"].strip()
                     if submitted and submitted != streamed_narrative:

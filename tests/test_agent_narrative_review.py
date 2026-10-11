@@ -20,6 +20,7 @@ from engine.script_loader import ScriptLoader
 @pytest.mark.parametrize("review_timing", ["concurrent", "published_first"])
 @pytest.mark.parametrize("review_outcome", [
     "passed", "rejected", "unavailable", "aborted", "aborted_finalize", "aborted_delegate",
+    "interjected_finalize", "interjected_delegate",
 ])
 async def test_replaced_review_cannot_publish_current_draft(tmp_path, monkeypatch, review_outcome, review_timing):
     script = {
@@ -54,18 +55,26 @@ async def test_replaced_review_cannot_publish_current_draft(tmp_path, monkeypatc
     continue_model = asyncio.Event()
     terminal_entered = asyncio.Event()
     terminal_dispatched = asyncio.Event()
+    retry_started = asyncio.Event()
+    release_retry = asyncio.Event()
+    terminal_completed = asyncio.Event()
+    release_terminal = asyncio.Event()
     stale_review_observed = asyncio.Event()
     approved_draft_visible = asyncio.Event()
     review_tasks = {}
     review_texts = []
+    review_actions = []
     requests = []
     streamed = []
     body_buffer = ""
     writes_delivered = 0
-    terminal_name = "delegate_settlement" if review_outcome == "aborted_delegate" else "finalize_turn"
+    terminal_name = "delegate_settlement" if review_outcome.endswith("_delegate") else "finalize_turn"
+    interjected = review_outcome.startswith("interjected")
+    injection = "Inspect only the chair; leave the table alone."
 
     async def review_narrative(narrative, *_args, **_kwargs):
         review_texts.append(narrative)
+        review_actions.append(_args[0])
         review_tasks[narrative] = asyncio.current_task()
         if narrative == drafts[0]:
             first_started.set()
@@ -94,13 +103,17 @@ async def test_replaced_review_cannot_publish_current_draft(tmp_path, monkeypatc
             ("write_narrative", {"text": drafts[1]}),
             (terminal_name, {"summary": "Inspected the room."}),
         ]
-        if review_outcome == "rejected":
+        if review_outcome == "rejected" or interjected:
             operations.extend([
                 ("write_narrative", {"text": drafts[2]}),
                 ("finalize_turn", {"summary": "Inspected the room."}),
             ])
         index = len(requests) - 1
         assert index < len(operations)
+        if interjected and index == 4:
+            assert {"role": "user", "content": injection} in messages
+            retry_started.set()
+            await release_retry.wait()
         if index == 2 and review_timing == "published_first":
             await continue_rewrite.wait()
         if index == 3:
@@ -157,6 +170,11 @@ async def test_replaced_review_cannot_publish_current_draft(tmp_path, monkeypatc
 
         async with aclosing(original_agent_loop(messages, system, tools, monitored_dispatch, **kwargs)) as events:
             async for event in events:
+                if (interjected and event.get("type") == "tool_call"
+                        and event.get("tool_name") == "finalize_turn"
+                        and '"error"' not in event.get("tool_result", "")):
+                    terminal_completed.set()
+                    await release_terminal.wait()
                 yield event
 
     async def wait_for_events(pending, **kwargs):
@@ -247,6 +265,22 @@ async def test_replaced_review_cannot_publish_current_draft(tmp_path, monkeypatc
                 assert [event["content"] for event in streamed
                         if event["type"] in ("text", "narrative_revised")] == initial_drafts
                 assert session.world_tree.active_node_id == root_id
+                if interjected:
+                    continue_model.set()
+                    await asyncio.wait_for(terminal_entered.wait(), timeout=5)
+                    assert not terminal_dispatched.is_set()
+                    injected = await client.post(f"/api/game/{session.save_id}/inject", json={
+                        "stream_id": action["stream_id"], "message": injection,
+                    })
+                    assert injected.status_code == 200
+                    assert injected.json() == {"queued": True}
+                    await asyncio.wait_for(retry_started.wait(), timeout=5)
+                    assert review_tasks[drafts[1]].cancelled()
+                    assert not terminal_dispatched.is_set()
+                    assert not any(event["type"] in ("final", "user_inject") for event in streamed)
+                    assert [event["content"] for event in streamed
+                            if event["type"] in ("text", "narrative_revised")] == initial_drafts
+                    release_retry.set()
                 if review_outcome.startswith("aborted"):
                     if review_outcome != "aborted":
                         continue_model.set()
@@ -281,19 +315,38 @@ async def test_replaced_review_cannot_publish_current_draft(tmp_path, monkeypatc
                     assert not request_task.done()
                     assert session.world_tree.active_node_id == root_id
                 continue_model.set()
+                if interjected:
+                    await asyncio.wait_for(terminal_completed.wait(), timeout=5)
+                    assert session._active_agent_stream
+                    assert not request_task.done()
+                    late_injection = await client.post(f"/api/game/{session.save_id}/inject", json={
+                        "stream_id": action["stream_id"], "message": "A late synthetic instruction.",
+                    })
+                    assert late_injection.status_code == 409
+                    assert session._inject_queue == []
+                    release_terminal.set()
                 response = await asyncio.wait_for(request_task, timeout=5)
                 assert response.status_code == 200
                 assert response.text.endswith("data: [DONE]\n\n")
                 assert not [event for event in streamed if event["type"] in ("error", "aborted", "agent_max_rounds")]
                 final, = [event for event in streamed if event["type"] == "final"]
-                expected = drafts[2] if review_outcome == "rejected" else drafts[1]
+                expected = drafts[2] if review_outcome == "rejected" or interjected else drafts[1]
                 assert final["narrative"] == expected
                 text_events = [event for event in streamed if event["type"] in ("text", "narrative_revised")]
                 assert [event["content"] for event in text_events] == initial_drafts + [expected]
                 assert text_events[-1]["type"] == ("narrative_revised" if initial_drafts else "text")
                 if review_outcome == "unavailable":
                     assert not approved_draft_visible.is_set()
-                assert review_texts == (drafts if review_outcome == "rejected" else drafts[:2])
+                assert review_texts == (drafts if review_outcome == "rejected" or interjected else drafts[:2])
+                if interjected:
+                    assert injection in review_actions[-1]
+                    assert [event["message"] for event in streamed if event["type"] == "user_inject"] == [injection]
+                    assert session._inject_queue == []
+                    async with database.get_db() as db:
+                        pending = await (await db.execute(
+                            "SELECT COUNT(*) FROM pending_action_injections WHERE save_id = ?", (session.save_id,),
+                        )).fetchone()
+                    assert pending[0] == 0
                 model_calls = provider.generate_with_tools.await_count
                 replay = await asyncio.wait_for(client.post(endpoint, json=action), timeout=5)
                 assert replay.text == response.text
@@ -303,6 +356,8 @@ async def test_replaced_review_cannot_publish_current_draft(tmp_path, monkeypatc
                 continue_rewrite.set()
                 release_second.set()
                 continue_model.set()
+                release_retry.set()
+                release_terminal.set()
                 if not request_task.done():
                     await asyncio.wait_for(request_task, timeout=5)
         await session._drain_background_tasks()

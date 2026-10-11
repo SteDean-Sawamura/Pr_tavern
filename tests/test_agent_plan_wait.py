@@ -451,6 +451,148 @@ async def test_stream_stop_cancels_readonly_and_terminal_waits(monkeypatch, tool
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("max_rounds", [1, 3])
+@pytest.mark.parametrize("tool_name", ["finalize_turn", "delegate_settlement", "update_state", "recall_history"])
+async def test_interjection_interrupts_only_terminal_tool_waits(monkeypatch, tool_name, max_rounds):
+    loop = PlanLoop([])
+    loop._active_agent_stream = True
+    loop._active_agent_stream_id = "terminal-interjection"
+    loop._agent_stop_event = asyncio.Event()
+    loop._agent_control_event = asyncio.Event()
+    monkeypatch.setitem(game_routes._sessions, "terminal-interjection", loop)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release_tool = asyncio.Event()
+    retry_started = asyncio.Event()
+    release_retry = asyncio.Event()
+    requests = []
+    dispatched = []
+    observed = []
+    holder = _AgentResult()
+    injection = "Revise the decision before settling."
+
+    async def respond(messages, **kwargs):
+        requests.append(copy.deepcopy(messages))
+        if len(requests) == 2:
+            assert {"role": "user", "content": injection} in messages
+            retry_started.set()
+            await release_retry.wait()
+        assert len(requests) <= 2
+        return {"content": "", "tool_calls": [{
+            "id": f"terminal-call-{len(requests)}",
+            "name": tool_name if len(requests) == 1 else "finalize_turn", "arguments": {},
+        }]}
+
+    async def dispatch(name, arguments):
+        dispatched.append(name)
+        if len(dispatched) == 1:
+            started.set()
+            try:
+                await release_tool.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+        return "Recorded"
+
+    loop.ai_provider.generate_with_tools = AsyncMock(side_effect=respond)
+
+    async def collect():
+        async for event in loop._agent_loop(
+            [{"role": "user", "content": "Go"}], "system", [], dispatch,
+            max_rounds=max_rounds, report_tool_start=True, result_holder=holder,
+        ):
+            observed.append(event)
+
+    task = asyncio.create_task(collect())
+    terminal = tool_name in ("finalize_turn", "delegate_settlement")
+    try:
+        await asyncio.wait_for(started.wait(), timeout=0.5)
+        assert await game_routes.inject_message(
+            "terminal-interjection", game_routes.InjectMessageRequest(
+                stream_id="terminal-interjection", message=injection,
+            ),
+        ) == {"queued": True}
+        if not terminal:
+            await asyncio.sleep(0)
+            assert not cancelled.is_set()
+            assert len(requests) == 1
+            release_tool.set()
+        await asyncio.wait_for(retry_started.wait(), timeout=0.5)
+        assert cancelled.is_set() is terminal
+        assert not any(event["type"] in ("user_inject", "agent_done") for event in observed)
+        release_retry.set()
+        await asyncio.wait_for(asyncio.shield(task), timeout=0.5)
+        assert dispatched == [tool_name, "finalize_turn"]
+        assert ("error" in holder.records[0]["result"]) is terminal
+        assert [event["message"] for event in observed if event["type"] == "user_inject"] == [injection]
+        assert observed[-1]["type"] == "agent_done"
+        assert loop._inject_queue == []
+    finally:
+        release_tool.set()
+        release_retry.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_terminal_wait_interjections_preserve_retry_budget(monkeypatch):
+    loop = PlanLoop([])
+    loop._active_agent_stream = True
+    loop._active_agent_stream_id = "terminal-retry-budget"
+    loop._agent_stop_event = asyncio.Event()
+    loop._agent_control_event = asyncio.Event()
+    monkeypatch.setitem(game_routes._sessions, "terminal-retry-budget", loop)
+    started = asyncio.Event()
+    cancellations = []
+    observed = []
+    holder = _AgentResult()
+    loop.ai_provider.generate_with_tools = AsyncMock(return_value={
+        "content": "", "tool_calls": [{"id": "terminal", "name": "finalize_turn", "arguments": {}}],
+    })
+
+    async def dispatch(name, arguments):
+        started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancellations.append(name)
+            raise
+
+    async def collect():
+        async for event in loop._agent_loop(
+            [{"role": "user", "content": "Go"}], "system", [], dispatch,
+            max_rounds=1, report_tool_start=True, result_holder=holder,
+        ):
+            observed.append(event)
+
+    task = asyncio.create_task(collect())
+    try:
+        for revision in range(4):
+            await asyncio.wait_for(started.wait(), timeout=0.5)
+            started.clear()
+            assert await game_routes.inject_message(
+                "terminal-retry-budget", game_routes.InjectMessageRequest(
+                    stream_id="terminal-retry-budget", message=f"Synthetic revision {revision}",
+                ),
+            ) == {"queued": True}
+        await asyncio.wait_for(asyncio.shield(task), timeout=0.5)
+        assert loop.ai_provider.generate_with_tools.await_count == 4
+        assert cancellations == ["finalize_turn"] * 4
+        assert observed[-1]["type"] == "agent_max_rounds"
+        assert not any(event["type"] == "agent_done" for event in observed)
+        assert [event["message"] for event in observed if event["type"] == "user_inject"] == [
+            f"Synthetic revision {revision}" for revision in range(3)
+        ]
+        assert loop._inject_queue == ["Synthetic revision 3"]
+        assert all("error" in record["result"] for record in holder.records)
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_context_compression_keeps_player_interjections():
     loop = PlanLoop([])
     loop.ai_provider.generate_with_tools = AsyncMock(return_value={"content": "Done", "tool_calls": []})
