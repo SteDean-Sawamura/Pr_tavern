@@ -60,6 +60,25 @@ def _clean_narrative_text(text: str, ctx: dict) -> str:
 
 
 def _bounded_tool_content(content: str, name: str, limit: int) -> str:
+    if name == "consult_rules":
+        try:
+            result = json.loads(content)
+        except ValueError:
+            result = None
+        if isinstance(result, dict) and result.get("category") and isinstance(result.get("entries"), list):
+            preview = {key: result[key] for key in (
+                "category", "source", "game_time", "offset", "next_offset", "total",
+            ) if key in result}
+            preview["entries"] = [
+                {key: entry[key] for key in ("rule_index", "offset", "next_offset", "total_chars") if key in entry}
+                for entry in result["entries"] if isinstance(entry, dict)
+            ]
+            preview["truncated"] = True
+            preview["notice"] = (
+                "正文已省略；用 consult_rules(category=类别, rule_index=索引, offset=0) 完整重读；"
+                "切换分支后重查索引。只反映已提交分支，不代表已触发或角色已知。"
+            )
+            return json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
     if name == "read_director_notes":
         try:
             result = json.loads(content)
