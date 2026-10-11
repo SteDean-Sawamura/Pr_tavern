@@ -780,6 +780,10 @@ OpenAI 兼容模型的流式工具回合可在参数生成期间发送 `tool_pre
 
 旧式 `event/action/params` 触发器转换为统一事件节点时，也保留 `reveal_lore`、`schedule_override`、`activate_persistent_state` 和 `deactivate_persistent_state` 的效果；静态声明与事件动态添加的声明走同一机制。这里的旧式 `reveal_lore` 保留原有“启用词条”语义，不自动写入玩家已发现词条。合成验收覆盖动态声明经真实 `after_ai` 生命周期结算后影响 NPC 日程和持续状态、保存重载、分支往返与行动重放不重复执行。
 
+一次性与周期事件的 `effects` 也可直接声明 `type: "schedule_override"`，使用 `npc_id`、`time_range`、`location`，以及可选的 `activity`、`priority`、`expires`。定时事件的候选推演与正式结算复用通用触发器的日程覆盖执行器；未到时间、条件未满足或缺少必需字段时不追加覆盖。每次实际触发按声明追加，查询沿用既有优先级与到期规则，显式 NPC 位置仍优先于日程，不把日程声明当作已发生的移动或玩家已知情报。
+
+`tests/test_scheduled_npc_overrides.py` 使用两类事件、不同声明门槛、假模型和隔离 SQLite，验证线索读取、完整事件规则查询、准备与等待、候选词条读取、正式日程效果、保存失败回滚及重试、重载、分支往返与请求重放。重复候选查询不污染正式状态；已触发事件重放不重复追加覆盖，周期事件在各自触发时刻正常追加。规则及词条正文标记不进入公开 SSE 或保存的 trace；这些测试不代表真实模型的自主行动、NPC 交互质量或在线体验已验收。
+
 条件式 `condition: event.<name>.fired` 与 `actions` 声明也会响应 `before_generation` 和 `after_ai`，沿用旧触发器的动作执行顺序，不重复执行已由统一事件引擎处理的事件型声明。准备阶段的注入指令在公开计划提交后进入统一 Agent 的私有执行上下文，变量宏按当前分支状态展开。无来源通知仍受 `visibility_policy.require_notification_source` 约束；内部 `narrative_callbacks` 保存在存档中，但不进入玩家状态、公开节点或最终 SSE。
 
 两回合合成验收覆盖事件动态声明、下一回合实际模型请求中的指令与变量值、缓存续玩、SQLite 重载、分支往返、生成失败回滚和重试，以及同一行动重放不重复执行；不以手工触发生命周期代替完整回合验证。

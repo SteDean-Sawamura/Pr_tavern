@@ -4818,6 +4818,10 @@ class AgenticMixin:
                                 active = self.current_state.get("active_persistent_states", [])
                                 if effect.get("id") in active:
                                     active.remove(effect["id"])
+                            elif effect.get("type") == "schedule_override":
+                                self.trigger_engine.execute_actions(
+                                    [{"action": "schedule_override", "params": effect}], self.current_state,
+                                )
                             elif effect.get("type") == "add_variable":
                                 variable = effect.get("variable", {})
                                 if variable.get("id"):

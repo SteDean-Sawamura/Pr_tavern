@@ -742,6 +742,10 @@ class GameSession(
                 sid = eff.get("id", "")
                 if sid in aps:
                     aps.remove(sid)
+            elif etype == "schedule_override":
+                self.trigger_engine.execute_actions(
+                    [{"action": "schedule_override", "params": eff}], self.current_state,
+                )
             elif etype == "narrative_callback":
                 self._record_narrative_callback(
                     eff.get("text", ""), tags=[f"event:{event_id}"],
