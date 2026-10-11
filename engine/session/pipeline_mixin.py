@@ -1098,8 +1098,7 @@ class PipelineMixin:
         """Two-phase turn computations with explicit dependency ordering."""
         # Phase 1: independent computations
         self._evaluate_tone(story_tree_result)
-        self._check_npc_goals()
-        goal_changes = self._check_org_goals()
+        goal_changes = self._settle_actor_goals()
         self._check_npc_goal_conflicts()
         self._update_companion_loyalty()
         self._sync_companions()

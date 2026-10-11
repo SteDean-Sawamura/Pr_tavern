@@ -614,8 +614,7 @@ class StateApplyMixin:
         if ctx.get("_agentic_post_processed"):
             self._record_narrative_facts(result.get("narrative", ""), ctx)
 
-        self._check_npc_goals()
-        all_state_changes.extend(self._check_org_goals())
+        all_state_changes.extend(self._settle_actor_goals())
         result["state"] = self.current_state
         if node:
             node["state_changes"] = all_state_changes

@@ -4801,6 +4801,23 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
                     d["shown"] = 1  # first turn: mark as shown=1, will be injected this turn
             self.current_state["_pulse_dissolves"] = [d for d in dissolves if d["shown"] <= 3]
 
+    def _settle_actor_goals(self):
+        """Settle reward chains while retaining completion records across scans."""
+        completed_npc_goals = list(self.current_state.get("completed_npc_goals", []))
+        completed_org_goals = list(self.current_state.get("completed_org_goals", []))
+        state_changes = []
+        while True:
+            completed_count = len(completed_npc_goals) + len(completed_org_goals)
+            self.current_state["completed_npc_goals"] = completed_npc_goals
+            self.current_state["completed_org_goals"] = completed_org_goals
+            self._check_npc_goals()
+            completed_npc_goals = list(self.current_state["completed_npc_goals"])
+            state_changes.extend(self._check_org_goals())
+            completed_org_goals = list(self.current_state["completed_org_goals"])
+            self.current_state["completed_npc_goals"] = completed_npc_goals
+            if len(completed_npc_goals) + len(completed_org_goals) == completed_count:
+                return state_changes
+
     def _check_npc_goals(self):
         """Check NPC goal completion conditions and record callbacks."""
         completed_goals = self.current_state.get("completed_npc_goals", [])

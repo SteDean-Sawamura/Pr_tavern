@@ -356,8 +356,7 @@ class RegenerateMixin:
             self._refresh_npc_locations()
             self._ensure_rooms_initialized(state)
             self._apply_npc_contact_changes(state, parsed.get("npc_contact_changes", []))
-            self._check_npc_goals()
-            changes.extend(self._check_org_goals())
+            changes.extend(self._settle_actor_goals())
             state = self.current_state
         finally:
             self.current_state = previous_state
