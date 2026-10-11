@@ -2211,14 +2211,6 @@ class GameSession(
                 op = change.get("op", "add")
                 if op in ("add", "subtract") and not change.get("reason"):
                     continue
-                value = change.get("value")
-                if isinstance(value, (int, float)):
-                    if op == "set":
-                        old_value = self.state_manager._get_value(projected, change.get("target", ""))
-                        if isinstance(old_value, (int, float)) and abs(value - old_value) > 30:
-                            change = {**change, "value": old_value + (30 if value > old_value else -30)}
-                    elif op in ("add", "subtract") and abs(value) > 30:
-                        change = {**change, "value": 30 if value > 0 else -30}
                 regular.append(change)
                 target = change.get("target", "")
                 if target == "player.relationships":
@@ -2228,7 +2220,7 @@ class GameSession(
                 elif target.startswith("npcs."):
                     dirty_npc_ids.add(target.split(".")[1])
             if regular:
-                projected, _ = self.state_manager.apply_changes(projected, regular, inplace=True)
+                projected, _ = self._apply_resource_state_changes(projected, regular, inplace=True)
                 if any(change.get("target") == "player.relationships" for change in regular):
                     dirty_npc_ids.update(projected.get("player", {}).get("relationships", {}))
             for change in parsed.get("inventory_changes", []):

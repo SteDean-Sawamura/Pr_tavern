@@ -876,6 +876,39 @@ class StateApplyMixin:
             "state": state,
         }
 
+    def _apply_resource_state_changes(
+        self, state: dict, changes: list[dict], *, inplace: bool = False,
+    ) -> tuple[dict, list[dict]]:
+        state = state if inplace else copy.deepcopy(state)
+        all_changes = []
+        max_delta = 30
+        for change in changes:
+            operation = change.get("op", "add")
+            value = change.get("value", 0)
+            if operation in ("add", "subtract") and not change.get("reason"):
+                logger.warning("丢弃无reason属性变更: %s", change)
+                continue
+            if isinstance(value, (int, float)):
+                if operation == "set":
+                    old_value = self.state_manager._get_value(state, change.get("target", ""))
+                    if isinstance(old_value, (int, float)) and abs(value - old_value) > max_delta:
+                        clamped = old_value + (max_delta if value > old_value else -max_delta)
+                        logger.warning(
+                            "属性变化幅度过大 %s: %s→%s, 限制为→%s",
+                            change.get("target"), old_value, value, clamped,
+                        )
+                        change = {**change, "value": clamped}
+                elif operation in ("add", "subtract") and abs(value) > max_delta:
+                    clamped = max_delta if value > 0 else -max_delta
+                    logger.warning(
+                        "属性变化幅度过大 %s: op=%s val=%s, 限制为%s",
+                        change.get("target"), operation, value, clamped,
+                    )
+                    change = {**change, "value": clamped}
+            state, log = self.state_manager.apply_changes(state, [change], inplace=True)
+            all_changes.extend(log)
+        return state, all_changes
+
     def _apply_common_parsed_changes(
         self: GameSession, state: dict, parsed: dict, *, inplace: bool = False,
         present_npc_ids: list[str] | None = None,
@@ -915,42 +948,12 @@ class StateApplyMixin:
                     state, vop.get("id", ""), vop.get("op", "set"), vop.get("value")
                 )
             if regular_changes:
-                validated = []
-                MAX_DELTA = 30
-                for sc in regular_changes:
-                    op = sc.get("op", "add")
-                    val = sc.get("value", 0)
-                    if op in ("add", "subtract") and not sc.get("reason"):
-                        logger.warning("丢弃无reason属性变更: %s", sc)
-                        continue
-                    if isinstance(val, (int, float)):
-                        if op == "set":
-                            old = self.state_manager._get_value(state, sc.get("target", ""))
-                            if isinstance(old, (int, float)):
-                                delta = val - old
-                                if abs(delta) > MAX_DELTA:
-                                    clamped = old + (MAX_DELTA if delta > 0 else -MAX_DELTA)
-                                    logger.warning(
-                                        "属性变化幅度过大 %s: %s→%s, 限制为→%s",
-                                        sc.get("target"), old, val, clamped,
-                                    )
-                                    sc = {**sc, "value": clamped}
-                        elif op in ("add", "subtract") and abs(val) > MAX_DELTA:
-                            clamped = MAX_DELTA if val > 0 else -MAX_DELTA
-                            logger.warning(
-                                "属性变化幅度过大 %s: op=%s val=%s, 限制为%s",
-                                sc.get("target"), op, val, clamped,
-                            )
-                            sc = {**sc, "value": clamped}
-                    validated.append(sc)
-                regular_changes = validated
-            if regular_changes:
-                state, log = self.state_manager.apply_changes(
+                state, log = self._apply_resource_state_changes(
                     state, regular_changes, inplace=inplace
                 )
                 all_changes.extend(log)
-                self._apply_org_changes_to_script(regular_changes)
-                for sc in regular_changes:
+                self._apply_org_changes_to_script(log)
+                for sc in log:
                     t = sc.get("target", "")
                     if t == "player.relationships":
                         dirty_npc_ids.update(state.get("player", {}).get("relationships", {}))

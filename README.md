@@ -809,6 +809,8 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 同一回合多次调用状态工具时，持续状态按已接受工具调用的先后顺序结算，停用后再激活不会被较早的停用覆盖，结果与候选投影一致。单次调用仍先处理 `activate_states` 再处理 `deactivate_states`；失败、撤销、延后和被替代的统一 Agent 记录不参与最终结算。顺序仅保存在内部结算数据中，不改变剧本或存档格式，也不进入公开流和 trace。`tests/test_persistent_state_order.py` 覆盖重复开关、交错状态、旧解析结果及过滤边界；`tests/test_persistent_state_declarations.py` 以合成声明和假模型验证先停用再激活后的条件事件、完整流式回合、SQLite 重载、分支往返和请求重放，不代表真实模型或线上体验已经验收。
 
+普通 `state_changes` 的候选更新与正式结算共用逐项计算路径：连续 `set` 按前一步应用且经过属性范围约束后的值计算限幅，单次工具内和多次工具间保持一致。单项数值变更的既有 30 点限制、`add/subtract` 的 `reason` 要求及剧本属性 `min/max` 仍有效；直接执行的剧本效果不新增这层 Agent 限幅。`tests/test_resource_state_order.py` 覆盖顺序、正负值、小数、属性边界、路径别名、无效记录、旧解析结果及重生成结算；两组完整合成流式回合由假模型读取词条中的操作值和事件声明，验证候选资料解锁、最终条件事件、SQLite 重载、分支往返、请求重放及公开 SSE/trace 脱敏，不代表真实模型自主推演或在线体验已验收。
+
 `story_nodes` 直接读取当前剧情树运行时已接受的定义，覆盖静态节点、当前分支动态节点及兼容转换的系统节点；不会旁路读取已被拒绝、未规范化或已离开分支的声明。每条 `definition` 含 `tree`（除节点列表外的树元数据）与 `node`（完整节点），保留前置、条件、选项、效果及作者自定义字段，不重复装入兄弟节点正文。这是现有引擎规则的只读视图，不是额外执行一次系统触发器或剧情效果的授权。
 
 查询结果标记 `source="current_branch"`，反映运行时定义及变量、世界属性现值，不模拟本轮尚未提交的 `update_state` 或未结算事件，也不代表规则已执行、事件已发生或角色知情。每页最多 5 条，携带顶层 `snapshot` 和原 `query`，按顶层 `next_offset` 翻页；每条 `content` 是含 `definition` 和可选 `current_value` 的 JSON 文本，最多返回 2000 字符，长内容用该条的 `rule_index`、`snapshot` 和 `next_offset` 续读后拼接解析。指定 `rule_index` 时，即使 `offset=0` 也必须携带条目快照；列表与条目的快照不可混用。
