@@ -20,6 +20,7 @@ import logging
 import re
 import time
 from dataclasses import asdict, dataclass, field, replace
+from types import MethodType
 from uuid import uuid4
 
 from typing import TYPE_CHECKING, Callable
@@ -71,6 +72,24 @@ def _candidate_value_feedback(category: str, values: dict, missing=()) -> str:
                    + "\", include_candidates=true) 查询，携带条目 snapshot 按 rule_index 和 next_offset 完整续读；"
                      "每次更新或撤销后从 offset=0 重查，不要重复执行已接收的更新")
     return f" | {label}候选值（未提交，不含尚未结算的事件效果）: {content}"
+
+
+def _choice_preview_changes(before: dict, after: dict, path: tuple = ()) -> list[dict]:
+    changes = []
+    for key in sorted(before.keys() | after.keys()):
+        current_path = (*path, key)
+        if key not in before:
+            changes.append({"operation": "add", "path": list(current_path),
+                            "after": copy.deepcopy(after[key])})
+        elif key not in after:
+            changes.append({"operation": "remove", "path": list(current_path),
+                            "before": copy.deepcopy(before[key])})
+        elif isinstance(before[key], dict) and isinstance(after[key], dict):
+            changes.extend(_choice_preview_changes(before[key], after[key], current_path))
+        elif json.dumps(before[key], sort_keys=True) != json.dumps(after[key], sort_keys=True):
+            changes.append({"operation": "replace", "path": list(current_path),
+                            "before": copy.deepcopy(before[key]), "after": copy.deepcopy(after[key])})
+    return changes
 
 
 def _bounded_tool_content(content: str, name: str, limit: int) -> str:
@@ -144,16 +163,20 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
             preview = {key: result[key] for key in (
                 "mode", "source", "node_id", "choice_id", "available", "projection", "reason", "condition_error",
             ) if key in result}
-            preview.update(content_omitted=True, notice=(
-                "待执行效果正文已省略，不表示没有效果或已经执行；"
-                "用 consult_rules(category=story_nodes) 按节点ID完整读取声明；状态变化后重新预检。"
+            preview.update(content_omitted=True, changes_omitted=True,
+                           state_change_count=len(result.get("state_changes", [])),
+                           lore_change_count=len(result.get("lore_changes", [])), notice=(
+                "副本结算差异和声明效果正文已省略，不表示没有效果或已保存；"
+                "consult_rules(category=story_nodes) 只能重读声明，不能恢复本次差异；"
+                "不可据此推断完整后果，状态变化后重新预检。"
             ))
             encoded = json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
             if len(encoded) <= limit:
                 return encoded
             return json.dumps({
                 "content_omitted": True, "metadata_omitted": True,
-                "notice": "预检结果过长已省略；不是空效果或已结算。按原参数重查，并用 consult_rules 读取声明。",
+                "changes_omitted": True,
+                "notice": "预检结果过长已省略；不是空效果或已保存。不可推断完整后果；consult_rules 只能读取声明。",
             }, ensure_ascii=False, separators=(",", ":"))
     if name == "read_director_notes":
         try:
@@ -4439,30 +4462,53 @@ class AgenticMixin:
         if choice is None:
             return json.dumps({"error": "此节点没有该 choice_id；请重新读取当前分支的 story_nodes 声明"}, ensure_ascii=False)
 
-        state = (self._project_state_tool_updates(ctx.get("_accepted_state_updates", []))
-                 if include_candidates else copy.deepcopy(self.current_state))
-        story_state = state.get("story_tree_state", {})
+        base_state = (self._project_state_tool_updates(ctx.get("_accepted_state_updates", []))
+                      if include_candidates else copy.deepcopy(self.current_state))
+        candidate = copy.copy(self)
+        for name, value in self.__dict__.items():
+            if isinstance(value, MethodType) and value.__self__ is self:
+                candidate.__dict__[name] = MethodType(value.__func__, candidate)
+        candidate.__dict__.update(copy.deepcopy({
+            "current_state": base_state, "script": self.script,
+            "script_variables": self.script_variables, "trigger_engine": self.trigger_engine,
+            "story_tree_engine": self.story_tree_engine, "event_engine": self.event_engine,
+            "state_manager": self.state_manager, "prompt_builder": self.prompt_builder,
+        }, {id(self): candidate}))
+        candidate.ai_provider = candidate.vector_memory = candidate.data_bank = None
+        candidate._background_tasks = set()
+        candidate._index_tasks = set()
+        candidate._deferred_tasks = set()
+        candidate._deferred_lore_vector_ids = set()
+        before_lore = {entry.id: asdict(entry) for entry in candidate.prompt_builder.lorebook.entries}
+        story_state = base_state.get("story_tree_state", {})
         was_active = node_id in story_state.get("active", [])
         previously_unlocked = set(story_state.get("unlocked", []))
-        result = copy.deepcopy(engine).make_choice(
-            state, node_id, choice_id, lambda condition: self._evaluate_condition(condition, state),
-        )
+        result = candidate._settle_story_choice(node_id, choice_id)
         available = bool(result.newly_completed)
+        state = candidate.current_state if available else base_state
+        after_lore = {entry.id: asdict(entry) for entry in candidate.prompt_builder.lorebook.entries}
         response = {
             "mode": "declared_choice", "source": "runtime_story_tree",
             "node_id": node_id, "choice_id": choice_id, "available": available,
             "projection": {
                 "state_view": "candidate" if include_candidates else "committed",
-                "effects_applied": False, "excludes_unsettled_events": True,
+                "effects_applied": available, "excludes_unsettled_events": True,
+                "scope": "choice_and_emitted_events", "persisted": False,
+                "base_state_hash": self.world_tree.state_hash(base_state),
+                "result_state_hash": self.world_tree.state_hash(state),
             },
             "completed": [entry["id"] for entry in result.newly_completed],
-            "unlocked": sorted(set(state["story_tree_state"].get("unlocked", [])) - previously_unlocked),
+            "unlocked": sorted(set(state.get("story_tree_state", {}).get("unlocked", [])) - previously_unlocked),
+            "state_changes": _choice_preview_changes(base_state, state) if available else [],
+            "lore_changes": _choice_preview_changes(before_lore, after_lore) if available else [],
             "pending_effects": {
                 key: value for key, value in asdict(result).items()
                 if value and key not in {"newly_completed", "newly_active"}
             },
-            "note": "仅预检当前激活剧情树节点的选择条件与声明效果；未执行效果、词条写入或后续事件结算。"
-                    "不是最终状态、NPC回应或玩家已知信息；不得写入玩家 hint。状态变化后须重新预检。",
+            "note": "仅在隔离副本结算当前激活剧情树节点的选择及其派发事件，未保存或创建索引任务；"
+                    "pending_effects 是直接声明效果，state_changes/lore_changes 是副本实际差异。"
+                    "不含其他待结算事件或完整回合生命周期；不是NPC回应或玩家已知信息，不得写入玩家 hint。"
+                    "状态变化后须重新预检，实际提交重新检查条件。",
         }
         if not available:
             response["reason"] = "node_not_active" if not was_active else "condition_not_met"

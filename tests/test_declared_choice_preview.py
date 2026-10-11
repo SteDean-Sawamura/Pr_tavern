@@ -76,7 +76,7 @@ def test_schema_exposes_declaration_identity_and_candidate_view():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("threshold", [7, 13])
 @pytest.mark.parametrize("candidate", [False, True])
-async def test_preview_uses_declared_conditions_without_settlement(threshold, candidate, monkeypatch):
+async def test_preview_uses_declared_conditions_without_live_settlement(threshold, candidate, monkeypatch):
     session = make_session(threshold)
     context = {"old_time": session.current_state["game_time"], "_accepted_state_updates": [
         {"variable_changes": [{"id": "test_gate", "op": "set", "value": threshold}]},
@@ -86,18 +86,19 @@ async def test_preview_uses_declared_conditions_without_settlement(threshold, ca
                             session.event_engine.__dict__, session.prompt_builder.lorebook.__dict__, context))
 
     def unexpected(*args, **kwargs):
-        raise AssertionError("Read-only preview must not apply session effects or write lore")
+        raise AssertionError("Read-only preview must not schedule external work")
 
-    for method in ("_apply_story_tree_result", "_apply_effects_and_lore", "_sync_lorebook_vectors", "_fire_event_dual"):
+    for method in ("_schedule_index_task", "_schedule_background_task"):
         monkeypatch.setattr(session, method, unexpected)
     result = await preview(session, context, include_candidates=candidate)
     assert result["mode"] == "declared_choice"
     assert result["source"] == "runtime_story_tree"
     assert result["available"] is candidate
-    assert result["projection"] == {
-        "state_view": "candidate" if candidate else "committed",
-        "effects_applied": False, "excludes_unsettled_events": True,
-    }
+    assert result["projection"]["state_view"] == ("candidate" if candidate else "committed")
+    assert result["projection"]["effects_applied"] is candidate
+    assert result["projection"]["excludes_unsettled_events"] is True
+    assert result["projection"]["persisted"] is False
+    assert result["projection"]["scope"] == "choice_and_emitted_events"
     assert "predicted_risk" not in result
     if candidate:
         assert result["completed"] == ["test_decision"]
@@ -212,7 +213,10 @@ async def test_bounded_preview_marks_omitted_effects_instead_of_partial_json():
     encoded = _bounded_tool_content(json.dumps(result), "preview_choice_outcome", 1000)
     bounded = json.loads(encoded)
     assert len(encoded) <= 1000 and bounded["content_omitted"] is True
-    assert bounded["available"] is True and bounded["projection"]["effects_applied"] is False
+    assert bounded["available"] is True and bounded["projection"]["effects_applied"] is True
+    assert bounded["projection"]["persisted"] is False and bounded["changes_omitted"] is True
+    assert bounded["state_change_count"] == len(result["state_changes"])
+    assert bounded["lore_change_count"] == len(result["lore_changes"])
     assert "pending_effects" not in bounded and "consult_rules" in bounded["notice"]
     assert "Synthetic long declaration" not in encoded
 
@@ -297,9 +301,18 @@ async def test_stream_reads_declared_choice_then_previews_without_committing_eff
             assert json.loads(results["synthetic-preview-2"])["available"] is False
             assert json.loads(results["synthetic-preview-4"])["available"] is True
             assert json.loads(results["synthetic-preview-5"])["available"] is False
+            simulated = json.loads(results["synthetic-preview-4"])
+            assert simulated["projection"]["effects_applied"] is True
+            assert simulated["projection"]["persisted"] is False
+            assert {"operation": "replace", "path": ["script_variables", "test_reward"],
+                    "before": 0, "after": 4} in simulated["state_changes"]
+            assert any(change["path"] == ["test_detail", "enabled"] and change["after"] is True
+                       for change in simulated["lore_changes"])
+            assert json.loads(results["synthetic-preview-5"])["state_changes"] == []
             if undo:
                 assert results["synthetic-preview-6"].startswith("已撤销上一个工具调用（update_state）")
                 assert json.loads(results["synthetic-preview-7"])["available"] is False
+                assert json.loads(results["synthetic-preview-7"])["lore_changes"] == []
         return {"content": "", "tool_calls": [{
             "id": f"synthetic-preview-{index}", "name": name, "arguments": args,
         }]}

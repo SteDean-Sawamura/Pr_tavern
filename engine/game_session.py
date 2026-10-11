@@ -3495,6 +3495,32 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
             if de_tree["nodes"]:
                 tree_def["trees"].append(de_tree)
 
+    def _settle_story_choice(self, node_id: str, choice_id: str):
+        story_node = self.story_tree_engine._nodes.get(node_id) if self.story_tree_engine else None
+        if story_node is not None:
+            if story_node.get("type") != "choice":
+                return None
+            engine = self.story_tree_engine
+        else:
+            event = self.event_engine.events.get(node_id) if self.event_engine else None
+            if event is None or event.category != "choice":
+                return None
+            engine = self.event_engine
+        result = engine.make_choice(
+            self.current_state, node_id, choice_id, condition_eval=self._evaluate_condition,
+        )
+        if not result.newly_completed:
+            return result
+        if story_node is not None:
+            if self.event_engine:
+                self.event_engine.sync_story_tree_state(self.current_state)
+            self._apply_story_tree_result(result)
+            if self.event_engine:
+                self.event_engine.sync_story_tree_state(self.current_state)
+        else:
+            self._apply_event_result(result)
+        return result
+
     def _apply_story_tree_result(self, result):
         """Apply story tree effects to game state."""
         from engine.story_tree import StoryTreeResult

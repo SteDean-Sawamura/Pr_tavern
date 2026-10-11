@@ -843,11 +843,13 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 ### 声明式选择预检
 
-计划提交后，GM 可以先用 `consult_rules(category="story_nodes")` 读取当前分支的节点与选项身份，再调用 `preview_choice_outcome(node_id="test_decision", choice_id="test_open")`。预检使用剧情树运行时定义与现有 `make_choice` 条件判定，在副本上检查当前激活的选择节点；不按选项文本猜测声明效果，也不执行真实选择。`include_candidates=true` 仅在进行中的回合可用，使用累计接收但未提交的 `update_state` 候选，不包含未结算事件效果，不会提前激活仍待决的节点。
+计划提交后，GM 可以先用 `consult_rules(category="story_nodes")` 读取当前分支的节点与选项身份，再调用 `preview_choice_outcome(node_id="test_decision", choice_id="test_open")`。预检保留当前分支的运行时定义，在隔离会话副本中通过与真实选择 API 相同的结算入口检查当前激活节点，应用其选择效果及派发事件；不会按选项文本猜测效果或提交真实选择。`include_candidates=true` 仅在进行中的回合可用，以累计接收但未提交的 `update_state` 候选为基线，不提前结算其他待决事件，也不会提前激活仍待决的节点。
 
-结果包括 `available`、未满足原因、直接完成/解锁的节点ID及 `pending_effects`。`projection.effects_applied=false` 明确表示这些效果尚未应用：变量效果、词条变更、事件派发和后续生命周期结算仍未执行，因此不是最终状态差异，也不预测 NPC 回应、随机后续或玩家已知信息。此阶段只预检 `story_nodes` 的剧情树声明，不承诺独立 EventEngine 选择 API 的最终结算结果；影子事件引擎不会参与本次预检。状态更新、撤销或切换分支后必须重查，不复用旧结果。超长结果裁剪时明确标记正文省略，不能把省略误认为没有待执行效果。
+结果包括 `available`、未满足原因、完成/解锁的节点ID、直接声明的 `pending_effects`，以及实际副本结算的 `state_changes`、`lore_changes`。差异使用数组路径和 `add/replace/remove`，区分缺失、null、布尔值与数字；词条按ID比较完整字段。`projection.effects_applied=true` 只表示有效选择已在副本应用，`persisted=false` 明确没有保存；基线和结果状态均返回校验哈希。无效选择不返回初始化或迁移差异。影子事件状态与实际提交一样同步，派发事件可读取选择完成和奖励后的状态；不创建模型、存储或索引资源，不覆盖真实会话及撤销记录。
 
-只提供 `choice_text` 时保留旧式粗略风险估计；节点身份不完整或失效会返回错误，不静默降级为文本猜测。预检是只读工具，不覆盖最近一次可撤销操作，结果不应进入玩家 hint。`tests/test_declared_choice_preview.py` 使用合成声明、假模型及隔离 SQLite，覆盖两组声明门槛、候选/已提交值隔离、撤销、故障时对象保持不变、剧情树结算结果一致性、流式调用、持久化重载、分支往返、请求重放与公开 SSE/trace 脱敏。这些证据不代表完整候选结算、真实模型自主推演或在线体验已验收。
+`projection.scope="choice_and_emitted_events"` 限定为选择及其派发事件；`excludes_unsettled_events=true` 表示仍不包含其他待结算事件和完整回合生命周期，不预测 NPC 回应、随机后续或玩家已知信息。入口仅支持 `story_nodes` 的剧情树选择声明，不支持直接预检独立 EventEngine 选择。状态更新、撤销或切换分支后必须重查。超长结果返回差异数量和 `changes_omitted=true`，不能把省略误认为没有效果；目前不支持完整差异续读，`consult_rules` 只能重读声明，不能恢复本次结算差异，因此不能依据裁剪结果推断完整后果。
+
+只提供 `choice_text` 时保留旧式粗略风险估计；节点身份不完整或失效会返回错误，不静默降级为文本猜测。预检是只读工具，结果不应进入玩家 hint。`tests/test_declared_choice_preview.py` 和 `tests/test_choice_outcome_simulation.py` 使用合成声明、假模型及隔离 SQLite，覆盖两组声明门槛、候选/已提交值隔离、撤销、部分执行故障、实例方法重绑定、外部资源隔离、流式工具实际差异、API结算与保存重载一致、分支往返、请求重放及公开 SSE/trace 脱敏。静态选择可解锁动态后续节点；临时添加的信号触发器只证明当前会话模拟与结算结果，不证明临时定义能重载。这些离线证据不代表完整回合推演、真实模型自主决策、叙事质量或在线体验已验收。
 
 ### 声明式选择实际结算
 

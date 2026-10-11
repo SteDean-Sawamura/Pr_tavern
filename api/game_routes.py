@@ -2925,40 +2925,15 @@ async def story_tree_choice(save_id: str, req: StoryTreeChoiceRequest, summary_o
                 raise HTTPException(status_code=404, detail="Game session not found")
         if not session.story_tree_engine and not session.event_engine:
             raise HTTPException(status_code=400, detail="此剧本没有剧情树")
-        story_node = session.story_tree_engine._nodes.get(req.node_id) if session.story_tree_engine else None
-        use_story_tree = story_node is not None
-        if use_story_tree:
-            selectable = story_node.get("type") == "choice"
-        else:
-            node = session.event_engine.events.get(req.node_id) if session.event_engine else None
-            selectable = node is not None and node.category == "choice"
         view_engine = session.event_engine or session.story_tree_engine
-        if not selectable:
-            if summary_only:
-                return {"success": False}
-            trees = view_engine.get_visible_trees(copy.deepcopy(session.current_state), session.turn_number)
-            return {"success": False, "completed": [], "notifications": [],
-                    "trees": _player_story_trees(trees, session.script)}
         snapshot = _capture_generation_state(session)
         deferred_lore_ids = set()
         previous_deferred_ids = session._deferred_lore_vector_ids
         session._deferred_lore_vector_ids = deferred_lore_ids
         try:
-            engine = session.story_tree_engine if use_story_tree else session.event_engine
-            result = engine.make_choice(
-                session.current_state, req.node_id, req.choice_id,
-                condition_eval=session._evaluate_condition,
-            )
-            if not result.newly_completed:
+            result = session._settle_story_choice(req.node_id, req.choice_id)
+            if result is not None and not result.newly_completed:
                 await _rollback_generation_state(session, snapshot)
-            elif use_story_tree:
-                if session.event_engine:
-                    session.event_engine.sync_story_tree_state(session.current_state)
-                session._apply_story_tree_result(result)
-                if session.event_engine:
-                    session.event_engine.sync_story_tree_state(session.current_state)
-            else:
-                session._apply_event_result(result)
             if not summary_only:
                 trees = view_engine.get_visible_trees(copy.deepcopy(session.current_state), session.turn_number)
             if session.current_state != snapshot["state"]:
@@ -2969,13 +2944,13 @@ async def story_tree_choice(save_id: str, req: StoryTreeChoiceRequest, summary_o
         finally:
             session._deferred_lore_vector_ids = previous_deferred_ids
         session._sync_lorebook_vectors(deferred_lore_ids)
-        success = len(result.newly_completed) > 0
+        success = result is not None and bool(result.newly_completed)
         if summary_only:
             return {"success": success}
         return {
             "success": success,
-            "completed": [{"id": n["id"], "name": n.get("name", n["id"])} for n in result.newly_completed],
-            "notifications": result.notifications,
+            "completed": [{"id": n["id"], "name": n.get("name", n["id"])} for n in result.newly_completed] if result else [],
+            "notifications": result.notifications if result else [],
             "trees": _player_story_trees(trees, session.script),
         }
 
