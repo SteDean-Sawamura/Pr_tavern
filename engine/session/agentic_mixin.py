@@ -92,6 +92,61 @@ def _choice_preview_changes(before: dict, after: dict, path: tuple = ()) -> list
     return changes
 
 
+def _choice_preview_section(result: dict, result_path: list, offset: int) -> dict:
+    selected = result
+    for part in result_path:
+        if isinstance(selected, dict) and isinstance(part, str) and part in selected:
+            selected = selected[part]
+        elif isinstance(selected, list) and type(part) is int and 0 <= part < len(selected):
+            selected = selected[part]
+        else:
+            raise ValueError("result_path 不存在或键/索引类型不匹配")
+
+    def describe(value):
+        value_type = {dict: "object", list: "array", str: "string", bool: "boolean",
+                      int: "number", float: "number", type(None): "null"}[type(value)]
+        description = {"value_type": value_type}
+        if isinstance(value, (dict, list, str)):
+            description["size"] = len(value)
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        description["complete"] = len(encoded) <= 400
+        if description["complete"]:
+            description["value"] = value
+        return description
+
+    description = describe(selected)
+    page = {key: value for key, value in description.items() if key not in {"value", "complete"}}
+    page.update(content_format="result_section", offset=offset, next_offset=None, complete=False)
+    if isinstance(selected, (dict, list)):
+        keys = sorted(selected) if isinstance(selected, dict) else range(len(selected))
+        if offset > len(keys):
+            raise ValueError("offset 超出本字段的成员数量")
+        entries = []
+        page_size = 0
+        for position in range(offset, len(keys)):
+            key = keys[position]
+            entry = {"key": key, **describe(selected[key])}
+            entry_size = len(json.dumps(entry, ensure_ascii=False, separators=(",", ":")))
+            if entries and page_size + entry_size > 2000:
+                break
+            entries.append(entry)
+            page_size += entry_size
+        next_offset = offset + len(entries)
+        page.update(entries=entries, next_offset=next_offset if next_offset < len(keys) else None,
+                    complete=offset == 0 and next_offset == len(keys) and all(entry["complete"] for entry in entries))
+    elif isinstance(selected, str):
+        if offset > len(selected):
+            raise ValueError("offset 超出本字段的字符长度")
+        page.update(content=selected[offset:offset + 2000],
+                    next_offset=offset + 2000 if offset + 2000 < len(selected) else None,
+                    complete=offset == 0 and len(selected) <= 2000)
+    else:
+        if offset:
+            raise ValueError("标量字段的 offset 必须为0")
+        page.update(value=selected, complete=True)
+    return page
+
+
 def _bounded_tool_content(content: str, name: str, limit: int) -> str:
     if name == "query_lorebook":
         try:
@@ -171,7 +226,8 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
             preview.update(content_omitted=True, changes_omitted=True,
                            state_change_count=len(result["state_changes"]) if "state_changes" in result else result.get("state_change_count", 0),
                            lore_change_count=len(result["lore_changes"]) if "lore_changes" in result else result.get("lore_change_count", 0), notice=(
-                "正文省略，非空效果或已保存；按 read 从 offset=0 完整重读，拼接后解析 JSON。"
+                "正文省略，不表示无效果或已保存；按 read 从 offset=0 重读。"
+                "可加 result_path=[] 查目录，再按键/索引读字段；无路径时须拼齐 JSON。"
                 "失效则丢弃旧片段按 restart 重查；consult_rules 只读声明。非玩家已知。"
             ))
             encoded = json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
@@ -180,7 +236,7 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
             return json.dumps({
                 "mode": "declared_choice", "content_omitted": True, "metadata_omitted": True,
                 "changes_omitted": True,
-                "notice": "正文和坐标省略；丢弃旧片段，按原节点、选项及候选视图重新初查，不传 offset/snapshot。非空效果、已保存或玩家已知。",
+                "notice": "正文和坐标省略；丢弃旧片段，按原节点、选项及候选视图重新初查，不传 offset/snapshot/result_path。不表示无效果、已保存或玩家已知。",
             }, ensure_ascii=False, separators=(",", ":"))
     if name == "read_director_notes":
         try:
@@ -4394,7 +4450,7 @@ class AgenticMixin:
 
         # --- C3 分支预演 ---
         if name == "preview_choice_outcome":
-            if any(key in args for key in ("node_id", "choice_id", "offset", "snapshot")):
+            if any(key in args for key in ("node_id", "choice_id", "offset", "snapshot", "result_path")):
                 return self._preview_declared_choice(args, ctx)
             if args.get("include_candidates", False) is not False:
                 return json.dumps({"error": "候选视图仅支持同时提供 node_id 和 choice_id 的声明预检"}, ensure_ascii=False)
@@ -4462,6 +4518,11 @@ class AgenticMixin:
         offset = args.get("offset", 0)
         if type(offset) is not int or offset < 0:
             return json.dumps({"error": "offset 必须是非负整数"}, ensure_ascii=False)
+        result_path = args.get("result_path")
+        if "result_path" in args and (not isinstance(result_path, list) or any(
+            not (isinstance(part, str) or type(part) is int and part >= 0) for part in result_path
+        )):
+            return json.dumps({"error": "result_path 必须是字符串键或非负整数索引组成的数组"}, ensure_ascii=False)
         supplied_snapshot = args.get("snapshot")
         if "snapshot" in args and (not isinstance(supplied_snapshot, str) or not re.fullmatch(r"[A-Za-z0-9_-]{22}", supplied_snapshot)):
             return json.dumps({"error": "snapshot 必须原样使用预检返回的快照标识"}, ensure_ascii=False)
@@ -4475,7 +4536,7 @@ class AgenticMixin:
                 "restart_required": True, "restart": restart,
             }, ensure_ascii=False)
 
-        if "offset" in args and supplied_snapshot is None:
+        if ("offset" in args or "result_path" in args) and supplied_snapshot is None:
             return restart_response(required=True)
         if include_candidates and not ctx.get("old_time"):
             if supplied_snapshot is not None:
@@ -4568,6 +4629,17 @@ class AgenticMixin:
             return restart_response()
         read = {**restart, "snapshot": snapshot, "offset": 0}
         metadata = {"snapshot": snapshot, "total_chars": len(content), "read": read}
+        if "result_path" in args:
+            read["result_path"] = result_path
+            try:
+                section = _choice_preview_section(json.loads(content), result_path, offset)
+            except ValueError as error:
+                return json.dumps({"error": str(error), "error_code": "invalid_result_path"}, ensure_ascii=False)
+            return json.dumps({
+                **{key: response[key] for key in ("mode", "node_id", "choice_id", "available", "projection")},
+                **metadata, **section,
+                "state_change_count": len(response["state_changes"]), "lore_change_count": len(response["lore_changes"]),
+            }, ensure_ascii=False)
         if "offset" in args:
             if offset > len(content):
                 return json.dumps({"error": "offset 超出预检正文长度"}, ensure_ascii=False)

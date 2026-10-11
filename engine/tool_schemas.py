@@ -836,12 +836,13 @@ def _unified_tools() -> list[dict]:
         }},
         {"type": "function", "function": {
             "name": "preview_choice_outcome",
-            "description": "GM 内部只读预检：用 consult_rules 的 story_nodes 声明中的 node_id、choice_id 在隔离副本结算当前激活选择及其派发事件，不保存、不建索引；可基于候选状态，不含其他待结算事件或完整回合生命周期。正文省略时按 read 从 offset=0 完整重读；携带 snapshot 按 next_offset 续读，拼接全部 JSON 片段后解析。快照失效则丢弃旧片段按 restart 重查。无身份和续读参数时才按 choice_text 粗估风险。不得把预演后果写入玩家 hint 或预告 NPC 回应。",
+            "description": "GM 内部只读预检：用 consult_rules 的 story_nodes 声明中的 node_id、choice_id 在隔离副本结算当前激活选择及其派发事件，不保存、不建索引；可基于候选状态，不含其他待结算事件或完整回合生命周期。大结果优先按 read 加 result_path=[] 查目录，再把 entries 的 key 追加到路径读相关字段；每页可独立解析，不必拼回整个预检。complete=false 表示值不完整，next_offset=null 仅表示当前层分页结束，不表示所有后果已读。正文省略时按 read 从 offset=0 重读；不传 result_path 时保持原协议，携带 snapshot 按 next_offset 续读，拼接全部 JSON 片段后解析。快照失效则丢弃旧片段按 restart 重查。无身份和续读参数时才按 choice_text 粗估风险。不得把预演后果写入玩家 hint 或预告 NPC 回应。",
             "parameters": {"type": "object", "properties": {
                 "node_id": {"type": "string", "description": "当前分支剧情树选择节点ID；与 choice_id 同时提供"},
                 "choice_id": {"type": "string", "description": "节点中已声明的选项ID；不是面向玩家的生成选项ID"},
                 "include_candidates": {"type": "boolean", "description": "仅声明预检：以本轮已接收但未提交的 update_state 候选为基线模拟选择，不含其他待结算事件效果", "default": False},
-                "offset": {"type": "integer", "minimum": 0, "description": "完整预检 JSON 的字符偏移，每片最多2000字；包括0都须携带 snapshot。初查不传；正文省略后必须从0重读"},
+                "offset": {"type": "integer", "minimum": 0, "description": "不传 result_path 时为完整预检 JSON 的字符偏移；指定路径时为容器成员偏移或字符串字符偏移，标量仅0。文本每片最多2000字；包括0都须携带 snapshot。初查不传；换路径或正文省略后从0重读"},
+                "result_path": {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "integer", "minimum": 0}]}, "description": "仅在本次模拟结果 JSON 内按字符串键/非负整数索引读取；[] 为根目录，须携带 snapshot。容器返回 entries(key/value_type/size/complete；小值附 value)，长值按追加 key 的路径下钻。字符串返回 content 文本片段，标量返回 value。size 是字段成员数或字符数，total_chars 仍是完整预检长度；next_offset=null 不保证整个值 complete。不是文件路径或表达式。"},
                 "snapshot": {"type": "string", "description": "原样使用预检返回的快照，保持相同节点、选项与候选视图；输入或结果变化后丢弃旧片段重查"},
                 "choice_text": {"type": "string", "description": "无节点ID时用于旧式粗略风险估计的文本；不会执行剧本声明"},
                 "context": {"type": "string", "description": "当前场景摘要"},

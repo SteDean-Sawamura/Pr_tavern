@@ -849,9 +849,13 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 `projection.scope="choice_and_emitted_events"` 限定为选择及其派发事件；`excludes_unsettled_events=true` 表示仍不包含其他待结算事件和完整回合生命周期，不预测 NPC 回应、随机后续或玩家已知信息。入口仅支持 `story_nodes` 的剧情树选择声明，不支持直接预检独立 EventEngine 选择。状态更新、撤销或切换分支后必须重查。超长结果返回差异数量和 `changes_omitted=true`，不能把省略误认为没有效果；`consult_rules` 只能重读声明，实际差异使用预检工具自身的续读接口恢复。
 
-初查不传 `offset`，仍返回完整结构化结果，并附带 `snapshot`、`total_chars` 和 `read`。正文被消息预算裁剪或历史压缩后，使用 `read` 中的节点、选项、候选视图及快照，从 `offset=0` 完整重读；每次返回最多2000字符的 `content`，`content_format="json_fragment"`，按 `next_offset` 续读直至 null，拼接全部片段后再解析 JSON。正文是不包含续读元数据的完整预检结果，不能独立解析单片。历史摘要不保留正文，也不把某个尾页偏移误当完整阅读进度；极小预算连坐标也无法保留时，明确标记 `metadata_omitted=true`，须按原身份和视图重新初查。
+初查不传 `offset` 或 `result_path`，仍返回完整结构化结果，并附带 `snapshot`、`total_chars` 和 `read`。不传路径时保留原始 JSON 分页：使用 `read` 中的节点、选项、候选视图及快照，从 `offset=0` 完整重读；每次返回最多2000字符的 `content`，`content_format="json_fragment"`，按 `next_offset` 续读直至 null，拼接全部片段后再解析 JSON。正文是不包含续读元数据的完整预检结果，不能独立解析单片。历史摘要不保留正文，也不把某个尾页偏移误当完整阅读进度；极小预算连坐标也无法保留时，明确标记 `metadata_omitted=true`，须按原身份和视图重新初查。
 
-任何片段请求（包括 `offset=0`）都需要快照。每次读取重新进行隔离模拟，不添加会话缓存；快照基于完整状态、候选操作、存档/分支/回合身份、剧本和运行时定义、基线词条及完整模拟结果计算 SHA-256，并返回128位 URL-safe 标识，不依赖短状态摘要。输入或结果不匹配返回 `snapshot_expired`；未提供快照返回 `snapshot_required`，均要求丢弃旧片段按 `restart` 重新初查。节点或选项消失时先重查 `story_nodes`，不可拼接不同快照的片段。
+大结果优先在 `read` 参数上增加 `result_path=[]`，读取本次模拟结果的根目录，再将返回成员的 `key` 追加到路径按需下钻，例如 `["state_changes", 0, "after"]`。路径仅接受字符串键和非负整数索引，只查询模拟结果 JSON，不访问文件、Python 属性或表达式。每页 `content_format="result_section"` 可独立解析：对象和数组返回分页的 `entries`，小值附完整 `value`，长值只给 `value_type`、`size` 和 `complete=false`；字符串返回最多2000字符的纯文本 `content`；标量保留 null、布尔和数字类型。`offset` 对容器是成员偏移，对字符串是字符偏移，标量只能为0；换字段必须从0开始。`size` 表示当前字段的成员数或字符数，`total_chars` 仍表示完整预检 JSON 的长度。`next_offset=null` 仅表示当前层分页结束；容器中未展开的长值、仅尾页的字符串都不会标成完整，读取部分字段也不代表已知全部后果。裁剪后的 `read` 保留当前字段路径和从0重读坐标，不能把已省略正文当作仍在上下文中。
+
+`tests/test_choice_preview_inspection.py` 使用显著超过真实 Agent 消息预算的合成模拟结果，由假模型仅根据当次实际消息中的目录与差异页找到相关数值后决策，不在模型外累积被压缩的正文，也不拼接整个结果；同时验证字段类型、非法路径、快照隔离、重复压缩、隔离 API 保存重载与分支切换，以及公开 trace 不含内部正文或快照。这证明工具链支持超预算结果的按需读取，不证明真实模型能自主选对全部相关字段，或能整体理解任意长的单个文本字段；没有替代完整回合或线上验收。
+
+任何片段或路径请求（包括 `offset=0` 和 `result_path=[]`）都需要快照。每次读取重新进行隔离模拟，不添加会话缓存；快照基于完整状态、候选操作、存档/分支/回合身份、剧本和运行时定义、基线词条及完整模拟结果计算 SHA-256，并返回128位 URL-safe 标识，不依赖短状态摘要。输入或结果不匹配返回 `snapshot_expired`；未提供快照返回 `snapshot_required`，均要求丢弃旧片段按 `restart` 重新初查。节点或选项消失时先重查 `story_nodes`，不可拼接不同快照的片段。
 
 只提供 `choice_text` 时保留旧式粗略风险估计；节点身份不完整或失效会返回错误，单独提供续读参数也不静默降级为文本猜测。预检是只读工具，结果不应进入玩家 hint。`tests/test_declared_choice_preview.py`、`tests/test_choice_outcome_simulation.py` 和 `tests/test_choice_preview_paging.py` 使用合成声明、假模型及隔离 SQLite，覆盖两组声明门槛、候选/已提交值隔离、撤销、部分执行故障、实例方法重绑定、外部资源隔离、流式工具实际差异、完整 JSON 续读及快照失效、裁剪和重复压缩后的恢复、真实 Agent 循环按坐标读取后决策、API结算与保存重载一致、分支往返、请求重放及公开 SSE/trace 脱敏。静态选择可解锁动态后续节点；临时添加的信号触发器只证明当前会话模拟与结算结果，不证明临时定义能重载。这些离线证据不代表完整回合推演、真实模型自主决策、叙事质量或在线体验已验收。
 
