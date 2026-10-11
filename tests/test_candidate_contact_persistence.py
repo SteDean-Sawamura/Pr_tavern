@@ -17,10 +17,11 @@ from test_scheduled_npc_overrides import make_session
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("depart,fail_save", [(False, False), (True, False), (False, True), (True, True)])
-@pytest.mark.parametrize("conditional_schedule", [False, True])
+@pytest.mark.parametrize("schedule_mode", ["override", "conditional", "gated_override"])
 async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_branch_replay(
-        tmp_path, monkeypatch, depart, fail_save, conditional_schedule):
-    session = make_session(conditional_schedule=conditional_schedule)
+        tmp_path, monkeypatch, depart, fail_save, schedule_mode):
+    gate = "test_ready >= 3" if schedule_mode == "gated_override" else None
+    session = make_session(conditional_schedule=schedule_mode == "conditional", override_condition=gate)
     session.save_id = "synthetic-contact-save"
     session.current_state["npcs"]["test_guide"].update(known=False, met=False)
     script = session.script
@@ -39,6 +40,8 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
     timed = {"end_time": "2030-01-01T09:10:00", "variable_changes": [
         {"id": "test_ready", "op": "set", "value": 2 if depart else 0},
     ]}
+    if gate:
+        timed["variable_changes"][0]["value"] = 3 if depart else 2
 
     async def respond(messages, **kwargs):
         tool_names = [tool["function"]["name"] for tool in kwargs["tools"]]
@@ -122,17 +125,22 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
                       "action_id": "synthetic-contact-action", "expected_node_id": root_id}
             if fail_save:
                 save_node = game_routes._save_node
+                save_failures = []
 
-                async def reject_save(current, result):
+                async def reject_save(current, result, action_id=None):
+                    assert action_id == action["action_id"]
                     assert current.current_state["game_time"] == timed["end_time"]
                     assert current._npc_contact_is_current("test_guide", current.current_state) is expected_contact
                     assert current.current_state["npcs"]["test_guide"]["met"] is expected_contact
                     assert current.world_tree.active_node_id != root_id
+                    save_failures.append(action_id)
                     raise RuntimeError("Synthetic contact save interruption")
 
                 monkeypatch.setattr(game_routes, "_save_node", reject_save)
                 failure = await client.post(endpoint, json=action)
-                assert [event for event in _stream_events(failure.text) if event["type"] == "error"]
+                error, = [event for event in _stream_events(failure.text) if event["type"] == "error"]
+                assert error["discard_partial"] is True
+                assert save_failures == [action["action_id"]]
                 assert session.current_state == baseline
                 assert session.world_tree.active_node_id == root_id
                 requests.clear()
@@ -146,6 +154,9 @@ async def test_contact_feedback_drives_narrative_and_survives_rollback_reload_br
             assert session._npc_contact_is_current("test_guide", session.current_state) is expected_contact
             assert session.current_state["npcs"]["test_guide"]["met"] is expected_contact
             settled = copy.deepcopy(session.current_state)
+            if gate:
+                assert settled["npc_schedule_overrides"]["test_guide"][0]["condition"] == gate
+                assert "test_shift" in settled["fired_one_time_events"]
             calls = provider.generate_with_tools.await_count
             assert (await client.post(endpoint, json=action)).text == response.text
             assert provider.generate_with_tools.await_count == calls and session.current_state == settled

@@ -3886,6 +3886,8 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
                     }
                     if params.get("expires"):
                         entry["expires"] = params["expires"]
+                    if "condition" in params:
+                        entry["condition"] = params["condition"]
                     if entry["time_range"] and entry["location"]:
                         npc_ov.append(entry)
 

@@ -15,7 +15,7 @@ from engine.script_loader import ScriptLoader
 from test_agent_harness_execution import _stream_events
 
 
-def make_session(category="one_time_events", threshold=2, conditional_schedule=False):
+def make_session(category="one_time_events", threshold=2, conditional_schedule=False, override_condition=None):
     event = {
         "id": "test_shift", "description": "A practice shift begins.",
         "condition": f"script_variables.test_ready >= {threshold}",
@@ -45,6 +45,8 @@ def make_session(category="one_time_events", threshold=2, conditional_schedule=F
         ],
         category: [event],
     }
+    if override_condition is not None:
+        event["effects"][0]["condition"] = override_condition
     if conditional_schedule:
         event["effects"] = [effect for effect in event["effects"] if effect["type"] != "schedule_override"]
         script["npcs"][0]["schedule"].append({
@@ -64,8 +66,9 @@ def expected_override(session, category="one_time_events"):
 
 
 @pytest.mark.parametrize("path", ["definition", "projection", "settlement"])
-def test_scheduled_effect_uses_existing_schedule_contract(path):
-    session = make_session()
+@pytest.mark.parametrize("override_condition", [None, "test_ready >= 3"])
+def test_scheduled_effect_uses_existing_schedule_contract(path, override_condition):
+    session = make_session(override_condition=override_condition)
     session.current_state["script_variables"]["test_ready"] = 2
     original = copy.deepcopy(session.current_state)
     if path == "definition":
@@ -81,14 +84,15 @@ def test_scheduled_effect_uses_existing_schedule_contract(path):
         result = session.current_state
     assert result.get("npc_schedule_overrides") == {"test_guide": [expected_override(session)]}
     result["game_time"] = "2030-01-01T09:10:00"
-    assert session._get_npc_location("test_guide", result) == "test_desk"
+    assert session._get_npc_location("test_guide", result) == ("test_origin" if override_condition else "test_desk")
     result["game_time"] = "2030-01-01T09:30:00"
     assert session._get_npc_location("test_guide", result) == "test_origin"
 
 
 @pytest.mark.parametrize("category,count", [("one_time_events", 1), ("cyclic_events", 3)])
-def test_projection_settlement_and_replay_have_identical_overrides(category, count):
-    session = make_session(category)
+@pytest.mark.parametrize("override_condition", [None, "test_ready >= 3"])
+def test_projection_settlement_and_replay_have_identical_overrides(category, count, override_condition):
+    session = make_session(category, override_condition=override_condition)
     event = session.script[category][0]
     updates = [{**event["preparation"], "end_time": "2030-01-01T09:15:00"}]
     original = copy.deepcopy(session.current_state)

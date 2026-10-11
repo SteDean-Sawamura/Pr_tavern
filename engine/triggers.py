@@ -133,6 +133,8 @@ class TriggerEngine:
                     }
                     if params.get("expires"):
                         entry["expires"] = params["expires"]
+                    if "condition" in params:
+                        entry["condition"] = params["condition"]
                     npc_ov.append(entry)
             elif action_type == "activate_persistent_state":
                 target = params.get("target", "")

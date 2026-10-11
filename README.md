@@ -780,7 +780,9 @@ OpenAI 兼容模型的流式工具回合可在参数生成期间发送 `tool_pre
 
 旧式 `event/action/params` 触发器转换为统一事件节点时，也保留 `reveal_lore`、`schedule_override`、`activate_persistent_state` 和 `deactivate_persistent_state` 的效果；静态声明与事件动态添加的声明走同一机制。这里的旧式 `reveal_lore` 保留原有“启用词条”语义，不自动写入玩家已发现词条。合成验收覆盖动态声明经真实 `after_ai` 生命周期结算后影响 NPC 日程和持续状态、保存重载、分支往返与行动重放不重复执行。
 
-一次性与周期事件的 `effects` 也可直接声明 `type: "schedule_override"`，使用 `npc_id`、`time_range`、`location`，以及可选的 `activity`、`priority`、`expires`。定时事件的候选推演与正式结算复用通用触发器的日程覆盖执行器；未到时间、条件未满足或缺少必需字段时不追加覆盖。每次实际触发按声明追加，查询沿用既有优先级与到期规则，显式 NPC 位置仍优先于日程，不把日程声明当作已发生的移动或玩家已知情报。
+一次性与周期事件的 `effects` 也可直接声明 `type: "schedule_override"`，使用 `npc_id`、`time_range`、`location`，以及可选的 `activity`、`priority`、`expires`、`condition`。定时事件的候选推演与正式结算复用通用触发器的日程覆盖执行器；未到时间、事件触发条件未满足或缺少必需字段时不追加覆盖。每次实际触发按声明追加，查询沿用既有优先级与到期规则，显式 NPC 位置仍优先于日程，不把日程声明当作已发生的移动或玩家已知情报。
+
+事件或触发器自身的 `condition` 决定何时追加覆盖；覆盖效果中的 `condition`（触发器写在 `params.condition`）保留表达式原文，在每次查询时按所查询快照求值。覆盖条件不满足时回退到其他有效日程，恢复满足后可再次生效，无需重新触发事件；不填写或空字符串保持无条件语义。`tests/test_conditional_schedule_overrides.py` 与接触持久化回归使用合成声明、假模型和隔离 SQLite，覆盖条件切换、候选撤回、到期、失败回滚、重载、分支及请求重放，不代表真实模型或浏览器体验验收。
 
 `tests/test_scheduled_npc_overrides.py` 使用两类事件、不同声明门槛、假模型和隔离 SQLite，验证线索读取、完整事件规则查询、准备与等待、候选词条读取、正式日程效果、保存失败回滚及重试、重载、分支往返与请求重放。重复候选查询不污染正式状态；已触发事件重放不重复追加覆盖，周期事件在各自触发时刻正常追加。规则及词条正文标记不进入公开 SSE 或保存的 trace；这些测试不代表真实模型的自主行动、NPC 交互质量或在线体验已验收。
 

@@ -311,17 +311,17 @@ class EventEngine:
                 elif etype == "remove_lore":
                     rl.append(eff.get("id", ""))
                 elif etype == "schedule_override":
-                    so.append({
-                        "action": "schedule_override",
-                        "params": {
-                            "npc_id": eff.get("npc_id", ""),
-                            "time_range": eff.get("time_range", ""),
-                            "location": eff.get("location", ""),
-                            "activity": eff.get("activity", ""),
-                            "priority": eff.get("priority", 100),
-                            "expires": eff.get("expires", ""),
-                        },
-                    })
+                    params = {
+                        "npc_id": eff.get("npc_id", ""),
+                        "time_range": eff.get("time_range", ""),
+                        "location": eff.get("location", ""),
+                        "activity": eff.get("activity", ""),
+                        "priority": eff.get("priority", 100),
+                        "expires": eff.get("expires", ""),
+                    }
+                    if "condition" in eff:
+                        params["condition"] = eff["condition"]
+                    so.append({"action": "schedule_override", "params": params})
             if sv:
                 effects["set_var"] = sv
             if al:
