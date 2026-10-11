@@ -183,6 +183,7 @@ class GameSession(
         }
         self._event_desc_by_id: dict = {}
         self._event_def_by_id: dict = {}
+        self._dynamic_scheduled_event_ids: set[str] = set()
         for ev in script.get("cyclic_events", []):
             if isinstance(ev, dict) and ev.get("id"):
                 self._event_desc_by_id[ev["id"]] = ev.get("description", ev["id"])

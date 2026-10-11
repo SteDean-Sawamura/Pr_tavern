@@ -789,11 +789,11 @@ def _unified_tools() -> list[dict]:
         }},
         {"type": "function", "function": {
             "name": "consult_rules",
-            "description": "只读咨询当前分支规则。指定 category 可检索剧本变量及现值、触发器或随机项；不指定时按 question 检查 NPC 在场和物品持有。不会执行规则或模拟未提交的行动。",
+            "description": "只读咨询当前分支规则。指定 category 可检索变量及现值、触发器、随机项、一次性事件、周期事件或持续状态的完整声明；不指定时按 question 检查 NPC 在场和物品持有。不会执行规则或模拟未提交的行动。",
             "parameters": {"type": "object", "properties": {
                 "question": {"type": "string", "description": "要咨询的问题"},
                 "context": {"type": "string", "description": "相关上下文"},
-                "category": {"type": "string", "enum": ["variables", "triggers", "random_items"],
+                "category": {"type": "string", "enum": ["variables", "triggers", "random_items", "one_time_events", "cyclic_events", "persistent_states"],
                              "description": "机制类别；指定后无需 question。每次最多返回5条，每条 content 最多2000字符"},
                 "query": {"type": "string", "description": "在定义和变量现值中搜索，不区分大小写；空字符串列出该类别"},
                 "rule_index": {"type": "integer", "minimum": 0,

@@ -621,13 +621,11 @@ class StoryDirectorMixin:
         events_result = results.get("events")
         if events_result and isinstance(events_result, dict):
             for evt in events_result.get("one_time", []):
-                if evt.get("id"):
-                    dsc["one_time_events"].append(evt)
-                    self._inject_dynamic_event(evt, "one_time")
+                if evt.get("id") and self._inject_dynamic_event(copy.deepcopy(evt), "one_time"):
+                    dsc["one_time_events"].append(copy.deepcopy(evt))
             for evt in events_result.get("cyclic", []):
-                if evt.get("id"):
-                    dsc["cyclic_events"].append(evt)
-                    self._inject_dynamic_event(evt, "cyclic")
+                if evt.get("id") and self._inject_dynamic_event(copy.deepcopy(evt), "cyclic"):
+                    dsc["cyclic_events"].append(copy.deepcopy(evt))
 
         # Goals
         goals_result = results.get("goals")
@@ -646,10 +644,6 @@ class StoryDirectorMixin:
             dsc["generation_log"] = dsc["generation_log"][-20:]
         if len(dsc["lorebook"]) > 50:
             dsc["lorebook"] = dsc["lorebook"][-50:]
-        if len(dsc["one_time_events"]) > 30:
-            dsc["one_time_events"] = dsc["one_time_events"][-30:]
-        if len(dsc["cyclic_events"]) > 15:
-            dsc["cyclic_events"] = dsc["cyclic_events"][-15:]
         if len(dsc["trees"]) > 20:
             dsc["trees"] = dsc["trees"][-20:]
         if len(dsc.get("random_item_updates", [])) > 20:
@@ -758,22 +752,46 @@ class StoryDirectorMixin:
                 self.story_tree_engine._tree_for_node[node["id"]] = tree_copy["id"]
         self.event_engine.inject_dynamic_tree(tree)
 
-    def _inject_dynamic_event(self, evt: dict, kind: str):
+    def _inject_dynamic_event(self, evt: dict, kind: str, *, state=None):
         """注入动态事件到 event_scheduler 和 event_engine。"""
         collection_key = "one_time_events" if kind == "one_time" else "cyclic_events"
         collection = self.event_scheduler.script.setdefault(collection_key, [])
-        if any(e.get("id") == evt["id"] for e in collection):
-            return
+        if evt["id"] in self._event_def_by_id or evt["id"] in self.event_engine.events:
+            return False
+        if state is None:
+            state = self.current_state
         collection.append(evt)
+        self._dynamic_scheduled_event_ids.add(evt["id"])
         self._event_def_by_id[evt["id"]] = evt
         self._event_desc_by_id[evt["id"]] = evt.get("description", evt["id"])
         if kind == "cyclic":
             self.event_scheduler._cyclic_by_id[evt["id"]] = evt
-            trackers = self.current_state.setdefault("cyclic_event_trackers", {})
+            trackers = state.setdefault("cyclic_event_trackers", {})
             if evt["id"] not in trackers:
-                trackers[evt["id"]] = {"next_fire": evt.get("first_trigger", "")}
+                event_state = state.get("events", {}).get(evt["id"], {})
+                trackers[evt["id"]] = {
+                    "last_fired": event_state.get("last_fired"),
+                    "next_fire": event_state.get("next_fire", evt.get("first_trigger", "")),
+                }
         self.event_engine.inject_dynamic_event(evt, kind)
-        self.event_engine.inject_dynamic_event_tracker(self.current_state, evt, kind)
+        self.event_engine.inject_dynamic_event_tracker(state, evt, kind)
+        return True
+
+    def _hydrate_dynamic_events(self, state):
+        for section in ("one_time_events", "cyclic_events"):
+            if section in self.script:
+                self.script[section] = [event for event in self.script[section]
+                                        if event.get("id") not in self._dynamic_scheduled_event_ids]
+        for event_id in self._dynamic_scheduled_event_ids:
+            self._event_def_by_id.pop(event_id, None)
+            self._event_desc_by_id.pop(event_id, None)
+            self.event_scheduler._cyclic_by_id.pop(event_id, None)
+            self.event_engine.events.pop(event_id, None)
+        self._dynamic_scheduled_event_ids.clear()
+        dynamic = state.get("dynamic_story_content", {})
+        for section, kind in (("one_time_events", "one_time"), ("cyclic_events", "cyclic")):
+            for event in dynamic.get(section, []):
+                self._inject_dynamic_event(copy.deepcopy(event), kind, state=state)
 
     def _apply_goal_updates(self, updates: dict):
         """更新 NPC/组织的 goals。"""
@@ -963,10 +981,7 @@ class StoryDirectorMixin:
             return
         for tree in dsc.get("trees", []):
             self._inject_dynamic_tree(tree)
-        for evt in dsc.get("one_time_events", []):
-            self._inject_dynamic_event(evt, "one_time")
-        for evt in dsc.get("cyclic_events", []):
-            self._inject_dynamic_event(evt, "cyclic")
+        self._hydrate_dynamic_events(self.current_state)
         for entry in dsc.get("lorebook", []):
             self.prompt_builder.lorebook.add_entries([entry])
         self._hydrate_mechanics_runtime(self.current_state)

@@ -5,8 +5,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from api import game_routes
 from engine.game_session import GameSession
 from engine.tool_schemas import _unified_tools
+
+
+RULE_CATEGORIES = ["variables", "triggers", "random_items", "one_time_events", "cyclic_events", "persistent_states"]
 
 
 def make_session():
@@ -18,6 +22,20 @@ def make_session():
             "id": "test_roll", "dice": "1d1", "trigger_type": "per_turn",
             "description": "SYNTHETIC_RULE_DETAIL",
         }],
+        "one_time_events": [{
+            "id": "test_notice", "trigger_time": "2030-01-01T09:10:00",
+            "condition": "script_variables.test_capacity >= 8",
+            "description": "Synthetic notice.", "rule_notes": "SYNTHETIC_RULE_DETAIL",
+            "effects": [{"type": "activate_persistent_state", "target": "test_condition"}],
+        }],
+        "cyclic_events": [{
+            "id": "test_cycle", "first_trigger": "2030-01-01T09:20:00",
+            "frequency_value": 10, "frequency_unit": "minute",
+            "condition": "script_variables.test_capacity >= 8",
+            "description": "Synthetic cycle.", "rule_notes": "SYNTHETIC_RULE_DETAIL",
+            "effects": [{"type": "deactivate_persistent_state", "target": "test_condition"}],
+        }],
+        "persistent_states": [{"id": "test_condition", "description": "SYNTHETIC_RULE_DETAIL"}],
     }
     session = GameSession(script, None)
     session.current_state = {
@@ -29,11 +47,14 @@ def make_session():
     return session, script
 
 
-@pytest.mark.parametrize("category", ["variables", "triggers", "random_items"])
+@pytest.mark.parametrize("category", RULE_CATEGORIES)
 def test_catalog_returns_runtime_definitions_without_executing_them(category):
     session, _ = make_session()
     original_state = copy.deepcopy(session.current_state)
-    original_rules = copy.deepcopy(session._mechanics_definitions())
+    original_rules = copy.deepcopy({**session._mechanics_definitions(), **{
+        key: session.script[key] for key in RULE_CATEGORIES[3:]
+    }})
+    original_script = copy.deepcopy(session.script)
     result = json.loads(session._handle_consult_rules({"category": category}))
     assert result["source"] == "current_branch"
     assert result["game_time"] == original_state["game_time"]
@@ -46,7 +67,8 @@ def test_catalog_returns_runtime_definitions_without_executing_them(category):
     if category == "variables":
         assert json.loads(entry["content"])["current_value"] == 7
     assert session.current_state == original_state
-    assert session._mechanics_definitions() == original_rules
+    assert session.script == original_script
+    assert session._mechanics_definitions() == {key: original_rules[key] for key in RULE_CATEGORIES[:3]}
 
 
 def test_search_and_pagination_keep_original_rule_indexes():
@@ -115,7 +137,7 @@ def test_long_variable_value_is_searchable_and_can_be_read_completely():
     assert end["entries"][0]["next_offset"] is None
 
 
-@pytest.mark.parametrize("category", ["variables", "triggers", "random_items"])
+@pytest.mark.parametrize("category", RULE_CATEGORIES)
 def test_empty_categories_and_exhausted_pages(category):
     session = GameSession({"script_id": "synthetic-empty-rules", "settings": {}}, None)
     empty = json.loads(session._handle_consult_rules({"category": category}))
@@ -128,19 +150,23 @@ def test_empty_categories_and_exhausted_pages(category):
 
 
 @pytest.mark.asyncio
-async def test_context_compaction_keeps_rule_reread_coordinates():
+@pytest.mark.parametrize("category", RULE_CATEGORIES)
+async def test_context_compaction_keeps_rule_reread_coordinates(category):
     session, _ = make_session()
     session.ai_provider = SimpleNamespace(
         generate_with_tools=AsyncMock(return_value={"content": "Done.", "tool_calls": []}),
     )
-    session.trigger_engine.triggers[0]["params"]["message"] = "SYNTHETIC_RULE_BODY " * 350
-    result = session._handle_consult_rules({"category": "triggers"})
+    definitions = {**session._mechanics_definitions(), **{
+        key: session.script[key] for key in RULE_CATEGORIES[3:]
+    }}
+    definitions[category][0]["description"] = "SYNTHETIC_RULE_BODY " * 350
+    result = session._handle_consult_rules({"category": category})
     messages = [
         {"role": "user", "content": "Inspect the synthetic rules."},
         {"role": "assistant", "content": "Synthetic prior context. " * 1600},
         {"role": "assistant", "content": "", "tool_calls": [{
             "id": "synthetic-rule-read", "type": "function",
-            "function": {"name": "consult_rules", "arguments": json.dumps({"category": "triggers"})},
+            "function": {"name": "consult_rules", "arguments": json.dumps({"category": category})},
         }]},
         {"role": "tool", "tool_call_id": "synthetic-rule-read", "content": result},
         {"role": "user", "content": "Keep the current plan."},
@@ -155,7 +181,7 @@ async def test_context_compaction_keeps_rule_reread_coordinates():
     compacted = session.ai_provider.generate_with_tools.await_args.args[0]
     summary = compacted[1]["content"]
     assert "[上下文压缩]" in summary
-    assert '"category": "triggers"' in summary
+    assert f'"category": "{category}"' in summary
     assert '"rule_index": 0' in summary
     assert '"next_offset": 2000' in summary
     assert '"total_chars":' in summary
@@ -207,7 +233,8 @@ def test_full_context_advertises_rules_without_dumping_private_definitions(monke
     context = session._build_unified_context({}, {"type": "freeform", "text": "Inspect."})
     assert "<script_mechanics>" in context
     assert "consult_rules" in context
-    assert '"variables": 1' in context
+    for category in RULE_CATEGORIES:
+        assert f'"{category}": 1' in context
     assert "SYNTHETIC_RULE_DETAIL" not in context
     plan = session._build_unified_plan_context({}, {"type": "freeform", "text": "Inspect."})
     assert "<script_mechanics>" not in plan
@@ -216,8 +243,147 @@ def test_full_context_advertises_rules_without_dumping_private_definitions(monke
 
 def test_consult_rules_schema_exposes_structured_retrieval_and_keeps_legacy_queries():
     schema = next(tool["function"]["parameters"] for tool in _unified_tools() if tool["function"]["name"] == "consult_rules")
-    assert set(schema["properties"]["category"]["enum"]) == {"variables", "triggers", "random_items"}
+    assert set(schema["properties"]["category"]["enum"]) == set(RULE_CATEGORIES)
     assert {"query", "rule_index", "offset"} <= schema["properties"].keys()
     assert "question" not in schema.get("required", [])
     session, _ = make_session()
     assert json.loads(session._handle_consult_rules({"question": "有没有test token"}))["answers"] == ["持有 test token"]
+
+
+@pytest.mark.parametrize("category", RULE_CATEGORIES[3:])
+def test_event_and_state_rules_support_search_pages_and_complete_rereads(category):
+    session, _ = make_session()
+    entries = session.script[category]
+    entries.extend({
+        **copy.deepcopy(entries[0]), "id": f"test_detail_{index}",
+        "description": "Synthetic catalog 中文。" * 160 + f"FINAL_CLAUSE_{index}",
+    } for index in range(11))
+    original_state = copy.deepcopy(session.current_state)
+    matches = []
+    offset = 0
+    while offset is not None:
+        page = json.loads(session._handle_consult_rules({"category": category, "query": "final_clause", "offset": offset}))
+        assert page["total"] == 11
+        assert len(page["entries"]) <= 5
+        matches.extend(page["entries"])
+        offset = page["next_offset"]
+    assert [entry["rule_index"] for entry in matches] == list(range(1, 12))
+    for entry in matches:
+        chunks = [entry["content"]]
+        while entry["next_offset"] is not None:
+            page = json.loads(session._handle_consult_rules({
+                "category": category, "rule_index": entry["rule_index"], "offset": entry["next_offset"],
+            }))
+            entry, = page["entries"]
+            assert entry["offset"] == sum(map(len, chunks))
+            assert len(entry["content"]) <= 2000
+            chunks.append(entry["content"])
+        assert json.loads("".join(chunks))["definition"] == entries[entry["rule_index"]]
+    assert session.current_state == original_state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("category, kind", [("one_time_events", "one_time"), ("cyclic_events", "cyclic")])
+@pytest.mark.parametrize("event_count", [1, 36])
+async def test_dynamic_event_definitions_follow_branch_after_reload_without_log_clipping(category, kind, event_count):
+    session, script = make_session()
+    root = session.world_tree.add_node(None, "2030-01-01T09:00:00", 0, state_snapshot=copy.deepcopy(session.current_state))
+    for index in range(event_count):
+        definition = {**copy.deepcopy(script[category][0]), "id": f"test_dynamic_event_{index}"}
+        session._apply_director_results({"events": {kind: [definition]}})
+    final = session.world_tree.add_node(root, "2030-01-01T09:01:00", 1, state_snapshot=copy.deepcopy(session.current_state))
+    expected = copy.deepcopy(session.script[category])
+    saved = json.loads(json.dumps(session.current_state))
+    restored = GameSession(script, None)
+    restored.current_state = saved
+    restored._restore_dynamic_story()
+    restored._hydrate_branch_runtime(saved)
+    query = {"category": category, "query": "test_dynamic_event_0"}
+    result = json.loads(restored._handle_consult_rules(query))
+    assert json.loads(result["entries"][0]["content"])["definition"] == expected[1]
+    assert restored.script[category] == expected
+    assert len(saved["dynamic_story_content"][category]) == event_count
+    await session.branch_to_node(root)
+    assert json.loads(session._handle_consult_rules(query))["entries"] == []
+    assert session.script[category] == script[category]
+    assert "test_dynamic_event_0" not in session._event_def_by_id
+    assert "test_dynamic_event_0" not in session.event_engine.events
+    assert "test_dynamic_event_0" not in session.event_scheduler._cyclic_by_id
+    assert "test_dynamic_event_0" not in session.current_state.get("cyclic_event_trackers", {})
+    scheduled = session.event_scheduler.check_events(
+        session.current_state, "2030-01-01T09:00:00", "2030-01-01T09:30:00", lambda condition: True,
+    )
+    assert "test_dynamic_event_0" not in {event["event_id"] for event in scheduled}
+    sibling_definition = {**copy.deepcopy(expected[1]), "description": "Synthetic alternate branch."}
+    session._apply_director_results({"events": {kind: [sibling_definition]}})
+    sibling = session.world_tree.add_node(root, "2030-01-01T09:01:00", 1, state_snapshot=copy.deepcopy(session.current_state))
+    await session.branch_to_node(final)
+    assert json.loads(session._handle_consult_rules(query))["entries"] == result["entries"]
+    assert session.script[category] == expected
+    assert session.event_engine.events["test_dynamic_event_0"].metadata["original_def"] == expected[1]
+    scheduled = session.event_scheduler.check_events(
+        session.current_state, "2030-01-01T09:00:00", "2030-01-01T09:30:00", lambda condition: True,
+    )
+    assert "test_dynamic_event_0" in {event["event_id"] for event in scheduled}
+    await session.branch_to_node(sibling)
+    sibling_result = json.loads(session._handle_consult_rules(query))
+    assert json.loads(sibling_result["entries"][0]["content"])["definition"] == sibling_definition
+    assert session.event_engine.events["test_dynamic_event_0"].metadata["original_def"] == sibling_definition
+    restored._hydrate_branch_runtime(saved)
+    assert restored.script[category] == expected
+
+
+def test_dynamic_event_registration_rejects_duplicate_ids_and_keeps_snapshot_independent():
+    session, script = make_session()
+    definition = {**copy.deepcopy(script["cyclic_events"][0]), "id": "test_dynamic_cycle"}
+    session._apply_director_results({"events": {"cyclic": [definition, definition]}})
+    session._apply_director_results({"events": {"one_time": [definition, script["cyclic_events"][0]]}})
+    saved = session.current_state["dynamic_story_content"]
+    assert saved["cyclic_events"] == [definition]
+    assert saved["one_time_events"] == []
+    definition["description"] = "Synthetic mutated caller input."
+    assert saved["cyclic_events"][0] == session._event_def_by_id["test_dynamic_cycle"]
+    session._event_def_by_id["test_dynamic_cycle"]["description"] = "Synthetic temporary runtime."
+    session._hydrate_branch_runtime(session.current_state)
+    assert session._event_def_by_id["test_dynamic_cycle"] == saved["cyclic_events"][0]
+    assert session.script["cyclic_events"][0] == script["cyclic_events"][0]
+
+
+def test_dynamic_event_hydration_uses_target_snapshot_and_preserves_schedule_progress():
+    session, script = make_session()
+    current = copy.deepcopy(session.current_state)
+    definition = {**copy.deepcopy(script["cyclic_events"][0]), "id": "test_dynamic_cycle"}
+    target = copy.deepcopy(current)
+    target["dynamic_story_content"] = {"cyclic_events": [definition]}
+    target["events"] = {definition["id"]: {"next_fire": "2030-01-01T10:20:00", "last_fired": "2030-01-01T10:10:00"}}
+    session._hydrate_branch_runtime(target)
+    assert session.current_state == current
+    assert target["cyclic_event_trackers"][definition["id"]] == target["events"][definition["id"]]
+    target["cyclic_event_trackers"][definition["id"]]["next_fire"] = "2030-01-01T10:30:00"
+    expected = copy.deepcopy(target)
+    session._hydrate_branch_runtime(target)
+    assert target == expected
+    session._hydrate_branch_runtime(current)
+    assert definition["id"] not in session.event_engine.events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("category, kind", [("one_time_events", "one_time"), ("cyclic_events", "cyclic")])
+async def test_failed_generation_rolls_back_dynamic_event_queries_and_execution_caches(category, kind):
+    session, script = make_session()
+    accepted = {**copy.deepcopy(script[category][0]), "id": "test_accepted_event"}
+    session._apply_director_results({"events": {kind: [accepted]}})
+    session._hydrate_branch_runtime(session.current_state)
+    snapshot = game_routes._capture_generation_state(session)
+    rejected = {**copy.deepcopy(script[category][0]), "id": "test_failed_event"}
+    session._apply_director_results({"events": {kind: [rejected]}})
+    assert rejected["id"] in session.event_engine.events
+    await game_routes._rollback_generation_state(session, snapshot)
+    assert session.current_state == snapshot["state"]
+    assert session.script[category] == [*script[category], accepted]
+    result = json.loads(session._handle_consult_rules({"category": category, "query": rejected["id"]}))
+    assert result["entries"] == []
+    assert rejected["id"] not in session.event_engine.events
+    assert rejected["id"] not in session._event_def_by_id
+    assert rejected["id"] not in session.event_scheduler._cyclic_by_id
+    assert accepted["id"] in session.event_engine.events

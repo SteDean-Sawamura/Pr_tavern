@@ -21,7 +21,8 @@ def _stream_events(text):
 
 
 @pytest.mark.asyncio
-async def test_cyclic_lore_projection_matches_stream_settlement_after_reload(tmp_path, monkeypatch):
+@pytest.mark.parametrize("dynamic_events", [False, True])
+async def test_cyclic_lore_projection_matches_stream_settlement_after_reload(tmp_path, monkeypatch, dynamic_events):
     script = {
         "script_id": "synthetic-cyclic-harness", "name": "Synthetic cyclic harness", "settings": {},
         "start_time": "2030-01-01T09:00:00",
@@ -33,15 +34,18 @@ async def test_cyclic_lore_projection_matches_stream_settlement_after_reload(tmp
             "id": "test_tick", "first_trigger": "2030-01-01T09:05:00",
             "frequency_value": 1, "frequency_unit": "minute",
             "condition": "script_variables.test_gate == 1",
+            "description": "Synthetic scheduled tick.", "rule_notes": "SYNTHETIC_CYCLIC_RULE",
             "effects": [{"type": "activate_lore", "id": "test_notice"}],
         }],
         "one_time_events": [{
             "id": "test_configure", "trigger_time": "2030-01-01T09:05:00",
+            "description": "Synthetic configuration event.", "rule_notes": "SYNTHETIC_ONETIME_RULE",
             "effects": [{"type": "add_trigger", "trigger": {
                 "id": "test_open_gate", "event": "test_configure", "action": "set_var",
                 "params": {"var_id": "test_gate", "op": "set", "value": 1},
             }}],
         }],
+        "persistent_states": [{"id": "test_condition", "description": "SYNTHETIC_PERSISTENT_RULE"}],
     }
     narrative = (
         "You remain in the reading room and inspect the empty shelf carefully. "
@@ -68,9 +72,18 @@ async def test_cyclic_lore_projection_matches_stream_settlement_after_reload(tmp
         assert index < len(operations)
         name, arguments = operations[index]
         assert name in [tool["function"]["name"] for tool in kwargs["tools"]]
-        return {"content": "", "tool_calls": [{
+        calls = [{
             "id": f"synthetic-cycle-{turn_index}-{index}", "name": name, "arguments": arguments,
-        }]}
+        }]
+        if index == 1:
+            calls.append({
+                "id": f"synthetic-preview-{turn_index}", "name": "peek_upcoming_events", "arguments": {"hours_ahead": 1},
+            })
+            calls.extend({
+                "id": f"synthetic-rule-{turn_index}-{category}", "name": "consult_rules",
+                "arguments": {"category": category, "query": script[category][0]["id"]},
+            } for category in ("one_time_events", "cyclic_events", "persistent_states"))
+        return {"content": "", "tool_calls": calls}
 
     provider = SimpleNamespace(
         generate_with_tools=AsyncMock(side_effect=generate_with_tools),
@@ -82,14 +95,23 @@ async def test_cyclic_lore_projection_matches_stream_settlement_after_reload(tmp
             "pass": True, "violations": [],
         })),
     )
-    session = GameSession(copy.deepcopy(script), provider, save_id="synthetic-cyclic-save")
-    session.current_state = ScriptLoader.create_initial_state(script)
+    stored_script = copy.deepcopy(script)
+    if dynamic_events:
+        stored_script.pop("one_time_events")
+        stored_script.pop("cyclic_events")
+    session = GameSession(stored_script, provider, save_id="synthetic-cyclic-save")
+    session.current_state = ScriptLoader.create_initial_state(stored_script)
     session.current_state["_pipeline_mode"] = "agentic_unified"
     session.script_variables.init_state(session.current_state)
     root_id = session.world_tree.add_node(
         None, script["start_time"], 0, ai_response="You are in the reading room.",
         state_snapshot=copy.deepcopy(session.current_state),
     )
+    root_state = copy.deepcopy(session.current_state)
+    if dynamic_events:
+        session._apply_director_results({"events": {
+            "one_time": script["one_time_events"], "cyclic": script["cyclic_events"],
+        }})
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "cyclic-harness.db")
     monkeypatch.setattr(game_routes, "_sessions", OrderedDict([(session.save_id, session)]))
     monkeypatch.setattr(game_routes, "_session_locks", {})
@@ -105,12 +127,12 @@ async def test_cyclic_lore_projection_matches_stream_settlement_after_reload(tmp
     try:
         async with database.get_db() as db:
             await db.execute("INSERT INTO scripts (id, name, content) VALUES (?, ?, ?)",
-                             (script["script_id"], script["name"], json.dumps(script)))
+                             (script["script_id"], script["name"], json.dumps(stored_script)))
             await db.execute("INSERT INTO saves (id, script_id) VALUES (?, ?)",
                              (session.save_id, script["script_id"]))
             await db.commit()
         await game_routes._save_node(session, {
-            "node_id": root_id, "state": session.current_state, "narrative": "You are in the reading room.",
+            "node_id": root_id, "state": root_state, "narrative": "You are in the reading room.",
         })
         current = session
         async with httpx.AsyncClient(
@@ -141,6 +163,20 @@ async def test_cyclic_lore_projection_matches_stream_settlement_after_reload(tmp
                 assert received[0]["entries"] == settled["entries"]
                 assert received[0]["projection"]["event_ids"] == (["test_tick"] if turn_index else ["test_configure"])
                 assert ("SYNTHETIC_CYCLIC_NOTICE" in json.dumps(requests[turn_index][3])) is bool(turn_index)
+                preview, = [json.loads(message["content"]) for message in requests[turn_index][2]
+                            if message.get("tool_call_id") == f"synthetic-preview-{turn_index}"]
+                assert "SYNTHETIC_CYCLIC_RULE" not in json.dumps(preview)
+                assert "SYNTHETIC_ONETIME_RULE" not in json.dumps(preview)
+                for category in ("one_time_events", "cyclic_events", "persistent_states"):
+                    rules, = [json.loads(message["content"]) for message in requests[turn_index][2]
+                              if message.get("tool_call_id") == f"synthetic-rule-{turn_index}-{category}"]
+                    assert rules["source"] == "current_branch"
+                    assert rules["game_time"] == f"2030-01-01T09:0{5 if turn_index else 0}:00"
+                    assert json.loads(rules["entries"][0]["content"])["definition"] == script[category][0]
+                for marker in ("SYNTHETIC_CYCLIC_RULE", "SYNTHETIC_ONETIME_RULE", "SYNTHETIC_PERSISTENT_RULE"):
+                    assert marker in json.dumps(requests[turn_index][2])
+                    assert marker not in response.text
+                assert sum(record["tool"] == "consult_rules" for record in current._agent_traces[-1]["rounds"]) == 3
                 final_snapshot = copy.deepcopy(current.current_state)
                 model_calls = provider.generate_with_tools.await_count
                 replay = await asyncio.wait_for(client.post(endpoint, json=action), timeout=5)
@@ -155,6 +191,18 @@ async def test_cyclic_lore_projection_matches_stream_settlement_after_reload(tmp
                 assert restored.current_state["events"]["test_tick"] == final_snapshot["events"]["test_tick"]
                 recovered = json.loads(await restored._run_tool_native_async("query_lorebook", {"entry_id": "test_notice"}))
                 assert recovered["entries"] == settled["entries"]
+                if dynamic_events:
+                    final_id = restored.world_tree.active_node_id
+                    await restored.branch_to_node(root_id)
+                    for category in ("one_time_events", "cyclic_events"):
+                        rules = json.loads(await restored._dispatch_unified_tool({}, "consult_rules", {"category": category}))
+                        assert rules["entries"] == []
+                        assert script[category][0]["id"] not in restored.event_engine.events
+                    await restored.branch_to_node(final_id)
+                    for category in ("one_time_events", "cyclic_events"):
+                        rules = json.loads(await restored._dispatch_unified_tool({}, "consult_rules", {"category": category}))
+                        assert json.loads(rules["entries"][0]["content"])["definition"] == script[category][0]
+                    assert restored.current_state["events"]["test_tick"] == final_snapshot["events"]["test_tick"]
                 game_routes._sessions[session.save_id] = restored
                 current = restored
         async with database.get_db() as db:

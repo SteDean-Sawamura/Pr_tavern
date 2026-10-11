@@ -172,6 +172,8 @@ async def _rollback_generation_state(session, snapshot):
     session.current_state = snapshot["state"]
     if hasattr(session, "_hydrate_mechanics_runtime"):
         session._hydrate_mechanics_runtime(session.current_state)
+    if hasattr(session, "_hydrate_dynamic_events"):
+        session._hydrate_dynamic_events(session.current_state)
     if snapshot["turn"] is not None:
         session.turn_number = snapshot["turn"]
     for name, model in snapshot["models"].items():

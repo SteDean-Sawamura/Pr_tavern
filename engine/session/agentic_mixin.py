@@ -428,7 +428,7 @@ class AgenticMixin:
                                 )
                             elif (tool_names.get(m.get("tool_call_id")) == "consult_rules"
                                   and isinstance(tool_result, dict)
-                                  and tool_result.get("category") in ("variables", "triggers", "random_items")
+                                  and tool_result.get("category") in self._queryable_mechanics_definitions()
                                   and isinstance(entries, list)):
                                 preview = {key: tool_result[key] for key in (
                                     "category", "source", "game_time", "offset", "next_offset", "total", "notice",
@@ -3270,7 +3270,7 @@ class AgenticMixin:
     def _build_unified_context(self, ctx: dict, player_action: dict) -> str:
         """Build per-turn user message for the unified agent (reuses foreground context)."""
         parts = [self._build_foreground_context(ctx, player_action, unified=True)]
-        mechanics = {category: len(entries) for category, entries in self._mechanics_definitions().items() if entries}
+        mechanics = {category: len(entries) for category, entries in self._queryable_mechanics_definitions().items() if entries}
         if mechanics:
             parts.append(
                 "<script_mechanics>\n当前分支可查询的剧本机制："
@@ -4868,11 +4868,19 @@ class AgenticMixin:
 
         return json.dumps({"answers": answers}, ensure_ascii=False)
 
+    def _queryable_mechanics_definitions(self):
+        return {
+            **self._mechanics_definitions(),
+            "one_time_events": self.script.get("one_time_events", []),
+            "cyclic_events": self.script.get("cyclic_events", []),
+            "persistent_states": self.script.get("persistent_states", []),
+        }
+
     def _handle_mechanics_query(self, args: dict) -> str:
-        definitions = self._mechanics_definitions()
+        definitions = self._queryable_mechanics_definitions()
         category = args.get("category")
         if not isinstance(category, str) or category not in definitions:
-            return json.dumps({"error": "category 必须是 variables、triggers 或 random_items"}, ensure_ascii=False)
+            return json.dumps({"error": "category 必须是：" + "、".join(definitions)}, ensure_ascii=False)
         offset = args.get("offset", 0)
         if type(offset) is not int or offset < 0:
             return json.dumps({"error": "offset 必须是非负整数"}, ensure_ascii=False)
