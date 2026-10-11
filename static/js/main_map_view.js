@@ -243,9 +243,9 @@ function restoreMainMapResult(saveId, narrative) {
 
 function restoreMainMapView() {
     const wasEnabled = !document.getElementById('main-map-view').hidden;
-    if (_mainMapChoosing && _mainMapChoosing.saveId !== currentSaveId) {
+    if (_mainMapChoosing && !_isCurrentStoryChoiceContext(_mainMapChoosing.context)) {
         _mainMapChoosing = null;
-        document.getElementById('freeform-input').disabled = false;
+        if (!isStreaming && !window._activeGameAction) document.getElementById('freeform-input').disabled = false;
     }
     if (_mainMapLayoutSaveId && _mainMapLayoutSaveId !== currentSaveId) {
         _clearMainMapPreparedAction();
@@ -344,7 +344,7 @@ function _syncMainMapCommandDock(enabled) {
     }
 }
 
-function renderMainMapStoryChoices(pending) {
+function renderMainMapStoryChoices(pending, context = null) {
     const panel = document.getElementById('main-map-story-choices');
     panel.replaceChildren();
     pending = pending || [];
@@ -374,7 +374,7 @@ function renderMainMapStoryChoices(pending) {
                 button.appendChild(description);
             }
             button.disabled = !!_mainMapChoosing || document.getElementById('freeform-input').disabled;
-            button.onclick = () => chooseMainMapStoryChoice(node.id, choice.id);
+            button.onclick = () => chooseMainMapStoryChoice(node.id, choice.id, context);
             item.appendChild(button);
         }
         panel.appendChild(item);
@@ -382,6 +382,7 @@ function renderMainMapStoryChoices(pending) {
 }
 
 async function loadMainMapStoryChoices(state = currentState) {
+    const context = _captureStoryChoiceContext();
     const saveId = currentSaveId;
     if (!saveId || document.getElementById('main-map-view').hidden) return;
     const request = ++_mainMapChoiceRequest;
@@ -390,19 +391,20 @@ async function loadMainMapStoryChoices(state = currentState) {
     renderMainMapStoryChoices([]);
     try {
         const data = await API.get(`/api/game/${saveId}/story-tree/active-choices`);
-        if (request === _mainMapChoiceRequest && saveId === currentSaveId && !document.getElementById('main-map-view').hidden) {
-            renderMainMapStoryChoices(data.choices);
+        if (request === _mainMapChoiceRequest && _isCurrentStoryChoiceContext(context) &&
+            data.base_node_id === context.nodeId && !document.getElementById('main-map-view').hidden) {
+            renderMainMapStoryChoices(data.choices, context);
         }
     } catch (error) {
-        if (request === _mainMapChoiceRequest && saveId === currentSaveId) console.error('Failed to load map choices:', error);
+        if (request === _mainMapChoiceRequest && _isCurrentStoryChoiceContext(context)) console.error('Failed to load map choices:', error);
     }
 }
 
-async function chooseMainMapStoryChoice(nodeId, choiceId) {
-    if (_mainMapChoosing || document.getElementById('freeform-input').disabled ||
+async function chooseMainMapStoryChoice(nodeId, choiceId, context) {
+    if (!_isCurrentStoryChoiceContext(context) || _mainMapChoosing || document.getElementById('freeform-input').disabled ||
         document.getElementById('main-map-view').hidden) return;
-    const saveId = currentSaveId;
-    const choiceToken = { saveId };
+    const saveId = context.saveId;
+    const choiceToken = { context };
     _mainMapChoosing = choiceToken;
     let refreshedState = false;
     const input = document.getElementById('freeform-input');
@@ -411,21 +413,21 @@ async function chooseMainMapStoryChoice(nodeId, choiceId) {
         for (const button of item.children) if (button.type === 'button') button.disabled = true;
     }
     try {
-        if (await makeStoryChoice(nodeId, choiceId, true) && saveId === currentSaveId) {
-            const state = await API.get(`/api/game/${saveId}/state`);
-            if (saveId === currentSaveId) {
+        if (await makeStoryChoice(nodeId, choiceId, true, context) && _isCurrentStoryChoiceContext(context)) {
+            const state = await API.get(`/api/game/${saveId}/state?expected_node_id=${encodeURIComponent(context.nodeId)}`);
+            if (_isCurrentStoryChoiceContext(context)) {
                 currentState = state;
                 updateStatusPanel(state);
                 refreshedState = true;
             }
         }
     } catch (error) {
-        if (saveId === currentSaveId) showNotification('刷新选择状态失败: ' + (error.message || '未知错误'));
+        if (_isCurrentStoryChoiceContext(context)) showNotification('刷新选择状态失败: ' + (error.message || '未知错误'));
     } finally {
-        if (_mainMapChoosing === choiceToken) {
+        if (_mainMapChoosing === choiceToken && _isCurrentStoryChoiceContext(context)) {
             _mainMapChoosing = null;
             input.disabled = false;
-            if (!refreshedState && saveId === currentSaveId) await loadMainMapStoryChoices();
+            if (!refreshedState) await loadMainMapStoryChoices();
         }
     }
 }

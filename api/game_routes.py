@@ -1298,7 +1298,7 @@ async def get_settlement_messages(save_id: str):
 
 
 @router.get("/{save_id}/state")
-async def get_state(save_id: str):
+async def get_state(save_id: str, expected_node_id: Optional[str] = None):
     lock = _get_session_lock(save_id)
     async with lock:
         session = _sessions.get(save_id)
@@ -1306,6 +1306,7 @@ async def get_state(save_id: str):
             session = await _restore_session(save_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Game session not found")
+        _validate_action_base(session, expected_node_id)
         return _enrich_state(session, session.current_state)
 
 
@@ -2829,6 +2830,7 @@ def _current_story_trees(session: GameSession) -> list[dict]:
 class StoryTreeChoiceRequest(BaseModel):
     node_id: str
     choice_id: str
+    expected_node_id: Optional[str] = None
 
 
 @router.get("/{save_id}/story-tree/active-choices")
@@ -2853,7 +2855,7 @@ async def get_active_story_choices(save_id: str):
                 } for choice in node.get("choices", [])]
                 if choices:
                     pending.append({"id": node["id"], "name": node["name"], "choices": choices})
-        return {"choices": pending}
+        return {"choices": pending, "base_node_id": session.world_tree.active_node_id}
 
 
 @router.get("/{save_id}/story-tree")
@@ -2913,6 +2915,7 @@ async def get_story_tree(save_id: str):
         threads = session.event_engine.get_events_by_category(view_state, "thread") if session.event_engine else []
         clues = session.event_engine.get_events_by_category(view_state, "clue") if session.event_engine else []
         return {
+            "base_node_id": session.world_tree.active_node_id,
             "trees": _player_story_trees(trees, session.script),
             "one_time_events": ot_view,
             "cyclic_events": ce_view,
@@ -2940,6 +2943,7 @@ async def story_tree_choice(save_id: str, req: StoryTreeChoiceRequest, summary_o
             session = await _restore_session(save_id)
             if not session:
                 raise HTTPException(status_code=404, detail="Game session not found")
+        _validate_action_base(session, req.expected_node_id)
         if not session.story_tree_engine and not session.event_engine:
             raise HTTPException(status_code=400, detail="此剧本没有剧情树")
         snapshot = _capture_generation_state(session)

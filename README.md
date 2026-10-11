@@ -631,9 +631,9 @@ RPG 开场白只作为场景展示，不会当作玩家行动自动推进时间�
 | POST | `/{save_id}/switch-persona` | 切换角色预设 |
 | POST | `/{save_id}/npc-dialogue` | NPC 对话交互 |
 | POST | `/{save_id}/undo` | 撤销上一回合 |
-| GET | `/{save_id}/story-tree` | 获取故事树状态 |
-| GET | `/{save_id}/story-tree/active-choices` | 获取地图可操作的剧情选择（仅含选择名称、ID 和提示，不含锁定分支或事件详情） |
-| POST | `/{save_id}/story-tree/choice` | 提交故事树选择；地图附 `summary_only=true` 仅返回成功状态，不返回完整剧情树或事件通知 |
+| GET | `/{save_id}/story-tree` | 获取故事树状态及来源回合 `base_node_id` |
+| GET | `/{save_id}/story-tree/active-choices` | 获取地图可操作的剧情选择及来源回合 `base_node_id`（不含锁定分支或事件详情） |
+| POST | `/{save_id}/story-tree/choice` | 提交故事树选择；可传 `expected_node_id` 校验来源回合，地图附 `summary_only=true` 仅返回成功状态 |
 | POST | `/{save_id}/deduce` | AI 推理 |
 | GET | `/{save_id}/shop/{location_id}` | 获取商店信息 |
 | POST | `/{save_id}/shop/buy` | 购买道具 |
@@ -920,6 +920,12 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 只提供 `choice_text` 时保留旧式粗略风险估计；节点身份不完整或失效会返回错误，单独提供续读参数也不静默降级为文本猜测。预检是只读工具，结果不应进入玩家 hint。`tests/test_declared_choice_preview.py`、`tests/test_choice_outcome_simulation.py` 和 `tests/test_choice_preview_paging.py` 使用合成声明、假模型及隔离 SQLite，覆盖两组声明门槛、候选/已提交值隔离、撤销、部分执行故障、实例方法重绑定、外部资源隔离、流式工具实际差异、完整 JSON 续读及快照失效、裁剪和重复压缩后的恢复、真实 Agent 循环按坐标读取后决策、API结算与保存重载一致、分支往返、请求重放及公开 SSE/trace 脱敏。静态选择可解锁动态后续节点；临时添加的信号触发器只证明当前会话模拟与结算结果，不证明临时定义能重载。这些离线证据不代表完整回合推演、真实模型自主决策、叙事质量或在线体验已验收。
 
 ### 声明式选择实际结算
+
+两个剧情树查询返回 `base_node_id`，指向展示时的世界树回合，不是剧情选择的 `node_id`。提交选择可在 JSON 中传入 `expected_node_id`；与当前活动回合不符时在会话锁内返回 HTTP 409，且不进入选择结算、回滚或持久化。`GET /api/game/{save_id}/state` 也可用同名查询参数约束选择后的状态刷新，成功响应格式保持不变。旧客户端省略或传 `null` 仍兼容，但没有来源回合保护。
+
+大地图和剧情树按钮绑定展示时的存档、来源回合及前端加载序号，不在点击时套用新的上下文；缺少来源或来源不匹配的查询结果不渲染。分支导航发起时递增加载序号，迟到的查询、选择结果和状态刷新不覆盖新导航；失败导航重新加载当前选择。该协议不是完整状态版本锁，不覆盖同一回合内的 Swipe 或其他原地变更；服务端仍重新检查选择条件。
+
+`tests/test_story_choice_origin.py` 和 `tests/story_choice_origin_ui.test.cjs` 使用合成会话、隔离 SQLite 和受控异步响应，覆盖来源校验、锁内重检、分支往返、旧按钮、响应乱序及输入控件归属；不代表真实模型或浏览器体验验收。
 
 `POST /api/game/{save_id}/story-tree/choice` 按节点归属选择结算引擎：剧情树运行时定义中的手动选择由 StoryTreeEngine 处理，独立 EventEngine 选择保留原入口。提交时重新检查当前状态、节点类型和选项条件，不直接信任先前的预检结果。影子事件引擎同步剧情树的完成、激活、解锁、已选选项及进度，不重复执行剧情树奖励；同步发生在应用效果之前和之后，使选项派发的事件既能观察已完成的节点，也能保留事件进一步解锁的节点。独立事件及触发器继续维护自己的状态。
 

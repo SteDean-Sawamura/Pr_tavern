@@ -226,14 +226,23 @@ async function branchFromNode(nodeId) {
     if (!confirm('切换到此分支将改变当前游戏状态。确定要从这里开始新的分支吗？')) {
         return;
     }
+    const saveId = currentSaveId;
+    const request = ++_saveLoadSequence;
+    const isCurrent = () => currentSaveId === saveId && request === _saveLoadSequence;
     try {
-        const result = await API.post(`/api/game/${currentSaveId}/branch/${nodeId}`, {});
+        const result = await API.post(`/api/game/${saveId}/branch/${nodeId}`, {});
+        if (!isCurrent()) return;
         currentState = result.state;
+        currentNodeId = result.node_id || nodeId;
         closeMaterialDetail();
         switchPanel('game');
         showGameScreen(result);
     } catch (e) {
+        if (!isCurrent()) return;
         alert('切换分支失败: ' + e.message);
+        restoreMainMapView();
+        if (document.getElementById('main-map-view').hidden) await loadStoryTree();
+        else await loadMainMapStoryChoices();
     }
 }
 

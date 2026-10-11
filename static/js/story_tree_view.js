@@ -1,6 +1,8 @@
 /* Story Tree visualization — unified graph with all trees + events */
 
 let _storyTreeData = null;
+let _storyTreeContext = null;
+let _storyTreeRequest = 0;
 let _storyEventData = { one_time: [], cyclic: [], threads: [], clues: [] };
 let _stViewZoom = 1, _stViewPanX = 0, _stViewPanY = 0, _stViewCanvas = null;
 let _stRecentNodeIds = new Set();
@@ -12,7 +14,17 @@ function markStoryTreeUpdates(updates) {
     for (const n of (updates.newly_active || [])) _stRecentNodeIds.add(n.id);
 }
 
+function _captureStoryChoiceContext() {
+    return { saveId: currentSaveId, nodeId: currentNodeId, loadSequence: _saveLoadSequence };
+}
+
+function _isCurrentStoryChoiceContext(context) {
+    return !!context && !!context.saveId && !!context.nodeId && context.saveId === currentSaveId &&
+        context.nodeId === currentNodeId && context.loadSequence === _saveLoadSequence;
+}
+
 async function loadStoryTree() {
+    const request = ++_storyTreeRequest;
     if (document.getElementById('game-play-screen').classList.contains('map-view')) return;
     if (!currentSaveId) {
         document.getElementById('storytree-placeholder').style.display = '';
@@ -20,9 +32,11 @@ async function loadStoryTree() {
         return;
     }
     try {
-        const saveId = currentSaveId;
-        const data = await API.get(`/api/game/${saveId}/story-tree`);
-        if (saveId !== currentSaveId || document.getElementById('game-play-screen').classList.contains('map-view')) return;
+        const context = _captureStoryChoiceContext();
+        const data = await API.get(`/api/game/${context.saveId}/story-tree`);
+        if (request !== _storyTreeRequest || !_isCurrentStoryChoiceContext(context) ||
+            data.base_node_id !== context.nodeId || document.getElementById('game-play-screen').classList.contains('map-view')) return;
+        _storyTreeContext = context;
         _storyTreeData = data.trees || [];
         _storyEventData = {
             one_time: data.one_time_events || [],
@@ -465,6 +479,7 @@ function renderStoryTreeGraph() {
         el.innerHTML = html;
 
         if (node._source === 'tree' && node.type === 'choice' && node.status === 'active' && node.choices) {
+            const choiceContext = _storyTreeContext;
             const choicesDiv = document.createElement('div');
             choicesDiv.className = 'story-node-choices';
             for (const c of node.choices) {
@@ -472,7 +487,7 @@ function renderStoryTreeGraph() {
                 btn.className = 'story-choice-btn';
                 btn.textContent = c.label;
                 btn.title = c.description || '';
-                btn.onclick = () => makeStoryChoice(node.id, c.id);
+                btn.onclick = () => makeStoryChoice(node.id, c.id, false, choiceContext);
                 choicesDiv.appendChild(btn);
             }
             el.appendChild(choicesDiv);
@@ -667,16 +682,17 @@ function renderStoryTreeGraph() {
     };
 }
 
-async function makeStoryChoice(nodeId, choiceId, summaryOnly = false) {
-    if (!currentSaveId) return;
-    const saveId = currentSaveId;
+async function makeStoryChoice(nodeId, choiceId, summaryOnly = false, context = _storyTreeContext) {
+    if (!_isCurrentStoryChoiceContext(context)) return false;
+    const saveId = context.saveId;
     try {
         const url = `/api/game/${saveId}/story-tree/choice${summaryOnly ? '?summary_only=true' : ''}`;
         const result = await API.post(url, {
             node_id: nodeId,
             choice_id: choiceId,
+            expected_node_id: context.nodeId,
         });
-        if (saveId !== currentSaveId) return false;
+        if (!_isCurrentStoryChoiceContext(context)) return false;
         if (!result.success) {
             showNotification('选择已失效，请刷新后重试');
             return false;
@@ -688,9 +704,9 @@ async function makeStoryChoice(nodeId, choiceId, summaryOnly = false) {
         }
         if (!summaryOnly) _storyTreeData = result.trees || _storyTreeData;
         if (!summaryOnly || document.getElementById('main-map-view').hidden) await loadStoryTree();
-        return true;
+        return _isCurrentStoryChoiceContext(context);
     } catch (e) {
-        if (saveId !== currentSaveId) return false;
+        if (!_isCurrentStoryChoiceContext(context)) return false;
         console.error('Story choice failed:', e);
         showNotification('选择失败: ' + (e.message || '未知错误'));
         return false;
