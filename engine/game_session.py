@@ -3958,6 +3958,7 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
             if nid.startswith("__trigger_") or not desc:
                 continue
             self.prompt_builder.lorebook.remove_entry(f"_st_active_{nid}")
+            self._sync_lorebook_vectors({f"_st_active_{nid}"})
             if is_internal:
                 continue
             keywords = [name]

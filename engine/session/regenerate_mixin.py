@@ -157,6 +157,28 @@ class RegenerateMixin:
             if initial is not None:
                 self.prompt_builder.lorebook.add_entries([copy.deepcopy(initial)])
         self._index_dynamic_npcs_from_state(state)
+        active_lore_ids = {entry.id for entry in self.prompt_builder.lorebook.entries
+                           if entry.entry_type == "story_active" and entry.id.startswith("_st_active_")}
+        for entry_id in active_lore_ids:
+            self.prompt_builder.lorebook.remove_entry(entry_id)
+        story_nodes = self.story_tree_engine._nodes if self.story_tree_engine else {}
+        active_nodes = [story_nodes[node_id] for node_id in state.get("story_tree_state", {}).get("active", [])
+                        if node_id in story_nodes]
+        shadow_nodes = story_nodes if self.event_engine.shadow_story_nodes else {}
+        active_nodes.extend(
+            self.event_engine._event_to_dict(event) for event_id, event in self.event_engine.events.items()
+            if event_id not in shadow_nodes and state.get("events", {}).get(event_id, {}).get("status") == "active"
+            and event.category in ("story", "quest", "choice")
+        )
+        original_state = self.current_state
+        try:
+            self.current_state = state
+            self._sync_node_lorebook([], active_nodes, target=state)
+        finally:
+            self.current_state = original_state
+        current_active_lore_ids = {entry.id for entry in self.prompt_builder.lorebook.entries
+                                   if entry.entry_type == "story_active" and entry.id.startswith("_st_active_")}
+        active_lore_ids.update(current_active_lore_ids)
         self.prompt_builder.track_dynamic_lore(state)
         for entry_id, enabled in self.prompt_builder._initial_lore_enabled.items():
             self.prompt_builder.lorebook.update_entry_enabled(entry_id, enabled)
@@ -170,7 +192,8 @@ class RegenerateMixin:
         if dynamic_lore:
             self.prompt_builder.lorebook.add_entries(dynamic_lore, replace_existing=True)
         for entry_id, entry in overrides.items():
-            if entry is None:
+            if entry is None or (entry.get("entry_type") == "story_active"
+                                 and entry_id.startswith("_st_active_") and entry_id not in current_active_lore_ids):
                 self.prompt_builder.lorebook.remove_entry(entry_id)
             else:
                 self.prompt_builder.lorebook.add_entries([copy.deepcopy(entry)], replace_existing=True)
@@ -178,7 +201,7 @@ class RegenerateMixin:
             self.prompt_builder.lorebook.update_entry_enabled(entry_id, enabled)
         self.prompt_builder.sync_shelved_pc_knowledge(state)
         self.prompt_builder._lorebook_override_ids.update(overrides)
-        self._sync_lorebook_vectors(override_ids)
+        self._sync_lorebook_vectors(override_ids | active_lore_ids)
 
     def _settle_regen_state(self, parsed: dict, baseline: dict,
                             present_npc_ids: list[str], *, action_text: str = "",
