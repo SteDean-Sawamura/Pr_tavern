@@ -14,7 +14,6 @@ import asyncio
 import base64
 import copy
 from difflib import SequenceMatcher
-from functools import partial
 import hashlib
 import json
 import logging
@@ -4720,11 +4719,7 @@ class AgenticMixin:
 
         return json.dumps({"error": f"未知工具: {name}"})
 
-    def _story_query_candidate(self, ctx: dict | None = None):
-        from engine.event_scheduler import parse_time
-
-        updates = ctx.get("_accepted_state_updates", []) if ctx is not None else []
-        base_state = self._project_state_tool_updates(updates) if ctx is not None else self.current_state
+    def _fork_query_session(self, base_state: dict):
         candidate = copy.copy(self)
         for name, value in self.__dict__.items():
             if isinstance(value, MethodType) and value.__self__ is self:
@@ -4742,6 +4737,14 @@ class AgenticMixin:
         candidate._index_tasks = set()
         candidate._deferred_tasks = set()
         candidate._deferred_lore_vector_ids = set()
+        return candidate
+
+    def _story_query_candidate(self, ctx: dict | None = None):
+        from engine.event_scheduler import parse_time
+
+        updates = ctx.get("_accepted_state_updates", []) if ctx is not None else []
+        base_state = self._project_state_tool_updates(updates) if ctx is not None else self.current_state
+        candidate = self._fork_query_session(base_state)
         end_time = next((update["end_time"] for update in reversed(updates) if update.get("end_time")), None)
         includes_scheduled = bool(ctx and ctx.get("old_time") and parse_time(end_time))
         events = []
@@ -4892,7 +4895,6 @@ class AgenticMixin:
                           base_state: dict | None = None) -> list[dict] | tuple[list[dict], dict]:
         if not ctx.get("old_time"):
             return ([], copy.deepcopy(base_state if base_state is not None else self.current_state)) if with_state else []
-        from datetime import timedelta
         from engine.event_scheduler import parse_time
 
         updates = ctx.get("_accepted_state_updates", [])
@@ -4900,94 +4902,13 @@ class AgenticMixin:
                          if update.get("end_time")), ctx.get("new_time"))
         if not parse_time(end_time):
             return ([], copy.deepcopy(base_state if base_state is not None else self.current_state)) if with_state else []
-        original_state = self.current_state
-        original_mechanics = self.script_variables, self.trigger_engine
-        try:
-            self.script_variables, self.trigger_engine = copy.deepcopy(original_mechanics)
-            self.current_state = (copy.deepcopy(base_state) if base_state is not None else
-                                  self._project_state_tool_updates(updates) if updates else copy.deepcopy(original_state))
-            event_times = self.event_scheduler.iter_event_times(
-                self.current_state, ctx["old_time"], end_time,
-            )
-            eligible = []
-            cursor = ctx["old_time"]
-            for fire_time in event_times:
-                self.current_state, _ = self.state_manager.check_expirations(
-                    self.current_state, fire_time, inplace=True,
-                )
-                start_time = cursor
-                if parse_time(fire_time) == parse_time(start_time):
-                    start_time = (parse_time(fire_time) - timedelta(microseconds=1)).isoformat()
-                while True:
-                    firing = [event for event in self.event_engine._tick_scheduled(
-                        self.current_state, self.current_state.setdefault("events", {}),
-                        start_time, fire_time, self._evaluate_condition,
-                        condition_eval_at_time=self._evaluate_condition_at_time,
-                    ).scheduled_events if event["fire_time"] == fire_time]
-                    if not firing:
-                        break
-                    eligible.extend(firing)
-                    for event in firing:
-                        event_def = self._event_def_by_id.get(event["event_id"], {})
-                        for effect in event_def.get("effects", []):
-                            if effect.get("type") == "state_change":
-                                self.current_state, _ = self.state_manager.apply_changes(
-                                    self.current_state, [{
-                                        "target": effect["target"], "op": effect.get("op", "set"),
-                                        "value": effect.get("value"),
-                                    }], inplace=True,
-                                )
-                            elif effect.get("type") == "activate_state":
-                                active = self.current_state.setdefault("active_persistent_states", [])
-                                if effect.get("id") and effect["id"] not in active:
-                                    active.append(effect["id"])
-                            elif effect.get("type") == "deactivate_state":
-                                active = self.current_state.get("active_persistent_states", [])
-                                if effect.get("id") in active:
-                                    active.remove(effect["id"])
-                            elif effect.get("type") == "schedule_override":
-                                self.trigger_engine.execute_actions(
-                                    [{"action": "schedule_override", "params": effect}], self.current_state,
-                                )
-                            elif effect.get("type") == "add_variable":
-                                variable = effect.get("variable", {})
-                                if variable.get("id"):
-                                    self._apply_variable_updates({"add": [variable]})
-                            elif effect.get("type") in ("add_trigger", "update_trigger"):
-                                adding = effect["type"] == "add_trigger"
-                                trigger = effect.get("trigger" if adding else "update", {})
-                                if trigger.get("id"):
-                                    self._apply_trigger_updates(
-                                        {"add" if adding else "update": [trigger]}, persist=False,
-                                    )
-                                    self._persist_mechanics_runtime()
-                        trigger_actions = self.trigger_engine.fire(
-                            event["event_id"], self.current_state,
-                            condition_eval=partial(self._evaluate_condition_at_time, event["fire_time"]),
-                        )
-                        if trigger_actions:
-                            trigger_effects = self.trigger_engine.execute_actions(
-                                trigger_actions, self.current_state,
-                            )
-                            event["_trigger_lore_effects"] = {
-                                key: trigger_effects[key] for key in (
-                                    "lore_activations", "lore_deactivations", "lore_reveals",
-                                ) if trigger_effects[key]
-                            }
-                        self.event_scheduler.update_trackers(
-                            self.current_state, [event], fire_time, inplace=True,
-                        )
-                cursor = fire_time
-            if with_state:
-                self.current_state, _ = self.state_manager.check_expirations(
-                    self.current_state, end_time, inplace=True,
-                )
-                self.current_state["game_time"] = end_time
-                return eligible, self.current_state
-        finally:
-            self.current_state = original_state
-            self.script_variables, self.trigger_engine = original_mechanics
-        return eligible
+        candidate = self._fork_query_session(
+            base_state if base_state is not None else self._project_state_tool_updates(updates),
+        )
+        events = []
+        candidate._settle_timed_events(ctx["old_time"], end_time, events)
+        candidate.current_state["game_time"] = end_time
+        return (events, candidate.current_state) if with_state else events
 
     def _project_interaction_state(self, ctx: dict) -> tuple[list[dict], dict]:
         updates = ctx.get("_accepted_state_updates", [])
@@ -5047,7 +4968,12 @@ class AgenticMixin:
             entry["id"]: entry for entry in projected_state.get("dynamic_lorebook", []) if entry.get("id")
         }
         dynamic_lore_changed = original_dynamic_lore != projected_dynamic_lore
-        preview_lorebook = copy.deepcopy(lorebook) if events or dynamic_lore_changed else lorebook
+        overrides_changed = any(projected_state.get(key, {}) != self.current_state.get(key, {}) for key in (
+            "lorebook_entry_overrides", "lorebook_enabled_overrides",
+        ))
+        if not (events or dynamic_lore_changed or overrides_changed):
+            return lorebook
+        preview_lorebook = copy.deepcopy(lorebook)
         if dynamic_lore_changed:
             for entry_id in original_dynamic_lore.keys() - projected_dynamic_lore.keys():
                 if entry_id not in self.prompt_builder._static_lore_ids:
@@ -5059,36 +4985,13 @@ class AgenticMixin:
             ]
             if changed_entries:
                 preview_lorebook.add_entries(changed_entries, replace_existing=True)
-        for event in events:
-            event_def = self._event_def_by_id.get(event["event_id"], {})
-            for effect in event_def.get("effects", []):
-                if effect.get("type") == "activate_lore":
-                    preview_lorebook.update_entry_enabled(effect.get("id", ""), True)
-                elif effect.get("type") == "deactivate_lore":
-                    preview_lorebook.update_entry_enabled(effect.get("id", ""), False)
-                elif effect.get("type") == "add_lore":
-                    entry_data = copy.deepcopy(effect.get("entry", {}))
-                    if entry_data.get("id") and entry_data.get("content"):
-                        entry_data.setdefault("enabled", True)
-                        entry_data.setdefault("position", "after_world")
-                        entry_data.setdefault("priority", 80)
-                        entry_data.setdefault("scan_depth", 3)
-                        entry_data["entry_type"] = "event_generated"
-                        preview_lorebook.add_entries([entry_data])
-                elif effect.get("type") == "update_lore":
-                    if effect.get("id") and effect.get("content"):
-                        preview_lorebook.update_entry(
-                            effect["id"], content=effect["content"], keys=effect.get("keys"),
-                        )
-                elif effect.get("type") == "remove_lore" and effect.get("id"):
-                    preview_lorebook.remove_entry(effect["id"])
-            trigger_lore = event.get("_trigger_lore_effects", {})
-            for entry_id in trigger_lore.get("lore_activations", []):
-                preview_lorebook.update_entry_enabled(entry_id, True)
-            for entry_id in trigger_lore.get("lore_deactivations", []):
-                preview_lorebook.update_entry_enabled(entry_id, False)
-            for entry_id in trigger_lore.get("lore_reveals", []):
-                preview_lorebook.update_entry_enabled(entry_id, True)
+        for entry_id, entry in projected_state.get("lorebook_entry_overrides", {}).items():
+            if entry is None:
+                preview_lorebook.remove_entry(entry_id)
+            else:
+                preview_lorebook.add_entries([copy.deepcopy(entry)], replace_existing=True)
+        for entry_id, enabled in projected_state.get("lorebook_enabled_overrides", {}).items():
+            preview_lorebook.update_entry_enabled(entry_id, enabled)
         return preview_lorebook
 
     async def _query_lorebook_for_turn(self, ctx: dict, args: dict) -> str:
