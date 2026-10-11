@@ -92,7 +92,7 @@ def _choice_preview_changes(before: dict, after: dict, path: tuple = ()) -> list
     return changes
 
 
-def _json_result_section(result: dict, result_path: list, offset: int) -> dict:
+def _json_result_section(result: dict, result_path: list, offset: int, summary_keys: tuple = ()) -> dict:
     selected = result
     for part in result_path:
         if isinstance(selected, dict) and isinstance(part, str) and part in selected:
@@ -112,6 +112,8 @@ def _json_result_section(result: dict, result_path: list, offset: int) -> dict:
         description["complete"] = len(encoded) <= 400
         if description["complete"]:
             description["value"] = value
+        elif isinstance(value, dict) and summary_keys:
+            description["summary"] = {key: value[key] for key in summary_keys if key in value}
         return description
 
     description = describe(selected)
@@ -186,7 +188,7 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
             result = None
         if isinstance(result, dict) and result.get("category") and isinstance(result.get("entries"), list):
             preview = {key: result[key] for key in (
-                "category", "source", "game_time", "offset", "next_offset", "total", "projection", "snapshot",
+                "category", "source", "game_time", "offset", "next_offset", "total", "projection", "snapshot", "view", "node_status",
             ) if key in result}
             preview["entries"] = [
                 {key: entry[key] for key in ("rule_index", "offset", "next_offset", "total_chars", "snapshot", "read") if key in entry}
@@ -195,12 +197,12 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
             preview["truncated"] = True
             preview["notice"] = (
                 "正文省略；携带条目 snapshot、category、rule_index 从 offset=0 重读；"
-                "失效则重查列表。非已触发或角色已知。"
+                "保留 view；失效则按原 node_status 重查列表。非已触发或角色已知。"
             )
             if result.get("projection"):
                 preview["notice"] = (
                     "正文省略；保留 include_candidates=true 和条目 snapshot，用 category、rule_index 从 offset=0 重读；"
-                    "候选值未提交、不含未结算效果、非角色知情；失效时丢弃旧片段重查列表。"
+                    "保留 view；候选值未提交、不含未结算效果、非角色知情；失效时按原 node_status 重查列表。"
                 )
             if any(entry.get("read") for entry in preview["entries"]):
                 preview["notice"] += "字段正文也已省略；按条目 read 保留 result_path，从 offset=0 重读该字段，不表示已知全部规则。"
@@ -209,7 +211,7 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
                 return serialized
             return json.dumps({
                 "truncated": True, "metadata_omitted": True,
-                "notice": "正文与坐标省略；按原查询类别和候选视图从 offset=0 重查列表，不传 rule_index/snapshot，再携带新快照重读。非已发生或角色已知。",
+                "notice": "正文与坐标省略；按原查询类别、view、node_status 和候选视图从 offset=0 重查列表，不传 rule_index/snapshot，再携带新快照重读。非已发生或角色已知。",
             }, ensure_ascii=False, separators=(",", ":"))
     if name == "preview_choice_outcome":
         try:
@@ -619,8 +621,10 @@ class AgenticMixin:
                                   and tool_result.get("category") in self._queryable_mechanics_definitions()
                                   and isinstance(entries, list)):
                                 preview = {key: tool_result[key] for key in (
-                                    "category", "source", "game_time", "offset", "next_offset", "total", "notice", "projection", "snapshot",
+                                    "category", "source", "game_time", "offset", "next_offset", "total", "notice", "projection", "snapshot", "view", "node_status",
                                 ) if key in tool_result}
+                                if tool_result.get("view") == "runtime":
+                                    preview["notice"] = "只读运行态，不推进状态；条件可选性不是已提交后果；候选未提交且不含未结算事件；非角色知情。"
                                 preview["entries"] = [
                                     {key: entry[key] for key in ("rule_index", "offset", "next_offset", "total_chars", "snapshot", "read")
                                      if key in entry}
@@ -630,7 +634,7 @@ class AgenticMixin:
                                     "[剧本机制检索] " + json.dumps(preview, ensure_ascii=False)
                                     + "；本次匹配的规则正文已省略；用 consult_rules 的 category、rule_index 和条目 snapshot "
                                       "从 offset=0 重读；字段读取按条目 read 保留 result_path，从0重读该字段，不表示已知全部规则；"
-                                      "不得只续读尾段；快照失效时丢弃旧片段重查列表。"
+                                      "保留 view 和候选视图；不得只续读尾段；快照失效时按原 node_status 重查列表。"
                                 )
                             elif (tool_names.get(m.get("tool_call_id")) == "preview_choice_outcome"
                                   and isinstance(tool_result, dict) and tool_result.get("mode") == "declared_choice"):
@@ -3486,6 +3490,15 @@ class AgenticMixin:
                   "不要凭名称猜测规则。查询不会执行机制，也不模拟本轮未提交的行动；"
                   "幕后规则不等于角色已知事实。\n</script_mechanics>"
             )
+        if mechanics.get("story_nodes"):
+            parts.append(
+                '<story_discovery>需要当前剧情选择时，先 consult_rules(category="story_nodes", '
+                'view="runtime", node_status="active") 分页发现节点和选项身份、可选性；'
+                '此目录不激活节点、不结算效果。unlocked 不等于可提交。需要规则时改用默认定义视图，'
+                'query=node_id 重新查询并按字段读取；需要后果时用 preview_choice_outcome。'
+                '长选项用 result_path=["choices"] 分页查看 summary 中的身份和可用性，标签仍按索引读取。'
+                '本轮候选判断显式加 include_candidates=true，未结算事件仍不在其中；不是角色已知信息。</story_discovery>'
+            )
         reply_lore = self._plan_reply_lore_context(ctx)
         if reply_lore:
             parts.append(reply_lore)
@@ -5199,6 +5212,8 @@ class AgenticMixin:
         """纯规则检查（不调 LLM）：NPC 在场、物品持有等。"""
         if "category" in args:
             return self._handle_mechanics_query(args, ctx)
+        if "view" in args or "node_status" in args:
+            return json.dumps({"error": "view 和 node_status 须指定 category"}, ensure_ascii=False)
         if "result_path" in args:
             return json.dumps({"error": "result_path 须指定 category、rule_index 和条目 snapshot"}, ensure_ascii=False)
         if args.get("include_candidates", False) is not False:
@@ -5232,6 +5247,39 @@ class AgenticMixin:
 
         return json.dumps({"answers": answers}, ensure_ascii=False)
 
+    def _story_node_runtime(self, definition: dict, state: dict) -> dict:
+        node = definition["node"]
+        node_id = node["id"]
+        story_state = state.get("story_tree_state", {})
+        active = node_id in story_state.get("active", [])
+        status = ("completed" if node_id in story_state.get("completed", []) else
+                  "active" if active else "unlocked" if node_id in story_state.get("unlocked", []) else "locked")
+        result = {
+            "tree_id": definition["tree"]["id"], "node_id": node_id,
+            "name": node.get("name", node_id), "type": node.get("type", "auto"), "status": status,
+            "chosen_choice_id": story_state.get("choices_made", {}).get(node_id), "choices": [],
+        }
+        if node.get("type") == "choice":
+            for choice in node.get("choices", []):
+                condition = choice.get("condition", "")
+                reason = ("node_not_active" if not active else
+                          "condition_not_met" if not self._evaluate_condition(condition, state) else None)
+                choice_view = {
+                    "choice_id": choice["id"], "label": choice.get("label", choice["id"]),
+                    "available": reason is None, "reason": reason,
+                }
+                error = condition_error(condition)
+                if error:
+                    choice_view["condition_error"] = error
+                result["choices"].append(choice_view)
+        if node.get("type") == "timed":
+            result["timed_progress"] = story_state.get("timed_progress", {}).get(node_id)
+        if node.get("type") == "periodic":
+            result["cooldown_remaining_turns"] = max(
+                0, story_state.get("periodic_cooldowns", {}).get(node_id, 0) - self.turn_number,
+            )
+        return result
+
     def _queryable_mechanics_definitions(self):
         return {
             **self._mechanics_definitions(),
@@ -5251,11 +5299,20 @@ class AgenticMixin:
         category = args.get("category")
         if not isinstance(category, str) or category not in definitions:
             return json.dumps({"error": "category 必须是：" + "、".join(definitions)}, ensure_ascii=False)
+        view = args.get("view", "definition")
+        if view not in ("definition", "runtime") or (view == "runtime" and category != "story_nodes"):
+            return json.dumps({"error": "view 必须是 definition 或 runtime；runtime 仅支持 story_nodes"}, ensure_ascii=False)
+        runtime = view == "runtime"
+        node_status = args.get("node_status")
+        if "node_status" in args and (not runtime or node_status not in ("active", "completed", "unlocked", "locked") or "rule_index" in args):
+            return json.dumps({"error": "node_status 仅用于运行态列表筛选：active、completed、unlocked、locked"}, ensure_ascii=False)
+        view_args = {"view": view} if runtime else {}
+        list_args = {**view_args, **({"node_status": node_status} if node_status is not None else {})}
         include_candidates = args.get("include_candidates", False)
         if type(include_candidates) is not bool:
             return json.dumps({"error": "include_candidates 必须是布尔值"}, ensure_ascii=False)
-        if include_candidates and (category not in ("variables", "world_properties") or not (ctx or {}).get("old_time")):
-            return json.dumps({"error": "候选值仅支持进行中回合的 variables 或 world_properties 查询"}, ensure_ascii=False)
+        if include_candidates and (not (runtime or category in ("variables", "world_properties")) or not (ctx or {}).get("old_time")):
+            return json.dumps({"error": "候选值仅支持进行中回合的 variables、world_properties 或 story_nodes 运行态查询"}, ensure_ascii=False)
         projected_state = self._project_state_tool_updates(ctx.get("_accepted_state_updates", [])) if include_candidates else None
         category_definitions = list(definitions[category])
         if include_candidates and category == "world_properties":
@@ -5290,6 +5347,8 @@ class AgenticMixin:
         records = []
         for index, definition in enumerate(category_definitions):
             payload = {"definition": definition}
+            if runtime:
+                payload = self._story_node_runtime(definition, projected_state if include_candidates else self.current_state)
             if category in CONDITION_RULE_SECTIONS:
                 error = condition_error(definition.get("condition", ""))
                 if error:
@@ -5298,7 +5357,7 @@ class AgenticMixin:
                 payload["current_value"] = self.script_variables.get(self.current_state, definition["id"])
             elif category == "world_properties":
                 payload["current_value"] = self.current_state.get("world_properties", {}).get(definition["id"])
-            if include_candidates:
+            if include_candidates and not runtime:
                 if category == "variables":
                     payload["candidate_value"] = self.script_variables.get(projected_state, definition["id"])
                     payload["candidate_exists"] = True
@@ -5320,10 +5379,11 @@ class AgenticMixin:
         revision = hashlib.sha256(json.dumps([
             self.world_tree.tree_id, self.world_tree.active_node_id, self.current_state.get("game_time"),
             category, include_candidates, projection, records,
+            *([view, self.turn_number, self.current_state, projected_state, category_definitions] if runtime else []),
         ], ensure_ascii=False).encode("utf-8")).hexdigest()
 
         def snapshot_for(index=None):
-            scope = [revision, "list", query.casefold()] if index is None else [revision, "entry", index]
+            scope = [revision, "list", query.casefold(), *([node_status] if runtime else [])] if index is None else [revision, "entry", index]
             digest = hashlib.sha256(json.dumps(scope).encode("utf-8")).digest()[:16]
             return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
@@ -5334,12 +5394,13 @@ class AgenticMixin:
                 "error": "快照缺失或已失效；丢弃旧正文片段，按 restart 从列表首屏重查，再携带新快照完整读取。",
                 "error_code": "snapshot_required" if supplied_snapshot is None else "snapshot_expired",
                 "restart_required": True,
-                "restart": {"category": category, "query": query, "include_candidates": include_candidates, "offset": 0},
+                "restart": {"category": category, "query": query, "include_candidates": include_candidates, "offset": 0, **list_args},
             }, ensure_ascii=False)
         if detailed and rule_index >= len(records):
             return json.dumps({"error": "rule_index 超出当前类别的范围"}, ensure_ascii=False)
         records = [record for record in records if record[0] == rule_index] if detailed else [
             record for record in records if query.casefold() in record[1].casefold()
+            and (node_status is None or json.loads(record[1])["status"] == node_status)
         ]
         page = records if detailed else records[offset:offset + 5]
         content_offset = offset if detailed else 0
@@ -5348,13 +5409,14 @@ class AgenticMixin:
         if scoped:
             index, content = page[0]
             try:
-                section = _json_result_section(json.loads(content), result_path, offset)
+                summary_keys = ("choice_id", "available", "reason") if runtime and result_path[:1] == ["choices"] else ()
+                section = _json_result_section(json.loads(content), result_path, offset, summary_keys)
             except ValueError as error:
                 return json.dumps({"error": str(error)}, ensure_ascii=False)
             entries = [{
                 "rule_index": index, "snapshot": snapshot, "total_chars": len(content), **section,
                 "read": {"category": category, "rule_index": index, "snapshot": snapshot,
-                         "include_candidates": include_candidates, "result_path": result_path, "offset": 0},
+                         "include_candidates": include_candidates, "result_path": result_path, "offset": 0, **view_args},
             }]
         else:
             entries = [{
@@ -5363,10 +5425,16 @@ class AgenticMixin:
                 "offset": content_offset, "total_chars": len(content),
                 "next_offset": content_offset + 2000 if len(content) > content_offset + 2000 else None,
             } for index, content in page]
+            if runtime:
+                for entry in entries:
+                    entry["read"] = {
+                        "category": category, "rule_index": entry["rule_index"], "snapshot": entry["snapshot"],
+                        "include_candidates": include_candidates, "offset": 0, **view_args,
+                    }
         result = {
             "category": category, "source": "current_branch", "game_time": self.current_state.get("game_time"),
             "notice": "当前分支定义与现值；不模拟未提交的行动，不代表机制已触发或角色已知。",
-            "entries": entries, "total": len(records), "offset": offset, "snapshot": snapshot,
+            "entries": entries, "total": len(records), "offset": offset, "snapshot": snapshot, **list_args,
             "next_offset": offset + 5 if not detailed and len(records) > offset + 5 else None,
         }
         if include_candidates:
@@ -5375,6 +5443,15 @@ class AgenticMixin:
                 "current_value 为已提交值；candidate_value 为查询时累计候选值，不含未结算事件效果、非角色知情。"
                 "candidate_exists=false 表示未设置，definition=null 表示仅运行时属性、不是剧本声明。"
                 "续读保留 include_candidates=true。"
+            )
+        if runtime:
+            result["notice"] = (
+                "当前分支剧情节点运行态；status 只描述存档状态，unlocked 不代表激活，计时和冷却不在查询中推进。"
+                "choices.available 仅按当前激活状态和选项条件判断，不结算效果，不预测未来激活或NPC回应。"
+                "需要完整规则时改用 definition 视图、query=node_id 从列表重新查询；需要后果时调用 preview_choice_outcome。"
+                "choices 字段的长选项保留 summary 身份与可用性，complete=false 不表示已读标签；按成员 key 下钻读取原文。"
+                "幕后信息不是角色已知；续读保留 view=runtime。"
+                + ("本次为未提交候选状态，不含未结算事件；续读保留 include_candidates=true。" if include_candidates else "本次只读已提交状态。")
             )
         result["notice"] += (
             "列表翻页携带顶层 snapshot；指定 rule_index（包括 offset=0）须携带条目 snapshot。"

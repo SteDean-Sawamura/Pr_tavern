@@ -831,6 +831,18 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 每类候选值反馈正文最多保留 4000 字符，超过时明确省略全文并提供续读入口，不截断成看似完整的值。统一 Agent 和后台结算均可调用 `consult_rules(category="variables"或"world_properties", include_candidates=true)` 分页读回完整候选值；默认查询仍只读已提交状态，`current_value` 始终是已提交值，新增 `candidate_value` 和 `candidate_exists` 描述候选快照，`projection` 标记未提交且不含尚未结算事件效果。仅运行时存在或本轮撤销的宏观属性以 `definition=null`、独立 `id` 返回，不伪造剧本声明。压缩保留候选读取标记及索引快照；续读须保留 `include_candidates=true` 和对应 `snapshot`，状态更新、撤销或切换分支后从 `offset=0` 重查列表，不能拼接不同快照的片段。`tests/test_world_property_feedback.py` 覆盖累计值、失败与过滤、撤销、叙事回滚、长值续读和压缩；验证使用合成数据与假模型，不代表真实模型质量或在线体验已验收。
 
+### 当前剧情节点与选择发现
+
+统一 Agent 可先调用 `consult_rules(category="story_nodes", view="runtime", node_status="active")` 发现当前分支的节点与选择，不必根据少量剧情摘要猜测 ID，也不必逐个模拟全部声明。省略 `node_status` 查询全部节点；支持 `active`、`completed`、`unlocked`、`locked` 四种存档状态筛选，`query` 在运行态响应内容中检索。列表仍每页最多5条，按顶层 `next_offset` 和 `snapshot` 续读，并保留视图、筛选条件与候选参数；`rule_index` 是原类别索引，不是筛选后的序号。
+
+运行态条目只含 `tree_id`、`node_id`、名称、类型、状态、`chosen_choice_id`、选择列表，以及适用的计时或冷却信息，不重复规则正文。`choices` 提供 `choice_id`、标签、`available` 和 `reason`；可用性遵循现有选择结算的激活检查和条件求值，失败区分 `node_not_active` 与 `condition_not_met`，条件格式错误另附诊断。`unlocked` 不等于已激活或可以提交；冷却已结束也不在查询中重置已完成状态。查询不初始化或迁移状态、不运行剧情树求值、不触发事件、不推进计时、不结算效果。
+
+默认仍读取已提交状态。进行中回合可在运行态查询中使用 `include_candidates=true`，按已接收更新的候选状态判断选项条件；`projection` 标记未提交、不含尚未结算事件。它不会预测节点未来激活，也不代表执行选择的最终后果。需要规则时用默认 `view="definition"`、`query=node_id` 重新查询，并使用已有字段读取协议读取相关声明；需要后果时调用 `preview_choice_outcome(node_id=..., choice_id=...)`。正式选择仍沿既有选择接口重新校验与结算，不能把目录或预检当成已提交结果。
+
+长运行态条目同样支持 `result_path=[]` 查目录，或 `result_path=["choices"]` 分页读取选择。长标签导致选项不完整时，`summary` 仍保留 `choice_id`、`available`、`reason`，并计入本页预算；不把摘要冒充完整 `value`，`complete` 仍为 false。完整标签可用成员 `key` 作为索引，通过 `result_path=["choices",索引,"label"]` 原样读取；定义视图不增加此摘要。每个条目 `read` 保留 `view="runtime"`、候选参数、快照及从0重读坐标。运行态快照绑定分支、回合、状态与节点声明，同一游戏时间内的变化也会使旧快照失效；列表快照另外绑定搜索和状态筛选。切换定义/运行态视图必须重新查列表，不混用快照；`node_status` 不与 `rule_index` 同传。裁剪和历史压缩保留视图与续读坐标，极小预算明确标记元数据省略。目录和预检均是 GM 内部信息，不是角色已知事实，不进入公开 trace。
+
+`tests/test_story_runtime_discovery.py` 使用合成声明与假模型，覆盖超过摘要和单页数量的活跃节点、条件与候选撤销、无查询副作用、长选择列表、压缩续读及快照隔离，并通过隔离流式 API 完成“跨页发现 → 字段读规则 → 预检”，再验证正式选择、SQLite 重载、分支往返和请求重放。长标签用例将唯一可用项放在第二页节点的90个选项末尾，按实际消息预算与20轮上限验证发现链路。假模型只使用当前消息里的查询结果，不在请求外缓存或拼接正文；这些验证不代表真实模型检索策略或在线体验已验收。
+
 ### 规则分页快照一致性
 
 `consult_rules` 的八类规则查询统一使用内容快照校验：快照绑定世界树、活动分支、游戏时间、类别、已提交/候选视图和该类别的完整内容。列表快照还绑定搜索条件，条目快照绑定索引；快照不是权限凭据，不会执行机制或提交状态。首次查询列表无需快照，后续列表翻页和条目读取必须原样携带对应标识。
