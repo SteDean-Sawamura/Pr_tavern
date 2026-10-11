@@ -816,7 +816,7 @@ def _unified_tools() -> list[dict]:
         }},
         {"type": "function", "function": {
             "name": "undo_my_last_action",
-            "description": "撤销你在本轮中的上一个工具调用结果。用于发现自己犯错时自我修正。",
+            "description": "撤销本轮上一次非查询工具的可回退结果；中间的只读查询不改变回退点。撤销后应重新查询候选信息，仅支持回退一步。",
             "parameters": {"type": "object", "properties": {
                 "reason": {"type": "string", "description": "为什么要撤销"},
             }, "required": ["reason"]},

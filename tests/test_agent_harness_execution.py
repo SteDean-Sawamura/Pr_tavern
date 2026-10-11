@@ -336,6 +336,12 @@ async def test_retrieval_settlement_stream_and_reload(
         ("consult_rules", {"category": "variables", "query": "test_capacity"}),
         ("consult_rules", {"category": "variables", "query": "test_visit_count"}),
         ("query_lorebook", {"entry_id": "test_label"}),
+        ("undo_my_last_action", {"reason": "Reconsider the candidate arrival after checking its evidence."}),
+        ("query_lorebook", {"entry_id": "test_label"}),
+        ("query_lorebook", {"entry_id": "test_label"}),
+        ("update_state", {"location_change": "test_archive", "end_time": "2030-01-01T09:05:00",
+                          "variable_changes": [{"id": "test_capacity", "op": "inc", "value": 1}]}),
+        ("query_lorebook", {"entry_id": "test_label"}),
         ("write_narrative", {"text": narrative}),
         ("finalize_turn", {"summary": "Reached the Archive and read the shelf label.",
                            "variable_changes": [{"id": "test_capacity", "op": "inc", "value": 0}]}),
@@ -357,7 +363,7 @@ async def test_retrieval_settlement_stream_and_reload(
         if name == "write_narrative" and interjection_phase == "model":
             retrieved.set()
             await release_narrative.wait()
-        content = "Synthetic prior context. " * 1600 if compact_history and index in (2, 5, 8) else ""
+        content = "Synthetic prior context. " * 1600 if compact_history and index in (2, 5, 8, 12) else ""
         tool_calls = [{
             "id": f"synthetic-call-{index}", "name": name, "arguments": arguments,
         }]
@@ -514,7 +520,7 @@ async def test_retrieval_settlement_stream_and_reload(
                 assert any({"role": "user", "content": interjection} in messages for messages in requests)
                 assert any("Archive" in message.get("content", "") for message in requests[1] if message["role"] == "user")
                 assert "SYNTHETIC_MECHANICS_PRIVATE" not in json.dumps(requests[0])
-                for index, expected in [(2, 3), (4, 6), (7, 7)]:
+                for index, expected in [(2, 3), (4, 6), (7, 7), (14, 7)]:
                     messages = [message for request in requests for message in request
                                 if message.get("tool_call_id") == f"synthetic-call-{index}"]
                     assert json.dumps({"test_capacity": expected}) in messages[0]["content"]
@@ -525,6 +531,22 @@ async def test_retrieval_settlement_stream_and_reload(
                            and message["content"].startswith("已撤销") for request in requests for message in request)
                 assert any(message.get("tool_call_id") == "synthetic-call-5"
                            and message["content"].startswith("错误:") for request in requests for message in request)
+                undo_messages = [message["content"] for request in requests for message in request
+                                 if message.get("tool_call_id") == "synthetic-call-11"]
+                assert undo_messages and undo_messages[0].startswith("已撤销上一个工具调用（update_state）")
+                assert '"test_capacity": 6' in undo_messages[0]
+                assert "已接受 1 次状态更新" in undo_messages[0]
+                assert "重新查询" in undo_messages[0]
+                for index in (12, 13):
+                    revoked_results = [json.loads(message["content"]) for request in requests for message in request
+                                       if message.get("tool_call_id") == f"synthetic-call-{index}"]
+                    assert revoked_results and all(not result["projection"]["event_ids"] for result in revoked_results)
+                    if lore_effect == "update_lore":
+                        assert all(result["entries"][0]["content"] == "The shelf label is blank."
+                                   for result in revoked_results)
+                    else:
+                        assert all(not result["entries"] for result in revoked_results)
+                assert sum(name == "query_lorebook" for name, _ in dispatched) == 3
                 if compact_history:
                     summaries = [message["content"] for request in requests for message in request
                                  if (message.get("content") or "").startswith("[上下文压缩]")]
@@ -533,6 +555,7 @@ async def test_retrieval_settlement_stream_and_reload(
                     assert '"test_capacity": 7' in "\n".join(summaries)
                     assert "已接受 2 次状态更新" in final_context
                     assert "已撤销上一个工具调用（update_state）" in final_context
+                    assert "请重新查询后再继续推演" in final_context
                     assert "[工具失败] update_state:" in final_context
                 for index, (name, arguments) in enumerate(operations):
                     if name != "consult_rules":
@@ -604,7 +627,8 @@ async def test_retrieval_settlement_stream_and_reload(
             expected_tools.insert(-1, "finalize_turn")
         assert [round_record["tool"] for round_record in trace["rounds"]] == expected_tools
         assert trace["plan_waits"] == 1
-        assert trace["lore_queries"] == trace["lore_hits"] == trace["lore_entry_reads"] == 1
+        assert trace["lore_queries"] == 4
+        assert trace["lore_hits"] == trace["lore_entry_reads"] == (4 if lore_effect == "update_lore" else 2)
         assert trace["semantic_review_status"] == "passed"
         assert [(entry["message"], entry["plan_reply"]) for entry in trace["user_injections"]] == [
             ("Archive", True), (interjection, False),

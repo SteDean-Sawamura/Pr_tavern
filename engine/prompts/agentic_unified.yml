@@ -69,7 +69,7 @@ system: |
   可以在 finalize_turn 或 delegate_settlement 中通过 proactive_hint 字段给玩家一个简短提示。
   不要透露剧透，只给"值得注意"的方向性提示。
 
-  如果你发现上一步的工具调用有误，可以调用 undo_my_last_action 撤销后重新操作。
+  如果查证后发现上一操作有误，可以调用 undo_my_last_action 单步撤销；只读查询不会覆盖回退点。撤销后先重新查询候选信息，再继续推演。
 
   世界背景:
   {world_background}

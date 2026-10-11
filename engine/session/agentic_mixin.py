@@ -3491,11 +3491,14 @@ class AgenticMixin:
                     return json.dumps({"error": "当前叙事未经过语义审查，无法结算本轮。"}, ensure_ascii=False)
                 if semantic_revision_required and ctx.get("_finalize_narrative", "") == reviewed_narrative:
                     return json.dumps({"error": "请先调用 write_narrative 修订审查未通过的叙事。"}, ensure_ascii=False)
+            is_read_only = name in _PRE_PLAN_READ_TOOLS or name in (
+                "consult_rules", "trace_causality", "preview_choice_outcome",
+            )
             undone = self._last_tool_result if name == "undo_my_last_action" else None
             previous_narrative = ctx.get("_finalize_narrative") if name == "write_narrative" else None
             previous_narrative_events = ctx.get("_narrative_conditional_events") if name == "write_narrative" else None
             previous_timed_event_ids = ctx.get("_narrative_timed_event_ids") if name == "write_narrative" else None
-            if name != "undo_my_last_action":
+            if name != "undo_my_last_action" and not is_read_only:
                 self._last_state_snapshot = None
                 if name in ("update_state", "manage_npcs", "send_message", "attempt_deduction"):
                     snapshot = {
@@ -3567,7 +3570,7 @@ class AgenticMixin:
                 plan_submitted = True
             if name == "undo_my_last_action" and undone and result.startswith("已撤销上一个工具调用"):
                 ctx.setdefault("_undone_record_indexes", set()).add(undone["record_index"])
-            elif name != "undo_my_last_action":
+            elif name != "undo_my_last_action" and not is_read_only:
                 self._last_tool_result = {"name": name, "args": args,
                                           "record_index": record_index,
                                            "previous_narrative": previous_narrative,
@@ -4051,6 +4054,7 @@ class AgenticMixin:
                     return f"无法撤销上一个工具调用（{undone_name}）：没有可回退的状态"
                 self._last_tool_result = None
                 result = f"已撤销上一个工具调用（{undone_name}），状态已还原。原因：{reason}"
+                result += "；此前基于候选状态的查询结果可能已失效，请重新查询后再继续推演。"
                 if undone_name == "update_state":
                     result += self._state_projection_feedback(ctx)
                 return result
