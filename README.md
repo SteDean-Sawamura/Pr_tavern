@@ -847,9 +847,13 @@ node --test tests/main_map_activity_ui.test.cjs tests/turn_overflow_ui.test.cjs
 
 结果包括 `available`、未满足原因、完成/解锁的节点ID、直接声明的 `pending_effects`，以及实际副本结算的 `state_changes`、`lore_changes`。差异使用数组路径和 `add/replace/remove`，区分缺失、null、布尔值与数字；词条按ID比较完整字段。`projection.effects_applied=true` 只表示有效选择已在副本应用，`persisted=false` 明确没有保存；基线和结果状态均返回校验哈希。无效选择不返回初始化或迁移差异。影子事件状态与实际提交一样同步，派发事件可读取选择完成和奖励后的状态；不创建模型、存储或索引资源，不覆盖真实会话及撤销记录。
 
-`projection.scope="choice_and_emitted_events"` 限定为选择及其派发事件；`excludes_unsettled_events=true` 表示仍不包含其他待结算事件和完整回合生命周期，不预测 NPC 回应、随机后续或玩家已知信息。入口仅支持 `story_nodes` 的剧情树选择声明，不支持直接预检独立 EventEngine 选择。状态更新、撤销或切换分支后必须重查。超长结果返回差异数量和 `changes_omitted=true`，不能把省略误认为没有效果；目前不支持完整差异续读，`consult_rules` 只能重读声明，不能恢复本次结算差异，因此不能依据裁剪结果推断完整后果。
+`projection.scope="choice_and_emitted_events"` 限定为选择及其派发事件；`excludes_unsettled_events=true` 表示仍不包含其他待结算事件和完整回合生命周期，不预测 NPC 回应、随机后续或玩家已知信息。入口仅支持 `story_nodes` 的剧情树选择声明，不支持直接预检独立 EventEngine 选择。状态更新、撤销或切换分支后必须重查。超长结果返回差异数量和 `changes_omitted=true`，不能把省略误认为没有效果；`consult_rules` 只能重读声明，实际差异使用预检工具自身的续读接口恢复。
 
-只提供 `choice_text` 时保留旧式粗略风险估计；节点身份不完整或失效会返回错误，不静默降级为文本猜测。预检是只读工具，结果不应进入玩家 hint。`tests/test_declared_choice_preview.py` 和 `tests/test_choice_outcome_simulation.py` 使用合成声明、假模型及隔离 SQLite，覆盖两组声明门槛、候选/已提交值隔离、撤销、部分执行故障、实例方法重绑定、外部资源隔离、流式工具实际差异、API结算与保存重载一致、分支往返、请求重放及公开 SSE/trace 脱敏。静态选择可解锁动态后续节点；临时添加的信号触发器只证明当前会话模拟与结算结果，不证明临时定义能重载。这些离线证据不代表完整回合推演、真实模型自主决策、叙事质量或在线体验已验收。
+初查不传 `offset`，仍返回完整结构化结果，并附带 `snapshot`、`total_chars` 和 `read`。正文被消息预算裁剪或历史压缩后，使用 `read` 中的节点、选项、候选视图及快照，从 `offset=0` 完整重读；每次返回最多2000字符的 `content`，`content_format="json_fragment"`，按 `next_offset` 续读直至 null，拼接全部片段后再解析 JSON。正文是不包含续读元数据的完整预检结果，不能独立解析单片。历史摘要不保留正文，也不把某个尾页偏移误当完整阅读进度；极小预算连坐标也无法保留时，明确标记 `metadata_omitted=true`，须按原身份和视图重新初查。
+
+任何片段请求（包括 `offset=0`）都需要快照。每次读取重新进行隔离模拟，不添加会话缓存；快照基于完整状态、候选操作、存档/分支/回合身份、剧本和运行时定义、基线词条及完整模拟结果计算 SHA-256，并返回128位 URL-safe 标识，不依赖短状态摘要。输入或结果不匹配返回 `snapshot_expired`；未提供快照返回 `snapshot_required`，均要求丢弃旧片段按 `restart` 重新初查。节点或选项消失时先重查 `story_nodes`，不可拼接不同快照的片段。
+
+只提供 `choice_text` 时保留旧式粗略风险估计；节点身份不完整或失效会返回错误，单独提供续读参数也不静默降级为文本猜测。预检是只读工具，结果不应进入玩家 hint。`tests/test_declared_choice_preview.py`、`tests/test_choice_outcome_simulation.py` 和 `tests/test_choice_preview_paging.py` 使用合成声明、假模型及隔离 SQLite，覆盖两组声明门槛、候选/已提交值隔离、撤销、部分执行故障、实例方法重绑定、外部资源隔离、流式工具实际差异、完整 JSON 续读及快照失效、裁剪和重复压缩后的恢复、真实 Agent 循环按坐标读取后决策、API结算与保存重载一致、分支往返、请求重放及公开 SSE/trace 脱敏。静态选择可解锁动态后续节点；临时添加的信号触发器只证明当前会话模拟与结算结果，不证明临时定义能重载。这些离线证据不代表完整回合推演、真实模型自主决策、叙事质量或在线体验已验收。
 
 ### 声明式选择实际结算
 

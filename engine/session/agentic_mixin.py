@@ -161,22 +161,26 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
             result = None
         if isinstance(result, dict) and result.get("mode") == "declared_choice":
             preview = {key: result[key] for key in (
-                "mode", "source", "node_id", "choice_id", "available", "projection", "reason", "condition_error",
+                "mode", "node_id", "choice_id", "available", "reason", "condition_error",
+                "snapshot", "total_chars", "read", "error", "error_code", "restart_required", "restart",
             ) if key in result}
+            if isinstance(result.get("projection"), dict):
+                preview["projection"] = {key: result["projection"][key] for key in (
+                    "state_view", "effects_applied", "scope", "persisted", "excludes_unsettled_events",
+                ) if key in result["projection"]}
             preview.update(content_omitted=True, changes_omitted=True,
-                           state_change_count=len(result.get("state_changes", [])),
-                           lore_change_count=len(result.get("lore_changes", [])), notice=(
-                "副本结算差异和声明效果正文已省略，不表示没有效果或已保存；"
-                "consult_rules(category=story_nodes) 只能重读声明，不能恢复本次差异；"
-                "不可据此推断完整后果，状态变化后重新预检。"
+                           state_change_count=len(result["state_changes"]) if "state_changes" in result else result.get("state_change_count", 0),
+                           lore_change_count=len(result["lore_changes"]) if "lore_changes" in result else result.get("lore_change_count", 0), notice=(
+                "正文省略，非空效果或已保存；按 read 从 offset=0 完整重读，拼接后解析 JSON。"
+                "失效则丢弃旧片段按 restart 重查；consult_rules 只读声明。非玩家已知。"
             ))
             encoded = json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
-            if len(encoded) <= limit:
+            if len(encoded) <= limit and not result.get("metadata_omitted") and (preview.get("read") or preview.get("restart")):
                 return encoded
             return json.dumps({
-                "content_omitted": True, "metadata_omitted": True,
+                "mode": "declared_choice", "content_omitted": True, "metadata_omitted": True,
                 "changes_omitted": True,
-                "notice": "预检结果过长已省略；不是空效果或已保存。不可推断完整后果；consult_rules 只能读取声明。",
+                "notice": "正文和坐标省略；丢弃旧片段，按原节点、选项及候选视图重新初查，不传 offset/snapshot。非空效果、已保存或玩家已知。",
             }, ensure_ascii=False, separators=(",", ":"))
     if name == "read_director_notes":
         try:
@@ -569,6 +573,9 @@ class AgenticMixin:
                                     + "；本次匹配的规则正文已省略；用 consult_rules 的 category、rule_index 和条目 snapshot "
                                       "从 offset=0 重新完整读取，不得只续读尾段；快照失效时丢弃旧片段重查列表。"
                                 )
+                            elif (tool_names.get(m.get("tool_call_id")) == "preview_choice_outcome"
+                                  and isinstance(tool_result, dict) and tool_result.get("mode") == "declared_choice"):
+                                summary_parts.append("[选择模拟] " + _bounded_tool_content(mc, "preview_choice_outcome", 1000))
                             elif (isinstance(tool_result, dict) and isinstance(tool_result.get("events"), list)
                                   and isinstance(tool_result.get("conditional_candidates"), list)):
                                 preview = {
@@ -4387,7 +4394,7 @@ class AgenticMixin:
 
         # --- C3 分支预演 ---
         if name == "preview_choice_outcome":
-            if any(key in args for key in ("node_id", "choice_id")):
+            if any(key in args for key in ("node_id", "choice_id", "offset", "snapshot")):
                 return self._preview_declared_choice(args, ctx)
             if args.get("include_candidates", False) is not False:
                 return json.dumps({"error": "候选视图仅支持同时提供 node_id 和 choice_id 的声明预检"}, ensure_ascii=False)
@@ -4452,14 +4459,38 @@ class AgenticMixin:
         include_candidates = args.get("include_candidates", False)
         if type(include_candidates) is not bool:
             return json.dumps({"error": "include_candidates 必须是布尔值"}, ensure_ascii=False)
+        offset = args.get("offset", 0)
+        if type(offset) is not int or offset < 0:
+            return json.dumps({"error": "offset 必须是非负整数"}, ensure_ascii=False)
+        supplied_snapshot = args.get("snapshot")
+        if "snapshot" in args and (not isinstance(supplied_snapshot, str) or not re.fullmatch(r"[A-Za-z0-9_-]{22}", supplied_snapshot)):
+            return json.dumps({"error": "snapshot 必须原样使用预检返回的快照标识"}, ensure_ascii=False)
+        restart = {"node_id": node_id, "choice_id": choice_id, "include_candidates": include_candidates}
+
+        def restart_response(required=False):
+            return json.dumps({
+                "mode": "declared_choice", "node_id": node_id, "choice_id": choice_id,
+                "error": "续读需要有效快照；丢弃旧片段按 restart 重新初查。节点或选项已变化时先用 consult_rules 重查 story_nodes。",
+                "error_code": "snapshot_required" if required else "snapshot_expired",
+                "restart_required": True, "restart": restart,
+            }, ensure_ascii=False)
+
+        if "offset" in args and supplied_snapshot is None:
+            return restart_response(required=True)
         if include_candidates and not ctx.get("old_time"):
+            if supplied_snapshot is not None:
+                return restart_response()
             return json.dumps({"error": "候选预检仅支持进行中的回合"}, ensure_ascii=False)
         engine = self.story_tree_engine
         node = engine._nodes.get(node_id) if engine else None
         if node is None or node.get("type") != "choice":
+            if supplied_snapshot is not None:
+                return restart_response()
             return json.dumps({"error": "当前分支没有此剧情树选择节点；请用 consult_rules 查询 story_nodes"}, ensure_ascii=False)
         choice = next((item for item in node.get("choices", []) if item.get("id") == choice_id), None)
         if choice is None:
+            if supplied_snapshot is not None:
+                return restart_response()
             return json.dumps({"error": "此节点没有该 choice_id；请重新读取当前分支的 story_nodes 声明"}, ensure_ascii=False)
 
         base_state = (self._project_state_tool_updates(ctx.get("_accepted_state_updates", []))
@@ -4515,6 +4546,38 @@ class AgenticMixin:
         error = condition_error(choice.get("condition", ""))
         if error:
             response["condition_error"] = error
+        content = json.dumps(response, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        revision = json.dumps({
+            "save_id": self.save_id, "tree_id": self.world_tree.tree_id,
+            "active_node_id": self.world_tree.active_node_id, "turn_number": self.turn_number,
+            "state_view": include_candidates, "state": self.current_state, "base_state": base_state,
+            "updates": ctx.get("_accepted_state_updates", []) if include_candidates else [],
+            "old_time": ctx.get("old_time") if include_candidates else None,
+            "script": self.script, "story_tree": engine.trees, "story_nodes": engine._nodes,
+            "story_node_trees": engine._tree_for_node,
+            "variables": self.script_variables.definitions, "triggers": self.trigger_engine.triggers,
+            "events": {key: asdict(event) for key, event in self.event_engine.events.items()} if self.event_engine else {},
+            "event_trees": self.event_engine._trees if self.event_engine else [],
+            "event_node_trees": self.event_engine._tree_for_event if self.event_engine else {},
+            "shadow_story_nodes": self.event_engine.shadow_story_nodes if self.event_engine else False,
+            "state_rules": self.state_manager._attr_rules, "world_aliases": self.state_manager._world_aliases,
+            "lore": before_lore, "content": content,
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        snapshot = base64.urlsafe_b64encode(hashlib.sha256(revision.encode("utf-8")).digest()[:16]).decode("ascii").rstrip("=")
+        if supplied_snapshot is not None and supplied_snapshot != snapshot:
+            return restart_response()
+        read = {**restart, "snapshot": snapshot, "offset": 0}
+        metadata = {"snapshot": snapshot, "total_chars": len(content), "read": read}
+        if "offset" in args:
+            if offset > len(content):
+                return json.dumps({"error": "offset 超出预检正文长度"}, ensure_ascii=False)
+            return json.dumps({
+                **{key: response[key] for key in ("mode", "node_id", "choice_id", "available", "projection")},
+                **metadata, "content_format": "json_fragment", "content": content[offset:offset + 2000],
+                "offset": offset, "next_offset": offset + 2000 if offset + 2000 < len(content) else None,
+                "state_change_count": len(response["state_changes"]), "lore_change_count": len(response["lore_changes"]),
+            }, ensure_ascii=False)
+        response.update(metadata)
         return json.dumps(response, ensure_ascii=False)
 
     def _projected_events(self, ctx: dict, *, with_state: bool = False,
