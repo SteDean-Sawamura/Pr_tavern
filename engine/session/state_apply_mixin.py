@@ -173,9 +173,7 @@ class StateApplyMixin:
         future_reveals = self._future_lore_reveal_claims(parsed, new_time)
         feedback = (json.dumps({"error": "词条原话发生在结算时间之后，请修改叙事或结束时间",
                                 "end_time": new_time, "entry_ids": future_reveals}, ensure_ascii=False)
-                    if future_reveals else self._timed_event_revision_feedback(
-                        ctx, parsed.get("narrative", raw_response), settled_end_time=new_time,
-                    ))
+                    if future_reveals else "")
         if feedback:
             from engine.session.agentic_mixin import NarrativeSettlementError
             logger.warning("叙事未通过事件结算校验：%s", feedback)
@@ -231,6 +229,13 @@ class StateApplyMixin:
             ctx["old_time"], new_time, triggered_events, on_event=settle_event_dice,
             world_events=world_events,
         )
+        feedback = self._timed_event_revision_feedback(
+            ctx, parsed.get("narrative", raw_response), settled_end_time=new_time,
+            settled_state=self.current_state,
+        )
+        if feedback:
+            from engine.session.agentic_mixin import NarrativeSettlementError
+            raise NarrativeSettlementError(feedback)
         if self.current_state.get("dice_check_enabled", True):
             for item_id, item in ctx.get("candidate_conditional_items", {}).items():
                 if not self._random_item_condition_matches(

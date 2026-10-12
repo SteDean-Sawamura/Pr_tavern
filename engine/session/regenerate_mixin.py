@@ -715,6 +715,7 @@ class RegenerateMixin:
         if stage == "all":
             feedback = self._timed_event_revision_feedback(
                 regen_ctx, new_narrative, settled_end_time=swipe_state.get("game_time"),
+                settled_state=swipe_state,
             )
             if feedback:
                 logging.getLogger(__name__).warning("重生成未通过事件结算校验：%s", feedback)

@@ -442,7 +442,7 @@ class IncompleteAgentTurnError(RuntimeError):
 class NarrativeSettlementError(IncompleteAgentTurnError):
     def __init__(self, feedback: str):
         self.feedback = feedback
-        super().__init__("叙事与实际结算时间不符，本轮未保存，请重试")
+        super().__init__("叙事与实际事件或时间结算不符，本轮未保存，请重试")
 
 
 class PendingConsequenceDisclosureError(IncompleteAgentTurnError):
@@ -4293,7 +4293,14 @@ class AgenticMixin:
                 first_text_model_calls = holder.model_calls
                 first_text_plan_wait_ms = holder.plan_wait_ms
                 first_text_at = time.monotonic()
-            yield {"type": "narrative_revised" if streamed_narrative else "text", "content": narrative}
+            event_type = "narrative_revised" if streamed_narrative else "text"
+            if buffer_timed_narrative or buffer_until_settlement:
+                ctx["_deferred_event_narrative"] = {
+                    "type": event_type, "first_draft_at": first_draft_at,
+                    "plan_wait_ms": first_text_plan_wait_ms,
+                }
+            else:
+                yield {"type": event_type, "content": narrative}
 
         ctx["tool_results"].extend(holder.records)
 
@@ -5047,9 +5054,8 @@ class AgenticMixin:
         }, ensure_ascii=False)
 
     def _narrative_claimed_timed_event_ids(self, ctx: dict, narrative: str) -> set[str]:
-        return {event["event_id"] for event in ctx.get("triggered_events", [])
-                if any(claim in narrative for claim in self._event_def_by_id.get(
-                    event["event_id"], {}).get("narrative_claims", []) if claim)}
+        return {event_id for event_id, definition in self._event_def_by_id.items()
+                if any(claim in narrative for claim in definition.get("narrative_claims", []) if claim)}
 
     def _map_travel_revision_feedback(self, ctx: dict, narrative: str) -> str:
         destination = ctx.get("_map_travel_destination")
@@ -5080,7 +5086,8 @@ class AgenticMixin:
         }, ensure_ascii=False)
 
     def _timed_event_revision_feedback(self, ctx: dict, narrative: str | None = None,
-                                       *, settled_end_time: str | None = None) -> str:
+                                       *, settled_end_time: str | None = None,
+                                       settled_state: dict | None = None) -> str:
         from engine.event_scheduler import parse_time
 
         end_time = settled_end_time or next((update["end_time"] for update in reversed(
@@ -5090,19 +5097,27 @@ class AgenticMixin:
             narrative = ctx.get("_finalize_narrative", "")
         referenced = (set(ctx.get("_narrative_timed_event_ids") or [])
                       | self._narrative_claimed_timed_event_ids(ctx, narrative))
-        candidates = ctx.get("triggered_events", [])
-        occurred_ids = {event["event_id"] for event in candidates
-                        if finish and (fire_time := parse_time(event.get("fire_time"))) and fire_time <= finish}
-        excluded = [event for event in candidates
-                    if event["event_id"] in referenced and event["event_id"] not in occurred_ids and finish
-                    and (fire_time := parse_time(event.get("fire_time"))) and fire_time > finish]
+        if not referenced or not finish:
+            return ""
+        if settled_state is None:
+            _, settled_state = self._projected_events(ctx, with_state=True)
+        occurred_ids = set(settled_state.get("fired_one_time_events", []))
+        occurred_ids.update(event_id for event_id, tracker in settled_state.get("cyclic_event_trackers", {}).items()
+                            if (last_fired := parse_time(tracker.get("last_fired"))) and last_fired <= finish)
+        excluded = []
+        for event_id in sorted(referenced - occurred_ids):
+            definition = self._event_def_by_id.get(event_id, {})
+            fire_time = next((event.get("fire_time") for event in ctx.get("triggered_events", [])
+                              if event["event_id"] == event_id),
+                             definition.get("trigger_time") or definition.get("first_trigger"))
+            excluded.append({"id": event_id, **({"time": fire_time} if fire_time else {})})
         if not excluded:
             return ""
         return json.dumps({
-            "error": "叙事引用了结算时间后才发生的候选事件；请按实际时间重写叙事，再调用 finalize_turn。",
+            "error": "叙事引用了截至结算时间尚未发生的定时事件；请按实际事件重写叙事，再调用 finalize_turn。",
             "end_time": end_time,
-            "excluded_events": [{"id": event["event_id"], "time": event["fire_time"]} for event in excluded],
-            "hint": "请先调用 write_narrative 修订；这些事件尚未发生，不得提前叙述。",
+            "excluded_events": excluded,
+            "hint": "请先调用 write_narrative 修订；核对事件声明、触发条件和时间，不得把未发生的事件写成事实。",
         }, ensure_ascii=False)
 
     def _invalid_lore_reveals(self, ctx: dict, args: dict) -> list[str]:

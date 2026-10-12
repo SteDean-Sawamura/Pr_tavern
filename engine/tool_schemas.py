@@ -662,7 +662,7 @@ def _unified_tools() -> list[dict]:
         "parameters": {"type": "object", "properties": {
             "text": {"type": "string", "description": "完整的叙事正文。用第二人称（'你'）描写，注重细节和氛围。"},
             "event_ids": {"type": "array", "items": {"type": "string"},
-                          "description": "叙事中明确写到已发生的定时事件 ID；没有则传空数组。不得把预览事件当成已发生。"},
+                          "description": "叙事中明确写到已发生的定时事件 ID；没有则传空数组。提交时按候选状态投影校验，落库前按实际结算复核；不得把预览、条件失效或窗口外事件当成已发生。"},
         }, "required": ["text"]},
     }}]
 

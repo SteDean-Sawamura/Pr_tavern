@@ -14,6 +14,7 @@ from engine.session.agentic_mixin import AgenticMixin, _AgentResult
 class PlanLoop(AgenticMixin):
     def __init__(self, questions, plan="Proceed"):
         self._inject_queue = []
+        self._event_def_by_id = {}
         self.ai_provider = SimpleNamespace(generate_with_tools=AsyncMock(side_effect=[
             {"content": "", "tool_calls": [{
                 "id": "plan-1", "name": "submit_plan",

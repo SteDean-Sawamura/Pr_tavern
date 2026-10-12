@@ -1971,6 +1971,16 @@ class GameSession(
         result = await self._apply_parsed_response(
             parsed, narrative, player_action, ctx
         )
+        if deferred := ctx.get("_deferred_event_narrative"):
+            if "first_text_ms" not in ctx:
+                text_time = _time.monotonic()
+                ctx["first_text_ms"] = int((text_time - turn_started) * 1000)
+                if _agent_trace is not None:
+                    _agent_trace["first_text_ms"] = ctx["first_text_ms"]
+                    _agent_trace["first_text_active_ms"] = max(0, ctx["first_text_ms"] - (deferred["plan_wait_ms"] or 0))
+                    if deferred["first_draft_at"] is not None:
+                        _agent_trace["first_draft_to_text_ms"] = max(0, int((text_time - deferred["first_draft_at"]) * 1000))
+            yield {"type": deferred["type"], "content": result.get("narrative", narrative)}
         if _narrative_reasoning:
             result["thinking"] = _narrative_reasoning
             node = self.world_tree.get_node(self.world_tree.active_node_id)
