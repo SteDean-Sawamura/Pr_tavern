@@ -3735,7 +3735,7 @@ class AgenticMixin:
         preview_hours = min(24, max(3, ((ctx.get("requested_wait_minutes") or 0) + 59) // 60))
         upcoming = json.loads(self._handle_peek_upcoming_events({"hours_ahead": preview_hours}))
         if upcoming.get("events") or upcoming.get("conditional_candidates"):
-            parts.append("<upcoming_events>\nevents 是当前条件下的计划事件；conditional_candidates 是待验证事件，仅条件在触发时满足才可能发生。均非已发生或主角已知：\n"
+            parts.append("<upcoming_events>\nevents 是按触发时刻和前序事件效果只读推演的计划事件；conditional_candidates 是投影未触发的条件事件，状态改变后应重新查询。均非已发生或主角已知：\n"
                          + json.dumps(upcoming, ensure_ascii=False)
                          + ("\n列表未显示完整；需要后续事件时调用 peek_upcoming_events，offset=5、10……继续读取。"
                             if upcoming.get("truncated") or upcoming.get("conditional_truncated") else "")
@@ -5705,25 +5705,22 @@ class AgenticMixin:
             event["id"] for section in ("one_time_events", "cyclic_events")
             for event in self.script.get(section, []) if event.get("condition")
         }
-        scheduled = []
+        candidate = self._fork_query_session(self.current_state)
+        projected_events = []
+        candidate._settle_timed_events(current.isoformat(), deadline.isoformat(), projected_events)
+        scheduled = [event for event in projected_events
+                     if query_start <= parse_time(event["fire_time"]) <= deadline]
+        scheduled_keys = {(event["event_id"], event["fire_time"]) for event in scheduled}
+        scheduled_total = len(scheduled)
+        scheduled = scheduled[offset:offset + 5]
         conditional_candidates = []
-        scheduled_total = 0
         conditional_total = 0
-        for page_start, page_end, page_events in self.event_scheduler.iter_event_pages(
-            self.current_state, query_start.isoformat(), deadline.isoformat(),
-        ):
-            page_scheduled = (self.event_scheduler.check_events(
-                self.current_state, page_start, page_end,
-                condition_eval=self._evaluate_condition,
-            ) if conditioned_ids else page_events)
-            scheduled.extend(page_scheduled[
-                max(0, offset - scheduled_total):max(0, offset + 5 - scheduled_total)
-            ])
-            scheduled_total += len(page_scheduled)
-            if conditioned_ids:
-                scheduled_keys = {(event["event_id"], event["fire_time"]) for event in page_scheduled}
+        if conditioned_ids:
+            for page in self.event_scheduler.iter_event_pages(
+                self.current_state, query_start.isoformat(), deadline.isoformat(),
+            ):
                 page_candidates = [
-                    event for event in page_events if event["event_id"] in conditioned_ids
+                    event for event in page[2] if event["event_id"] in conditioned_ids
                     and (event["event_id"], event["fire_time"]) not in scheduled_keys
                 ]
                 conditional_candidates.extend(page_candidates[
@@ -5752,7 +5749,7 @@ class AgenticMixin:
             "offset": offset,
             "window_start": window_start.isoformat(),
             "window_end": deadline.isoformat(),
-            "note": "events 基于当前存档条件；conditional_candidates 为待验证条件事件，仅条件在触发时满足才可能发生；均未发生，也不代表主角已知。",
+            "note": "events 基于当前存档条件按触发时刻和前序事件效果只读推演；conditional_candidates 为投影未触发的条件事件，状态改变后应重新查询；均未发生，也不代表主角已知。不包含后续玩家行动、掷骰或非定时生命周期结算。",
         }, ensure_ascii=False)
 
     # ================================================================

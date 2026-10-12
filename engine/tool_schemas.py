@@ -818,7 +818,7 @@ def _unified_tools() -> list[dict]:
     UNIFIED_TOOLS_SCHEMA = plan_tool + info_tools + action_tools + narrative_tool + output_tools + graph_tools + [
         {"type": "function", "function": {
             "name": "peek_upcoming_events",
-            "description": "按时间窗口预览计划事件和待验证条件候选（每次 1-24 小时；仅供推演，不代表已发生或主角知情）",
+            "description": "按正式定时结算只读投影预览计划事件和未触发条件候选，纳入触发时刻与前序事件效果（每次 1-24 小时；状态改变后重新查询，不代表已发生或主角知情）",
             "parameters": {"type": "object", "properties": {
                 "hours_ahead": {"type": "integer", "description": "向前看几小时（1-24）", "default": 3},
                 "start_after_hours": {"type": "integer", "description": "从当前存档时间起跳过几小时，默认 0；等待超过24小时可按24、48……查询后续时间段；相邻窗口不会重复返回边界事件", "default": 0},
