@@ -14,6 +14,7 @@ import asyncio
 import base64
 import copy
 from difflib import SequenceMatcher
+from functools import partial
 import hashlib
 import json
 import logging
@@ -306,6 +307,7 @@ def _bounded_tool_content(content: str, name: str, limit: int) -> str:
                 preview["projection"] = {key: result["projection"][key] for key in (
                     "state_view", "effects_applied", "scope", "persisted", "excludes_unsettled_events",
                     "scheduled_through", "excludes_lifecycle", "excludes_event_dice",
+                    "staged_event_dice_ids", "excludes_unstaged_event_dice",
                 ) if key in result["projection"]}
             preview.update(content_omitted=True, changes_omitted=True,
                            state_change_count=len(result["state_changes"]) if "state_changes" in result else result.get("state_change_count", 0),
@@ -3733,7 +3735,7 @@ class AgenticMixin:
                          f"{self._map_travel_route_hint(destination)}</map_travel>")
 
         preview_hours = min(24, max(3, ((ctx.get("requested_wait_minutes") or 0) + 59) // 60))
-        upcoming = json.loads(self._handle_peek_upcoming_events({"hours_ahead": preview_hours}))
+        upcoming = json.loads(self._handle_peek_upcoming_events({"hours_ahead": preview_hours}, ctx=ctx))
         if upcoming.get("events") or upcoming.get("conditional_candidates"):
             parts.append("<upcoming_events>\nevents 是按触发时刻和前序事件效果只读推演的计划事件；conditional_candidates 是投影未触发的条件事件，状态改变后应重新查询。均非已发生或主角已知：\n"
                          + json.dumps(upcoming, ensure_ascii=False)
@@ -4755,14 +4757,19 @@ class AgenticMixin:
         end_time = next((update["end_time"] for update in reversed(updates) if update.get("end_time")), None)
         includes_scheduled = bool(ctx and ctx.get("old_time") and parse_time(end_time))
         events = []
+        staged_item_ids = set()
         if includes_scheduled:
-            candidate._settle_timed_events(ctx["old_time"], end_time, events)
+            candidate._settle_timed_events(ctx["old_time"], end_time, events, on_event=partial(
+                candidate._settle_event_linked_dice, ctx=ctx,
+                settled_item_ids=staged_item_ids, staged_only=True,
+            ))
             candidate.current_state["game_time"] = end_time
         return candidate, {
             "event_ids": list(dict.fromkeys(event["event_id"] for event in events)),
             "scheduled_through": end_time if includes_scheduled else None,
             "excludes_unsettled_events": not includes_scheduled, "excludes_lifecycle": True,
-            "excludes_event_dice": True,
+            "staged_event_dice_ids": sorted(staged_item_ids),
+            "excludes_event_dice": not bool(staged_item_ids), "excludes_unstaged_event_dice": True,
         }
 
     def _preview_declared_choice(self, args: dict, ctx: dict) -> str:
@@ -4843,7 +4850,7 @@ class AgenticMixin:
             "note": ("仅在隔离副本结算当前激活剧情树节点的选择及其派发事件，未保存或创建索引任务；"
                     "pending_effects 是直接声明效果，state_changes/lore_changes 是副本实际差异。"
                     + ("候选基线仅在接收 end_time 后纳入定时事件；差异不包含基线自身的变化。"
-                       "不含事件掷骰或完整回合生命周期，不提前激活节点；" if include_candidates
+                       "仅复用已准备的事件骰子结果，不重新掷骰或执行完整回合生命周期，不提前激活节点；" if include_candidates
                        else "不含其他待结算事件或完整回合生命周期；")
                     + "不是NPC回应或玩家已知信息，不得写入玩家 hint。"
                     "状态变化后须重新预检，实际提交重新检查条件。"),
@@ -4899,7 +4906,8 @@ class AgenticMixin:
         return json.dumps(response, ensure_ascii=False)
 
     def _projected_events(self, ctx: dict, *, with_state: bool = False,
-                          base_state: dict | None = None) -> list[dict] | tuple[list[dict], dict]:
+                          base_state: dict | None = None,
+                          settled_item_ids: set | None = None) -> list[dict] | tuple[list[dict], dict]:
         if not ctx.get("old_time"):
             return ([], copy.deepcopy(base_state if base_state is not None else self.current_state)) if with_state else []
         from engine.event_scheduler import parse_time
@@ -4913,7 +4921,10 @@ class AgenticMixin:
             base_state if base_state is not None else self._project_state_tool_updates(updates),
         )
         events = []
-        candidate._settle_timed_events(ctx["old_time"], end_time, events)
+        candidate._settle_timed_events(ctx["old_time"], end_time, events, on_event=partial(
+            candidate._settle_event_linked_dice, ctx=ctx,
+            settled_item_ids=settled_item_ids if settled_item_ids is not None else set(), staged_only=True,
+        ))
         candidate.current_state["game_time"] = end_time
         return (events, candidate.current_state) if with_state else events
 
@@ -4941,18 +4952,21 @@ class AgenticMixin:
     def _peek_upcoming_events_for_turn(self, ctx: dict, args: dict) -> str:
         updates = ctx.get("_accepted_state_updates", [])
         if not updates or not ctx.get("old_time"):
-            return self._handle_peek_upcoming_events(args)
+            return self._handle_peek_upcoming_events(args, ctx=ctx)
+        staged_item_ids = set()
         end_time = next((update["end_time"] for update in reversed(updates)
                          if update.get("end_time")), None)
         if end_time:
-            projected_events, projected_state = self._projected_events(ctx, with_state=True)
+            projected_events, projected_state = self._projected_events(
+                ctx, with_state=True, settled_item_ids=staged_item_ids,
+            )
         else:
             projected_events = []
             projected_state = self._project_state_tool_updates(updates)
         original_state = self.current_state
         try:
             self.current_state = projected_state
-            result = json.loads(self._handle_peek_upcoming_events(args))
+            result = json.loads(self._handle_peek_upcoming_events(args, ctx=ctx, settled_item_ids=staged_item_ids))
         finally:
             self.current_state = original_state
         if "error" not in result:
@@ -4960,6 +4974,8 @@ class AgenticMixin:
             result["projection"] = {
                 "through": projected_state.get("game_time"),
                 "event_ids": list(dict.fromkeys(event["event_id"] for event in projected_events)),
+                "staged_event_dice_ids": sorted(staged_item_ids),
+                "excludes_event_dice": not bool(staged_item_ids), "excludes_unstaged_event_dice": True,
                 "provisional": True,
             }
         return json.dumps(result, ensure_ascii=False)
@@ -5686,7 +5702,7 @@ class AgenticMixin:
                 "需要完整规则时改用 definition 视图、query=node_id 从列表重新查询；需要后果时调用 preview_choice_outcome。"
                 "choices 字段的长选项保留 summary 身份与可用性，complete=false 不表示已读标签；按成员 key 下钻读取原文。"
                 "幕后信息不是角色已知；续读保留 view=runtime。"
-                + ("本次为未提交候选状态，仅在接收 end_time 后纳入定时事件及其剧情解锁；不含事件掷骰或完整生命周期，"
+                + ("本次为未提交候选状态，仅在接收 end_time 后纳入定时事件及其剧情解锁；仅复用已准备的事件骰子结果，不重新掷骰或执行完整生命周期，"
                    "不提前激活节点；续读保留 include_candidates=true。" if include_candidates else "本次只读已提交状态。")
             )
         result["notice"] += (
@@ -5696,7 +5712,8 @@ class AgenticMixin:
         )
         return json.dumps(result, ensure_ascii=False)
 
-    def _handle_peek_upcoming_events(self, args: dict) -> str:
+    def _handle_peek_upcoming_events(self, args: dict, *, ctx: dict | None = None,
+                                     settled_item_ids: set | None = None) -> str:
         """预览即将触发的事件（hint 级别，不剧透）。"""
         from datetime import timedelta
         from engine.event_scheduler import parse_time
@@ -5722,7 +5739,11 @@ class AgenticMixin:
         }
         candidate = self._fork_query_session(self.current_state)
         projected_events = []
-        candidate._settle_timed_events(current.isoformat(), deadline.isoformat(), projected_events)
+        staged_item_ids = set(settled_item_ids or ())
+        candidate._settle_timed_events(current.isoformat(), deadline.isoformat(), projected_events, on_event=partial(
+            candidate._settle_event_linked_dice, ctx=ctx or {},
+            settled_item_ids=staged_item_ids, staged_only=True,
+        ))
         scheduled = [event for event in projected_events
                      if query_start <= parse_time(event["fire_time"]) <= deadline]
         scheduled_keys = {(event["event_id"], event["fire_time"]) for event in scheduled}
@@ -5764,7 +5785,9 @@ class AgenticMixin:
             "offset": offset,
             "window_start": window_start.isoformat(),
             "window_end": deadline.isoformat(),
-            "note": "events 基于当前存档条件按触发时刻和前序事件效果只读推演；conditional_candidates 为投影未触发的条件事件，状态改变后应重新查询；均未发生，也不代表主角已知。不包含后续玩家行动、掷骰或非定时生命周期结算。",
+            "staged_event_dice_ids": sorted(staged_item_ids),
+            "excludes_event_dice": not bool(staged_item_ids), "excludes_unstaged_event_dice": True,
+            "note": "events 基于当前存档条件按触发时刻和前序事件效果只读推演，事件骰子仅复用本轮已准备的结果、不重新掷骰；conditional_candidates 为投影未触发的条件事件，状态改变后应重新查询；均未发生，也不代表主角已知。不包含后续玩家行动、未准备的骰子或非定时生命周期结算。",
         }, ensure_ascii=False)
 
     # ================================================================

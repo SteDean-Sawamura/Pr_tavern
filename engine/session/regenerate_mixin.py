@@ -284,33 +284,19 @@ class RegenerateMixin:
                 state, base_time, final_time, condition_eval=self._evaluate_condition,
             )
             settled_event_items = set()
+            event_dice_context = {
+                "candidate_event_dice_state": destination_dice["event_states"],
+                "candidate_event_dice_results": destination_dice["event_results"],
+            } if destination_dice else {}
 
             def settle_event_dice(event_id):
-                if not destination_dice or not self.current_state.get("dice_check_enabled", True):
+                if not destination_dice:
                     return
-                for item in self.script.get("random_items", []):
-                    if (item.get("trigger_type") != "event_linked"
-                            or item.get("linked_event_id") != event_id
-                            or item["id"] in settled_event_items):
-                        continue
-                    item_id = item["id"]
-                    settled_event_items.add(item_id)
-                    if item_id in destination_dice["event_states"]:
-                        staged_state = destination_dice["event_states"][item_id]
-                        if staged_state is None:
-                            self.current_state.setdefault("random_item_state", {}).pop(item_id, None)
-                        else:
-                            self.current_state.setdefault("random_item_state", {})[item_id] = copy.deepcopy(staged_state)
-                        result = destination_dice["event_results"].get(item_id)
-                    else:
-                        result = self._roll_or_sustain(item)
-                    if result is not None:
-                        destination_dice["settled"].append(self._dice_result_to_dict(result))
-                        if result.range_state_changes:
-                            self.current_state, log = self.state_manager.apply_changes(
-                                self.current_state, result.range_state_changes, inplace=True,
-                            )
-                            changes.extend(log)
+                results, event_dice_changes = self._settle_event_linked_dice(
+                    event_id, event_dice_context, settled_event_items,
+                )
+                destination_dice["settled"].extend(self._dice_result_to_dict(result) for result in results)
+                changes.extend(event_dice_changes)
 
             world_events = []
             event_changes, _, scheduled_result = self._settle_timed_events(
@@ -574,6 +560,8 @@ class RegenerateMixin:
             regen_ctx["estimated_minutes"] = estimated_minutes
             regen_ctx["triggered_events"] = destination_dice["triggered_events"]
             regen_ctx["conditional_event_candidates"] = destination_dice["conditional_event_candidates"]
+            regen_ctx["candidate_event_dice_state"] = destination_dice["event_states"]
+            regen_ctx["candidate_event_dice_results"] = destination_dice["event_results"]
             regen_ctx["initial_event_count"] = len(destination_dice["triggered_events"])
             regen_ctx["dice_dicts"] = (
                 destination_dice["settled"] + destination_dice["prompt"]

@@ -192,37 +192,13 @@ class StateApplyMixin:
                                 evt.get("event_id"), ft, final_time)
             triggered_events[:] = valid_events
 
-        candidate_dice_results = ctx.get("candidate_event_dice_results", {})
-        candidate_dice_state = ctx.get("candidate_event_dice_state", {})
         actual_dice_results = []
         settled_item_ids = set()
 
         def settle_event_dice(event_id):
-            if not self.current_state.get("dice_check_enabled", True):
-                return
-            for item in self.script.get("random_items", []):
-                if (item.get("trigger_type") != "event_linked"
-                        or item.get("linked_event_id") != event_id
-                        or item["id"] in settled_item_ids):
-                    continue
-                item_id = item["id"]
-                settled_item_ids.add(item_id)
-                if item_id in candidate_dice_state:
-                    staged_state = candidate_dice_state[item_id]
-                    if staged_state is None:
-                        self.current_state.setdefault("random_item_state", {}).pop(item_id, None)
-                    else:
-                        self.current_state.setdefault("random_item_state", {})[item_id] = staged_state
-                    dice_result = candidate_dice_results.get(item_id)
-                else:
-                    dice_result = self._roll_or_sustain(item)
-                if dice_result is not None:
-                    actual_dice_results.append(dice_result)
-                    if dice_result.range_state_changes:
-                        self.current_state, log = self.state_manager.apply_changes(
-                            self.current_state, dice_result.range_state_changes, inplace=True,
-                        )
-                        all_state_changes.extend(log)
+            results, changes = self._settle_event_linked_dice(event_id, ctx, settled_item_ids)
+            actual_dice_results.extend(results)
+            all_state_changes.extend(changes)
 
         world_events = []
         event_changes, ctx["expired"], scheduled_result = self._settle_timed_events(
@@ -666,6 +642,39 @@ class StateApplyMixin:
                 "location": info["location"], "activity": info["activity"],
             })
         return after
+
+    def _settle_event_linked_dice(self, event_id: str, ctx: dict, settled_item_ids: set,
+                                *, staged_only: bool = False) -> tuple[list, list]:
+        results, changes = [], []
+        if not self.current_state.get("dice_check_enabled", True):
+            return results, changes
+        staged_states = ctx.get("candidate_event_dice_state", {})
+        staged_results = ctx.get("candidate_event_dice_results", {})
+        for item in self.script.get("random_items", []):
+            if (item.get("trigger_type") != "event_linked"
+                    or item.get("linked_event_id") != event_id
+                    or item["id"] in settled_item_ids
+                    or staged_only and item["id"] not in staged_states):
+                continue
+            item_id = item["id"]
+            settled_item_ids.add(item_id)
+            if item_id in staged_states:
+                staged_state = staged_states[item_id]
+                if staged_state is None:
+                    self.current_state.setdefault("random_item_state", {}).pop(item_id, None)
+                else:
+                    self.current_state.setdefault("random_item_state", {})[item_id] = copy.deepcopy(staged_state)
+                result = staged_results.get(item_id)
+            else:
+                result = self._roll_or_sustain(item)
+            if result is not None:
+                results.append(result)
+                if result.range_state_changes:
+                    self.current_state, log = self.state_manager.apply_changes(
+                        self.current_state, result.range_state_changes, inplace=True,
+                    )
+                    changes.extend(log)
+        return results, changes
 
     def _settle_timed_events(self, old_time: str, new_time: str,
                              triggered_events: list[dict], on_event=None, *, world_events=None):
