@@ -3572,16 +3572,17 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
         )
         if not result.newly_completed:
             return result
+        inject_prompts = list(result.inject_prompts)
         if story_node is not None:
             if self.event_engine:
                 self.event_engine.sync_story_tree_state(self.current_state)
-            self._apply_story_tree_result(result)
+            self._apply_story_tree_result(result, inject_prompts=inject_prompts)
             if self.event_engine:
                 self.event_engine.sync_story_tree_state(self.current_state)
         else:
-            self._apply_event_result(result)
-        if result.inject_prompts:
-            self.current_state.setdefault("_pending_choice_instructions", []).extend(result.inject_prompts)
+            self._apply_event_result(result, inject_prompts=inject_prompts)
+        if inject_prompts:
+            self.current_state.setdefault("_pending_choice_instructions", []).extend(inject_prompts)
         return result
 
     @staticmethod
@@ -3594,7 +3595,7 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
             else:
                 state.pop("_pending_choice_instructions")
 
-    def _apply_story_tree_result(self, result):
+    def _apply_story_tree_result(self, result, *, inject_prompts=None):
         """Apply story tree effects to game state."""
         from engine.story_tree import StoryTreeResult
         if not isinstance(result, StoryTreeResult):
@@ -3612,6 +3613,7 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
             state_activations=result.state_activations,
             target=target,
             entry_type="story_tree",
+            inject_prompts=inject_prompts,
         )
 
         for effect in result.effects:
@@ -3624,12 +3626,14 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
 
         self._sync_node_lorebook(result.newly_completed, result.newly_active)
 
-    def _fire_event_dual(self, event_name: str, state: dict | None = None):
+    def _fire_event_dual(self, event_name: str, state: dict | None = None, *, inject_prompts=None):
         """Fire an event through both event_engine and story_tree_engine."""
         st = state or self.current_state
         if self.event_engine:
             ee_r = self.event_engine.fire_event(event_name, st, condition_eval=self._evaluate_condition)
-            self._apply_event_result(ee_r)
+            if inject_prompts is not None:
+                inject_prompts.extend(ee_r.inject_prompts)
+            self._apply_event_result(ee_r, inject_prompts=inject_prompts)
         if self.story_tree_engine:
             self.story_tree_engine.fire_event(event_name, st, condition_eval=self._evaluate_condition)
         if self.trigger_engine and self.trigger_engine.triggers:
@@ -3765,7 +3769,7 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
                     r = self.story_tree_engine.complete_quest(self.current_state, nid)
                     self._apply_story_tree_result(r)
 
-    def _apply_event_result(self, result, state=None):
+    def _apply_event_result(self, result, state=None, *, inject_prompts=None):
         """Apply unified EventResult to game state (replaces _apply_story_tree_result for EventEngine)."""
         if not isinstance(result, EventResult):
             return []
@@ -3785,6 +3789,7 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
             state_deactivations=getattr(result, "state_deactivations", []),
             target=target,
             entry_type="event_generated",
+            inject_prompts=inject_prompts,
         )
 
         for effect in result.effects:
@@ -3872,6 +3877,7 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
         lore_reveals=(),
         game_events, narrative_callbacks, state_activations,
         state_deactivations=(), target=None, entry_type="event_generated",
+        inject_prompts=None,
     ):
         """Shared effect processing for StoryTreeResult and EventResult."""
         target = self.current_state if target is None else target
@@ -3957,7 +3963,7 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
                 discovered.append(rid)
 
         for ev in game_events:
-            self._fire_event_dual(ev, target)
+            self._fire_event_dual(ev, target, inject_prompts=inject_prompts)
 
         for cb in narrative_callbacks:
             self._record_narrative_callback(
