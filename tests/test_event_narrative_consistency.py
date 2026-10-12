@@ -2,7 +2,7 @@ import asyncio
 import copy
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -169,7 +169,7 @@ def narrative_provider(session, mode, *, repair=True, safe_only=False):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode,fail_save", [("variable", False), ("clock", False), ("future", False), ("chain", True), ("dice", True)])
+@pytest.mark.parametrize("mode,fail_save", [("variable", False), ("clock", False), ("future", False), ("chain", True), ("dice", True), ("unstaged_dice", True)])
 async def test_harness_rewrites_invalid_event_claims_before_stream_and_persistence(tmp_path, monkeypatch, mode, fail_save):
     session = claim_session(mode)
     provider = narrative_provider(session, mode)
@@ -198,7 +198,7 @@ async def test_harness_rewrites_invalid_event_claims_before_stream_and_persisten
         assert any(event["type"] == "text" and event["content"] == SAFE for event in _stream_events(response.text))
         state = await stored_state(session)
         assert state["game_time"] == END and "test_shift" not in state.get("fired_one_time_events", [])
-        if mode == "dice":
+        if mode in ("dice", "unstaged_dice"):
             assert state["script_variables"]["test_ready"] == 0
             assert state["fired_one_time_events"] == ["test_cancel"]
         count = provider.generate_with_tools.await_count
@@ -217,9 +217,10 @@ async def test_harness_rewrites_invalid_event_claims_before_stream_and_persisten
 
 
 @pytest.mark.asyncio
-async def test_actual_event_dice_can_invalidate_projection_without_streaming_or_saving_claim(tmp_path, monkeypatch):
+async def test_missing_preparation_still_rejects_at_actual_settlement_without_saving_claim(tmp_path, monkeypatch):
     session = claim_session("unstaged_dice")
     session.ai_provider = narrative_provider(session, "unstaged_dice", repair=False)
+    monkeypatch.setattr(session, "_prepare_unstaged_event_dice", lambda context: [])
     prepare = session._prepare_turn
 
     def prepare_unstaged(action):
@@ -261,9 +262,12 @@ async def test_actual_event_dice_can_invalidate_projection_without_streaming_or_
 
 
 @pytest.mark.asyncio
-async def test_full_regeneration_rewrites_from_staged_dice_and_restores_swipe(tmp_path, monkeypatch):
-    session = claim_session("dice")
-    session.ai_provider = narrative_provider(session, "dice")
+@pytest.mark.parametrize("mode", ["dice", "unstaged_dice"])
+async def test_full_regeneration_rewrites_from_staged_dice_and_restores_swipe(tmp_path, monkeypatch, mode):
+    session = claim_session(mode)
+    roll = Mock(wraps=session.dice.roll_and_resolve)
+    monkeypatch.setattr(session.dice, "roll_and_resolve", roll)
+    session.ai_provider = narrative_provider(session, mode)
     async with choice_client(session, tmp_path, monkeypatch) as (client, sessions):
         root = session.world_tree.active_node_id
         result = result_from(await asyncio.wait_for(client.post(f"/api/game/{session.save_id}/action/stream", json={
@@ -271,13 +275,15 @@ async def test_full_regeneration_rewrites_from_staged_dice_and_restores_swipe(tm
             "expected_node_id": root,
         }), 15))
         assert result["narrative"] == SAFE
+        assert roll.call_count == 1
         before = copy.deepcopy(session.current_state)
-        provider = narrative_provider(session, "dice")
+        provider = narrative_provider(session, mode)
         session.ai_provider = provider
         regenerated = await asyncio.wait_for(client.post(f"/api/game/{session.save_id}/regenerate?stage=all"), 15)
         assert regenerated.status_code == 200, regenerated.text
         payload = regenerated.json()
         assert payload["narrative"] == SAFE and payload["total_swipes"] == 2
+        assert roll.call_count == 2
         assert payload["swipe_index"] == 1
         assert provider.generate_with_tools.await_count >= 7
         assert session.current_state["script_variables"] == before["script_variables"]

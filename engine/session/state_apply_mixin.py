@@ -644,7 +644,7 @@ class StateApplyMixin:
         return after
 
     def _settle_event_linked_dice(self, event_id: str, ctx: dict, settled_item_ids: set,
-                                *, staged_only: bool = False) -> tuple[list, list]:
+                                *, staged_only: bool = False, stage_unstaged: bool = False) -> tuple[list, list]:
         results, changes = [], []
         if not self.current_state.get("dice_check_enabled", True):
             return results, changes
@@ -667,6 +667,12 @@ class StateApplyMixin:
                 result = staged_results.get(item_id)
             else:
                 result = self._roll_or_sustain(item)
+                if stage_unstaged:
+                    ctx.setdefault("candidate_event_dice_state", {})[item_id] = copy.deepcopy(
+                        self.current_state.get("random_item_state", {}).get(item_id),
+                    )
+                    if result is not None:
+                        ctx.setdefault("candidate_event_dice_results", {})[item_id] = copy.deepcopy(result)
             if result is not None:
                 results.append(result)
                 if result.range_state_changes:

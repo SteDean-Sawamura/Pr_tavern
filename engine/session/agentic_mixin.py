@@ -3993,7 +3993,7 @@ class AgenticMixin:
                         _tool_cache[cache_key] = result
             else:
                 result = await self._dispatch_unified_tool(ctx, name, args)
-                if name in ("update_state", "manage_npcs", "send_message", "attempt_deduction", "finalize_turn",
+                if name == "finalize_turn" or name in ("update_state", "manage_npcs", "send_message", "attempt_deduction",
                             "delegate_settlement", "undo_my_last_action") and not _tool_result_failed(result):
                     _tool_cache.clear()
             if not plan_submitted and not _tool_result_failed(result):
@@ -5270,6 +5270,32 @@ class AgenticMixin:
                     ctx or {}, {"narrative": narrative, "choices": [choice]}, state=state,
                 )]
 
+    def _prepare_unstaged_event_dice(self, ctx: dict) -> list[dict]:
+        from engine.event_scheduler import parse_time
+
+        staged_ids = set(ctx.get("candidate_event_dice_state", {}))
+        if not ctx.get("old_time") or not any(
+            item.get("trigger_type") == "event_linked" and item["id"] not in staged_ids
+            for item in self.script.get("random_items", [])
+        ):
+            return []
+        updates = ctx.get("_accepted_state_updates", [])
+        end_time = next((update["end_time"] for update in reversed(updates)
+                         if update.get("end_time")), ctx.get("new_time"))
+        if not parse_time(end_time):
+            return []
+        candidate = self._fork_query_session(self._project_state_tool_updates(updates))
+        candidate._settle_timed_events(ctx["old_time"], end_time, [], on_event=partial(
+            candidate._settle_event_linked_dice, ctx=ctx, settled_item_ids=set(), stage_unstaged=True,
+        ))
+        return [{
+            "random_item_id": item_id,
+            "result": self._dice_result_to_dict(result) if (
+                result := ctx.get("candidate_event_dice_results", {}).get(item_id)
+            ) is not None else None,
+            "state": copy.deepcopy(ctx["candidate_event_dice_state"][item_id]),
+        } for item_id in sorted(set(ctx.get("candidate_event_dice_state", {})) - staged_ids)]
+
     def _handle_finalize_turn(self, ctx: dict, args: dict) -> str:
         """Synchronous settlement: narrative + state + choices + summary in one call."""
         error = self._validate_variable_changes(args, ctx)
@@ -5292,11 +5318,20 @@ class AgenticMixin:
         state_result = self._handle_update_state(state_args, ctx) if state_args else ""
         if state_result.startswith("错误:"):
             return state_result
+        prepared_dice = self._prepare_unstaged_event_dice(ctx)
         narrative = (args.get("narrative") or ctx.get("_finalize_narrative", "")).strip()
         map_travel_feedback = self._map_travel_revision_feedback(ctx, narrative)
         feedback = (self._timed_event_revision_feedback(ctx, narrative)
                     or self._conditional_event_revision_feedback(ctx, narrative)
                     or map_travel_feedback)
+        if prepared_dice:
+            response = json.loads(feedback) if feedback else {
+                "error": "本轮新触发事件的骰子结果已准备但未提交；请核对结果和事件，确认或修订叙事后重新调用 finalize_turn。",
+            }
+            response.update(error_code="event_dice_prepared", prepared_event_dice=prepared_dice, provisional=True,
+                            state_update_accepted=False,
+                            retry_hint="本次结算参数未接收，重试时须重传；骰子结果本轮固定，不重新掷骰，不代表事件已发生或主角知情。")
+            feedback = json.dumps(response, ensure_ascii=False)
         if feedback:
             if map_travel_feedback:
                 ctx["_map_travel_revision_feedback"] = map_travel_feedback
