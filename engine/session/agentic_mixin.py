@@ -2380,7 +2380,8 @@ class AgenticMixin:
                             "请用 consult_rules 核对定义和现值，修正后重试；本次调用未接收")
         return ""
 
-    def _handle_update_state(self, args: dict, ctx: dict | None = None, *, prepare_event_dice: bool = False) -> str:
+    def _handle_update_state(self, args: dict, ctx: dict | None = None, *, prepare_event_dice: bool = False,
+                             defer_event_instructions: bool = False) -> str:
         contacts = args.get("npc_contact_changes", [])
         if not isinstance(contacts, list):
             return "错误: npc_contact_changes 必须是数组"
@@ -2428,10 +2429,10 @@ class AgenticMixin:
                                 "若须改写，调用 write_narrative 后重新提交本阶段被撤销的结算；"
                                 "骰子本轮不重掷，候选不代表事件已发生或主角知情。",
                     }, ensure_ascii=False)
-            result += self._state_projection_feedback(ctx)
+            result += self._state_projection_feedback(ctx, acknowledge_event_instructions=not defer_event_instructions)
         return result
 
-    def _state_projection_feedback(self, ctx: dict) -> str:
+    def _state_projection_feedback(self, ctx: dict, *, acknowledge_event_instructions: bool = True) -> str:
         if not ctx.get("old_time"):
             return ""
         updates = ctx.get("_accepted_state_updates", [])
@@ -2486,8 +2487,9 @@ class AgenticMixin:
             missing = [property_id for property_id in property_ids if property_id not in properties]
             result += _candidate_value_feedback("world_properties", values, missing)
         end_time = next((update["end_time"] for update in reversed(updates) if update.get("end_time")), None)
+        event_instructions = []
         if contact_ids:
-            projected, contact_state = self._project_interaction_state(ctx)
+            projected, contact_state = self._project_interaction_state(ctx, event_instructions=event_instructions)
             contact_feedback = {"through": contact_state.get("game_time"), "contacts": {
                 npc_id: {"requested_in_contact": contact_requests.get(npc_id),
                          "in_contact": self._npc_contact_is_current(npc_id, contact_state),
@@ -2503,7 +2505,15 @@ class AgenticMixin:
                          "声明已接收不等于接触成立，候选仍未提交。详情省略时用 "
                          "consult_rules(question=角色ID+接触, include_candidates=true) 查询；更新或撤销后重查。")
         else:
-            projected = self._projected_events(ctx) if end_time else []
+            projected = self._projected_events(ctx, event_instructions=event_instructions) if end_time else []
+        if event_instructions or ctx.get("_known_event_instructions"):
+            result += " | 定时事件叙事指令: " + json.dumps({
+                "through": end_time or ctx["old_time"], "instructions": event_instructions, "provisional": True,
+                "hint": "仅供叙事 Agent 使用，不是玩家通知或角色知情证据；以本次候选为准，"
+                        "未列出的旧指令已撤回。请按指令确认或修订叙事，不要重复提交已接收的状态更新。",
+            }, ensure_ascii=False)
+            if acknowledge_event_instructions:
+                ctx["_known_event_instructions"] = copy.deepcopy(event_instructions)
         event_times = ", ".join(
             f"{event['event_id']} ({event['fire_time']})" for event in projected[:20]
         ) or "无"
@@ -4915,7 +4925,8 @@ class AgenticMixin:
 
     def _projected_events(self, ctx: dict, *, with_state: bool = False,
                           base_state: dict | None = None,
-                          settled_item_ids: set | None = None) -> list[dict] | tuple[list[dict], dict]:
+                          settled_item_ids: set | None = None,
+                          event_instructions: list[dict] | None = None) -> list[dict] | tuple[list[dict], dict]:
         if not ctx.get("old_time"):
             return ([], copy.deepcopy(base_state if base_state is not None else self.current_state)) if with_state else []
         from engine.event_scheduler import parse_time
@@ -4929,17 +4940,19 @@ class AgenticMixin:
             base_state if base_state is not None else self._project_state_tool_updates(updates),
         )
         events = []
-        candidate._settle_timed_events(ctx["old_time"], end_time, events, on_event=partial(
+        _, _, scheduled_result = candidate._settle_timed_events(ctx["old_time"], end_time, events, on_event=partial(
             candidate._settle_event_linked_dice, ctx=ctx,
             settled_item_ids=settled_item_ids if settled_item_ids is not None else set(), staged_only=True,
         ))
+        if event_instructions is not None:
+            event_instructions.extend(scheduled_result.scheduled_instructions)
         candidate.current_state["game_time"] = end_time
         return (events, candidate.current_state) if with_state else events
 
-    def _project_interaction_state(self, ctx: dict) -> tuple[list[dict], dict]:
+    def _project_interaction_state(self, ctx: dict, *, event_instructions: list[dict] | None = None) -> tuple[list[dict], dict]:
         updates = ctx.get("_accepted_state_updates", [])
         if any(update.get("end_time") for update in updates):
-            events, state = self._projected_events(ctx, with_state=True)
+            events, state = self._projected_events(ctx, with_state=True, event_instructions=event_instructions)
         else:
             events, state = [], self._project_state_tool_updates(updates)
         self._refresh_npc_locations(state)
@@ -5323,7 +5336,7 @@ class AgenticMixin:
         state_args = {k: args[k] for k in ("end_time", "state_changes", "variable_changes", "inventory_changes",
                       "activate_states", "location_change", "reveal_locations") if k in args}
         previous_event_keys = ctx.get("_conditioned_event_keys")
-        state_result = self._handle_update_state(state_args, ctx) if state_args else ""
+        state_result = self._handle_update_state(state_args, ctx, defer_event_instructions=True) if state_args else ""
         if state_result.startswith("错误:"):
             return state_result
         prepared_dice = self._prepare_unstaged_event_dice(ctx)
@@ -5340,6 +5353,17 @@ class AgenticMixin:
                             state_update_accepted=False,
                             retry_hint="本次结算参数未接收，重试时须重传；骰子结果本轮固定，不重新掷骰，不代表事件已发生或主角知情。")
             feedback = json.dumps(response, ensure_ascii=False)
+        event_instructions = []
+        self._projected_events(ctx, event_instructions=event_instructions)
+        if any(instruction not in ctx.get("_known_event_instructions", []) for instruction in event_instructions):
+            response = json.loads(feedback) if feedback else {
+                "error": "本轮定时事件有尚未反馈的叙事指令；请阅读后确认或修订正文，再调用 finalize_turn。",
+            }
+            response.setdefault("error_code", "event_instructions_available")
+            response.update(event_instructions=event_instructions, provisional=True, state_update_accepted=False,
+                            retry_hint="本次结算参数未接收，重试须重传；这些幕后指令不代表主角知情，不应逐字展示给玩家。")
+            feedback = json.dumps(response, ensure_ascii=False)
+            ctx["_known_event_instructions"] = copy.deepcopy(event_instructions)
         if feedback:
             if map_travel_feedback:
                 ctx["_map_travel_revision_feedback"] = map_travel_feedback

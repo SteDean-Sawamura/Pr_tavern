@@ -128,6 +128,7 @@ class EventResult:
     notifications: list[str] = field(default_factory=list)
     notification_sources: list[str] = field(default_factory=list)
     inject_prompts: list[str] = field(default_factory=list)
+    scheduled_instructions: list[dict] = field(default_factory=list)
     lore_activations: list[str] = field(default_factory=list)
     lore_deactivations: list[str] = field(default_factory=list)
     lore_additions: list[dict] = field(default_factory=list)
@@ -148,7 +149,7 @@ class EventResult:
     def merge(self, other: EventResult):
         for f in (
             "newly_completed", "newly_active", "newly_expired", "effects",
-            "notifications", "notification_sources", "inject_prompts", "lore_activations",
+            "notifications", "notification_sources", "inject_prompts", "scheduled_instructions", "lore_activations",
             "lore_deactivations", "lore_additions", "lore_updates",
             "lore_removals", "lore_reveals", "game_events", "narrative_callbacks",
             "state_activations", "state_deactivations",
@@ -560,7 +561,7 @@ class EventEngine:
                             "description": ev.description,
                             "fire_time": next_fire.isoformat(),
                         })
-                        self._apply_effects(ev.effects, result, eid)
+                        self._apply_effects(ev.effects, result, eid, scheduled_time=next_fire.isoformat())
                         for fe in ev.metadata.get("fire_events", []):
                             result.game_events.append(fe)
                         _last_fired_time = next_fire
@@ -585,7 +586,7 @@ class EventEngine:
                         "description": ev.description,
                         "fire_time": trigger.isoformat(),
                     })
-                    self._apply_effects(ev.effects, result, eid)
+                    self._apply_effects(ev.effects, result, eid, scheduled_time=trigger.isoformat())
                     for fe in ev.metadata.get("fire_events", []):
                         result.game_events.append(fe)
                     es.setdefault(eid, {})["status"] = "completed"
@@ -1502,7 +1503,7 @@ class EventEngine:
             unlocked.add(uid)
             es.setdefault(uid, {})["status"] = "unlocked"
 
-    def _apply_effects(self, effects: dict, result: EventResult, source_id: str):
+    def _apply_effects(self, effects: dict, result: EventResult, source_id: str, *, scheduled_time: str = ""):
         if not effects or (self.shadow_story_nodes and source_id in self._tree_for_event
                            and self.events[source_id].category != "trigger"):
             return
@@ -1523,6 +1524,10 @@ class EventEngine:
         prompt = effects.get("inject_prompt", "")
         if prompt:
             result.inject_prompts.append(prompt)
+            if scheduled_time:
+                result.scheduled_instructions.append({
+                    "event_id": source_id, "fire_time": scheduled_time, "text": prompt,
+                })
         notify = effects.get("notify", "")
         if notify:
             result.notifications.append(notify)
