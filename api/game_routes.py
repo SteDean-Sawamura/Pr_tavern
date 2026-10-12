@@ -2295,12 +2295,15 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
                 yield "data: [DONE]\n\n"
 
     async def event_stream_partial():
-        nonlocal final_result, persisted, inner_stream
+        nonlocal final_result, persisted, inner_stream, partial_baseline
         if stage == "state":
             session.current_state = copy.deepcopy(partial_baseline)
             for key in session._SWIPE_STRIP_KEYS:
                 if key not in session.current_state and key in pre_regen_state:
                     session.current_state[key] = copy.deepcopy(pre_regen_state[key])
+            session._hydrate_branch_runtime(session.current_state)
+            session._replay_pending_event_cascades()
+            partial_baseline = copy.deepcopy(session.current_state)
         inner_stream = session._regen_partial_agent(
             stage, orig_narrative, action_text, session.current_state, streaming=True,
         )

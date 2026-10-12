@@ -204,6 +204,16 @@ class RegenerateMixin:
         self.prompt_builder._lorebook_override_ids.update(overrides)
         self._sync_lorebook_vectors(override_ids | active_lore_ids)
 
+    def _replay_pending_event_cascades(self) -> list[str]:
+        if not self.current_state.get("_pending_fire_events"):
+            return []
+        result = self.event_engine.dispatch_pending(
+            self.current_state, self.turn_number, condition_eval=self._evaluate_condition,
+        )
+        instructions = list(result.inject_prompts)
+        self._apply_event_result(result, inject_prompts=instructions)
+        return instructions
+
     def _settle_regen_state(self, parsed: dict, baseline: dict,
                             present_npc_ids: list[str], *, action_text: str = "",
                              destination_dice: dict | None = None,
@@ -457,6 +467,7 @@ class RegenerateMixin:
         try:
             self.current_state = regen_baseline
             self._hydrate_branch_runtime(regen_baseline)
+            event_instructions = self._replay_pending_event_cascades() if stage in ("all", "state") else []
             activated_lore, _ = self.prompt_builder.scan_lorebook(
                 action_text, recent_messages,
                 timed_state=regen_baseline.get("lorebook_timed_state"),
@@ -554,6 +565,9 @@ class RegenerateMixin:
                 regen_route = {"scope": "moderate", "scene_type": "", "systems": None}
 
             regen_ctx.update(regen_retrieval_context)
+            regen_ctx["turn_instructions"] = list(dict.fromkeys([
+                *regen_ctx.get("turn_instructions", []), *event_instructions,
+            ]))
             regen_ctx["old_time"] = regen_baseline.get("game_time", "")
             regen_ctx["is_system_opening"] = is_system_opening
             regen_ctx["new_time"] = destination_dice["new_time"]

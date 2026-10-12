@@ -593,6 +593,7 @@ class NpcMixin:
                         condition_eval=self._evaluate_condition,
                         player_action=message,
                         advance_timed=False,
+                        queue_cascades=False,
                     )
                     self._apply_event_result(ee_npc)
                 except Exception as e:

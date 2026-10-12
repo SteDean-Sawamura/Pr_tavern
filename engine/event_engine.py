@@ -452,6 +452,17 @@ class EventEngine:
 
     # ---- Core tick --------------------------------------------------------
 
+    def dispatch_pending(
+        self, state: dict, turn_number: int,
+        condition_eval: Callable[[str], bool] | None = None,
+    ) -> EventResult:
+        self._migrate_state(state)
+        event_state = self._init_state(state)
+        result = EventResult()
+        for event_name in state.pop("_pending_fire_events", []):
+            result.merge(self._fire_event_internal(event_name, state, event_state, turn_number, condition_eval))
+        return result
+
     def tick(
         self,
         state: dict,
@@ -463,17 +474,12 @@ class EventEngine:
         active_lifecycle_events: list[str] | None = None,
         state_manager=None,
         advance_timed: bool = True,
+        *,
+        queue_cascades: bool = True,
     ) -> EventResult:
-        self._migrate_state(state)
-        es = self._init_state(state)
-        result = EventResult()
-
         # Phase 1: Trigger events (responding to fire_events from previous tick)
-        pending_fires = state.pop("_pending_fire_events", [])
-        if pending_fires:
-            for ev_name in pending_fires:
-                sub = self._fire_event_internal(ev_name, state, es, turn_number, condition_eval)
-                result.merge(sub)
+        result = self.dispatch_pending(state, turn_number, condition_eval)
+        es = self._init_state(state)
 
         # Phase 2: Scheduled events (game-time based)
         sub = self._tick_scheduled(state, es, old_time, game_time, condition_eval)
@@ -499,7 +505,7 @@ class EventEngine:
         self._tick_thread_dormancy(state, es, turn_number)
 
         # Phase 8: Process cascading fire_events
-        if result.game_events:
+        if queue_cascades and result.game_events:
             state["_pending_fire_events"] = list(result.game_events)
 
         return result

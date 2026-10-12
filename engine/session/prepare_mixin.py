@@ -364,8 +364,10 @@ class PrepareMixin:
             player_action=player_action.get("text", ""),
             state_manager=self.state_manager,
             advance_timed=action_type != "system",
+            queue_cascades=False,
         )
-        self._apply_event_result(event_engine_result)
+        event_instructions = list(event_engine_result.inject_prompts)
+        self._apply_event_result(event_engine_result, inject_prompts=event_instructions)
 
         # NPC 自主行为 tick
         npc_autonomy_events = []
@@ -723,9 +725,9 @@ class PrepareMixin:
             all_notifications.extend(public_event_notifications(self.script, story_tree_result))
 
         # Inject event engine prompts into context
-        if event_engine_result.inject_prompts:
-            turn_instructions.extend(event_engine_result.inject_prompts)
-            ee_extra = "\n".join(event_engine_result.inject_prompts)
+        if event_instructions:
+            turn_instructions.extend(event_instructions)
+            ee_extra = "\n".join(event_instructions)
             if system_prompt:
                 system_prompt += "\n\n" + ee_extra
             history_context = (history_context + "\n\n## 事件系统注入\n" + ee_extra).strip()
