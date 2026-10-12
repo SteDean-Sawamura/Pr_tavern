@@ -568,9 +568,9 @@ function recordMainMapStreamEvent(saveId, actionToken, event) {
             }
             break;
         case 'undo_refresh_error': message = '撤销已生效，画面刷新失败'; break;
-        case 'error': message = event.discard_partial ? '结算校验未通过，草稿已撤回'
-            : event.server_error ? (event.regeneration ? '重新生成失败，原回合仍保留；可重试'
-                : '推演生成失败，请核对存档后重试')
+        case 'error': message = event.server_error && event.regeneration ? '重新生成失败，原回合仍保留；可重试'
+            : event.discard_partial ? '结算校验未通过，草稿已撤回'
+            : event.server_error ? '推演生成失败，请核对存档后重试'
             : event.retryable ? (typeof event.retry === 'function'
                 ? '推演断开，先核对存档；可在这里续接' : '推演断开，先核对存档；叙事视图可重试')
             : '推演断开，请核对存档后再行动'; break;

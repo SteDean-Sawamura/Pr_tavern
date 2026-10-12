@@ -324,10 +324,8 @@ async def test_chain_commit_failure_rolls_back_and_retries_once(tmp_path, monkey
             response = await asyncio.wait_for(client.post(endpoint, json=action), 15)
         if stream:
             events = _stream_events(response.text)
-            if not regenerate:
-                assert any(event["type"] == "error" for event in events), response.text
-            else:
-                assert "data: [DONE]" not in response.text
+            assert any(event["type"] == "error" for event in events), response.text
+            assert "data: [DONE]" not in response.text
             assert not any(event["type"] == "final" for event in events)
         else:
             assert response.status_code == 500

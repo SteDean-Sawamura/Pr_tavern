@@ -2420,12 +2420,23 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
             source = event_stream_all() if stage == "all" else event_stream_partial()
             async for data in source:
                 yield data
-        except IncompleteAgentTurnError as exc:
-            logger.warning("流式重生成未通过结算校验 — save=%s: %s", save_id, exc)
-            error = {"type": "error", "message": str(exc)}
-            if isinstance(exc, (NarrativeSettlementError, PendingConsequenceDisclosureError, SemanticReviewError,
-                                MapTravelSettlementError)):
-                error["discard_partial"] = True
+        except Exception as exc:
+            if persisted:
+                raise
+            if isinstance(exc, IncompleteAgentTurnError):
+                logger.warning("流式重生成未通过结算校验 — save=%s: %s", save_id, exc)
+                error = {"type": "error", "message": str(exc)}
+                if isinstance(exc, (NarrativeSettlementError, PendingConsequenceDisclosureError, SemanticReviewError,
+                                    MapTravelSettlementError)):
+                    error["discard_partial"] = True
+            else:
+                logger.exception("流式重生成失败 — save=%s, stage=%s", save_id, stage)
+                error = {"type": "error", "message": "生成失败，请稍后重试", "discard_partial": True}
+            if (getattr(session, "_active_agent_stream", False) or getattr(session, "_inject_queue", None)
+                    or getattr(session, "_abort_request_pending", False)):
+                for control_event in _close_agent_control_events(session):
+                    yield f"data: {json.dumps(control_event, ensure_ascii=False)}\n\n"
+                yield 'data: {"type": "agent_controls_closed"}\n\n'
             yield f"data: {json.dumps(error, ensure_ascii=False)}\n\n"
         finally:
             try:

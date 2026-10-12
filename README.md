@@ -620,7 +620,7 @@ RPG 开场白只作为场景展示，不会当作玩家行动自动推进时间�
 | POST | `/{save_id}/talk/{npc_id}/stream` | 与 NPC 对话（流式响应） |
 | GET | `/{save_id}/npc-schedules` | 获取 NPC 日程 |
 | POST | `/{save_id}/regenerate` | 重新生成 AI 回复 |
-| POST | `/{save_id}/regenerate/stream` | 流式重生成；完整重生成保留节点 ID 和备选回复，断流不覆盖存档 |
+| POST | `/{save_id}/regenerate/stream` | 流式重生成；完整重生成保留节点 ID 和备选回复，保存前失败回滚并反馈错误 |
 | POST | `/{save_id}/swipe/{direction}` | 切换备选回复（left/right） |
 | GET | `/{save_id}/swipes` | 获取备选回复列表 |
 | POST | `/{save_id}/swipe/jump` | 跳转到指定备选回复 |
@@ -711,6 +711,10 @@ RPG 开场白只作为场景展示，不会当作玩家行动自动推进时间�
 
 同一批工具按顺序执行并逐个报告结果；工具错误返回模型修正，只有成功的终结工具才结束循环，终结后的同批工具不再执行。普通行动的工具轨迹保存在对应新节点的 `_node_context.agent_trace`，随存档加载恢复，不写到前一回合。世界书支持全文搜索、分页摘要、按 `entry_id` 分段续读，以及用 `entry_ids` 一次读取最多 3 条独立资料（不可与搜索或偏移参数混用）；每条仍单独经过当前回合的可用性过滤，禁用条目和其他分支条目不可读。事件预览使用当前存档的调度记录与条件，`status.<id>` 对应持续状态，`event.<id>.fired` / `event_fired.<id>` 对应实际触发记录，而非仅已排程；条件支持 `AND` / `&&`、`OR` / `||`（AND 优先）及数值、时间字符串比较。
 统一 Agent 的 trace 还记录 `model_calls`（前台及委托结算调用数）、`semantic_review_calls` / `semantic_review_status`（逻辑审查次数及结果）、`semantic_review_model_calls`（审查模型请求次数；无效响应会用更大预算重试一次）、`plan_waits`（等待玩家回答的次数）、`lore_queries`（世界书工具调用次数）、`lore_hits`（返回条目总数）和 `lore_entry_reads`（成功按 ID 读取的条目数；批量读取逐条计入）。`primary_model_calls` 包含审查请求。这些指标只说明资料送达了模型，不等于模型已在叙事中正确使用资料；旧存档不会回填这些指标。
+
+流式重生成进入 SSE 后，`all`、`state`、`choices` 阶段在准备、生成或保存失败且尚未持久化时，保留原回合及备选版本并释放控制与存档锁。未预期异常通过 SSE `error` 返回通用提示和 `discard_partial: true`，不向玩家暴露内部异常文本，也不发送成功 `final` / `[DONE]`；既有结算校验提示保留。未生效的插话和停止请求会明确反馈。客户端恢复原回合和选项，地图提示重生成失败而非把保存错误误报为校验失败。取消或关闭流仍走原有回滚，不转成服务器错误；成功持久化后的传输故障不冒充未保存。
+
+`tests/test_regenerate_stream_errors.py` 及相关前端测试使用假模型、合成数据、临时 SQLite 和 DOM 单元环境验证错误反馈、回滚、控制清理及重试，不代表真实模型、已运行服务或浏览器体验验收。
 
 ### 搜索与素材 `/api/search`
 

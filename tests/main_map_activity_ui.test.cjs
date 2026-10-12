@@ -68,3 +68,29 @@ test('leaving the map does not reposition its progress history', () => {
     assert.equal(view.map.hidden, true);
     assert.equal(view.activity.scrollTop, 40);
 });
+
+for (const [description, event, expected] of [
+    ['failed regeneration with a discarded draft', { server_error: true, regeneration: true, discard_partial: true },
+        '重新生成失败，原回合仍保留；可重试'],
+    ['failed regeneration without a draft', { server_error: true, regeneration: true },
+        '重新生成失败，原回合仍保留；可重试'],
+    ['a rejected action draft', { server_error: true, discard_partial: true },
+        '结算校验未通过，草稿已撤回'],
+    ['an interrupted connection', { regeneration: true }, '推演断开，请核对存档后再行动'],
+]) test(`map explains ${description} without conflating failure causes`, () => {
+    const view = setup(true);
+    const token = {};
+    const removed = [];
+    const draft = { className: 'main-map-activity-entry draft', remove: () => removed.push(true) };
+    view.activity.children = [draft];
+    view.activity.appendChild = child => view.activity.children.push(child);
+    view.context.document.createElement = () => ({});
+    view.context.window._activeGameAction = token;
+    view.context._mainMapActivityAction = token;
+    const record = source.match(/function recordMainMapStreamEvent\(saveId, actionToken, event\) \{[\s\S]*?\n\}/)[0];
+    vm.runInContext(record, view.context);
+    view.context.recordMainMapStreamEvent('test-save', token, { type: 'error', ...event });
+    assert.equal(view.activity.children.at(-1).textContent, expected);
+    assert.deepEqual(removed, [true]);
+    assert.equal(view.activity.hidden, false);
+});
