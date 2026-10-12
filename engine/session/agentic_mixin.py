@@ -2321,7 +2321,7 @@ class AgenticMixin:
             ctx["_narrative_conditional_events"] = ctx.get("_conditioned_event_keys", [])
             return "叙事修订已记录；此前结算将撤销，请按修订后的叙事重新结算状态、选项和摘要。"
         if name == "update_state":
-            result = self._handle_update_state(args, ctx)
+            result = self._handle_update_state(args, ctx, prepare_event_dice=True)
             if ctx is not None and not _tool_result_failed(result):
                 feedback = (self._timed_event_revision_feedback(ctx)
                             or self._conditional_event_revision_feedback(ctx, ctx.get("_finalize_narrative", "")))
@@ -2380,7 +2380,7 @@ class AgenticMixin:
                             "请用 consult_rules 核对定义和现值，修正后重试；本次调用未接收")
         return ""
 
-    def _handle_update_state(self, args: dict, ctx: dict | None = None) -> str:
+    def _handle_update_state(self, args: dict, ctx: dict | None = None, *, prepare_event_dice: bool = False) -> str:
         contacts = args.get("npc_contact_changes", [])
         if not isinstance(contacts, list):
             return "错误: npc_contact_changes 必须是数组"
@@ -2418,6 +2418,16 @@ class AgenticMixin:
         result = " | ".join(results) if results else "无状态变更"
         if ctx is not None and ctx.get("old_time"):
             ctx.setdefault("_accepted_state_updates", []).append(args)
+            if prepare_event_dice and any(update.get("end_time") for update in ctx["_accepted_state_updates"]):
+                prepared = self._prepare_unstaged_event_dice(ctx)
+                if prepared:
+                    result += " | 事件骰子准备: " + json.dumps({
+                        "status": "event_dice_prepared", "prepared_event_dice": prepared,
+                        "provisional": True, "state_update_accepted": True,
+                        "hint": "本次状态更新已接收，无需重复；请核对固定骰子结果和候选事件。"
+                                "若须改写，调用 write_narrative 后重新提交本阶段被撤销的结算；"
+                                "骰子本轮不重掷，候选不代表事件已发生或主角知情。",
+                    }, ensure_ascii=False)
             result += self._state_projection_feedback(ctx)
         return result
 
@@ -2836,8 +2846,6 @@ class AgenticMixin:
                             ctx.pop(key, None)
                         else:
                             ctx[key] = copy.deepcopy(settlement_snapshot[snapshot_key])
-                    ctx["_narrative_conditional_events"] = copy.deepcopy(
-                        settlement_snapshot["conditioned_event_keys"] or [])
                     ctx["_settlement_revision_index"] = tool_count
                     result += self._state_projection_feedback(ctx)
                 return result
@@ -5416,7 +5424,7 @@ class AgenticMixin:
         self._delegated_settlement = True
         ctx["_delegated_settlement_hint"] = args.get("hint", "")
         return ("已接收结算委托。词条声明仍需在最终状态和叙事中复核。"
-                if args.get("lore_reveals") else "已接收结算委托。叙事先展示，结算完成后保存本轮状态。")
+                if args.get("lore_reveals") else "已接收结算委托。叙事与结算核验完成后保存本轮状态。")
 
     def _handle_consult_rules(self, args: dict, ctx: dict | None = None) -> str:
         """纯规则检查（不调 LLM）：NPC 在场、物品持有等。"""
