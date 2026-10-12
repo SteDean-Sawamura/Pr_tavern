@@ -724,10 +724,19 @@ class GameSession(
                 ))
         return inject_prompts, notifications
 
-    def _apply_event_def_effects(self, evt_def: dict, event_id: str) -> list:
-        """Apply effects list from an event definition. Returns state change log."""
+    def _apply_event_def_effects(self, evt_def: dict, event_id: str, *, defer_game_events=False) -> list:
+        """Apply event definition effects and return the state change log."""
         state_log: list = []
-        for eff in evt_def.get("effects", []):
+        effects = evt_def.get("effects", [])
+        if isinstance(effects, dict):
+            if not effects:
+                return state_log
+            result = EventResult()
+            self.event_engine._apply_effects(effects, result, event_id)
+            if defer_game_events:
+                result.game_events.clear()
+            return self._apply_event_result(result)
+        for eff in effects:
             etype = eff.get("type", "")
             if etype == "state_change":
                 changes = [{"target": eff["target"], "op": eff.get("op", "set"), "value": eff.get("value")}]
@@ -3747,10 +3756,10 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
     def _apply_event_result(self, result, state=None):
         """Apply unified EventResult to game state (replaces _apply_story_tree_result for EventEngine)."""
         if not isinstance(result, EventResult):
-            return
+            return []
         target = state if state is not None else self.current_state
 
-        self._apply_effects_and_lore(
+        state_log = self._apply_effects_and_lore(
             effects=result.effects,
             lore_activations=result.lore_activations,
             lore_deactivations=result.lore_deactivations,
@@ -3843,6 +3852,7 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
             [node for node in result.newly_active if node.get("id") not in shadow_nodes],
             target=target,
         )
+        return state_log
 
     def _apply_effects_and_lore(
         self, *, effects, lore_activations, lore_deactivations,
@@ -3853,6 +3863,7 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
     ):
         """Shared effect processing for StoryTreeResult and EventResult."""
         target = self.current_state if target is None else target
+        state_log = []
         for effect in effects:
             action = effect.get("action", "")
             params = effect.get("params", {})
@@ -3863,11 +3874,17 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
                 op = params.get("op", "set")
                 value = params.get("value")
                 if "." in var_id:
-                    self.state_manager.apply_changes(
+                    _, changes = self.state_manager.apply_changes(
                         target, [{"target": var_id, "op": op, "value": value}], inplace=True,
                     )
+                    state_log.extend(changes)
                 else:
+                    old_value = self.script_variables.get(target, var_id)
                     self.script_variables.apply_op(target, var_id, op, value)
+                    state_log.append({
+                        "target": f"script_variables.{var_id}", "op": op, "value": value,
+                        "old": old_value, "new": self.script_variables.get(target, var_id), "reason": "",
+                    })
             elif action == "unlock_location":
                 loc_id = params.get("location_id", "")
                 if loc_id:
@@ -3944,6 +3961,7 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
             aps = target.get("active_persistent_states", [])
             if sid in aps:
                 aps.remove(sid)
+        return state_log
 
     def _sync_node_lorebook(self, newly_completed, newly_active, target=None):
         """Sync completed/active nodes to lorebook and defer vector indexing until commit."""

@@ -725,7 +725,7 @@ class StateApplyMixin:
                         on_event(event_id)
                     event_def = self._event_def_by_id.get(event_id)
                     if isinstance(event_def, dict):
-                        effects = self._apply_event_def_effects(event_def, event_id)
+                        effects = self._apply_event_def_effects(event_def, event_id, defer_game_events=True)
                         if not is_public_event(self.script, event_id):
                             effects = [{**change, "_source_event_id": event_id} for change in effects]
                         event_changes.extend(effects)

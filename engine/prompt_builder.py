@@ -61,9 +61,12 @@ class PromptBuilder(PromptKGMixin, PromptSectionsMixin, PromptNpcMixin, PromptNa
         }
         activation_times = {}
         for event in script.get("one_time_events", []):
-            for effect in event.get("effects", []):
-                if effect.get("type") == "activate_lore" and effect.get("id"):
-                    entry_id = effect["id"]
+            effects = event.get("effects", [])
+            activation_ids = effects.get("activate_lore", []) if isinstance(effects, dict) else [
+                effect.get("id") for effect in effects if effect.get("type") == "activate_lore"
+            ]
+            for entry_id in activation_ids:
+                if entry_id:
                     trigger_time = event.get("trigger_time", "")
                     if entry_id not in activation_times or trigger_time < activation_times[entry_id]:
                         activation_times[entry_id] = trigger_time

@@ -107,7 +107,15 @@ async function savedPayload(original = declaration(), { form = clone(original), 
 }
 
 if (process.argv.includes('--emit-script')) {
-    savedPayload(declaration(), { graph: process.argv.includes('--graph') }).then(payload => {
+    const original = declaration();
+    if (process.argv.includes('--dictionary-effects')) {
+        for (const category of ['one_time_events', 'cyclic_events']) {
+            original[category][0].effects = {
+                set_var: original[category][0].effects.map(({ type, ...effect }) => effect),
+            };
+        }
+    }
+    savedPayload(original, { graph: process.argv.includes('--graph') }).then(payload => {
         process.stdout.write(JSON.stringify(payload));
     }).catch(error => { console.error(error); process.exitCode = 1; });
 } else {

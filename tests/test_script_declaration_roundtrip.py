@@ -21,15 +21,17 @@ END = "2030-01-01T09:15:00"
 LATER = "2030-01-01T10:45:00"
 
 
-@pytest.fixture(params=["form", "graph"])
+@pytest.fixture(params=["form-list", "graph-list", "form-dict", "graph-dict"])
 def saved_payload(request):
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is required to exercise the actual wizard save path")
     fixture = Path(__file__).with_name("script_declaration_roundtrip.test.cjs")
     command = [node, str(fixture), "--emit-script"]
-    if request.param == "graph":
+    if request.param.startswith("graph"):
         command.append("--graph")
+    if request.param.endswith("dict"):
+        command.append("--dictionary-effects")
     result = subprocess.run(command, check=True, capture_output=True, encoding="utf-8", timeout=30)
     return json.loads(result.stdout)
 

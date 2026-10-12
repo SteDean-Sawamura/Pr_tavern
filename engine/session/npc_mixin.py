@@ -585,19 +585,11 @@ class NpcMixin:
         if old_time:
             chat_minutes = min(NPC_CHAT_TIME_MINUTES + len(clean_response) // 100 * 2, 30)
             new_time = self._advance_game_time(old_time, timedelta(minutes=chat_minutes))
-            try:
-                triggered_events = self.event_scheduler.check_events(
-                    self.current_state, old_time, new_time,
-                    condition_eval=self._evaluate_condition,
-                ) or []
-            except Exception as e:
-                logging.getLogger(__name__).warning("NPC对话事件检查失败: %s", e)
-                triggered_events = []
             if self.event_engine:
                 try:
                     ee_npc = self.event_engine.tick(
                         self.current_state, self.turn_number,
-                        game_time=new_time, old_time=old_time,
+                        game_time=old_time, old_time=old_time,
                         condition_eval=self._evaluate_condition,
                         player_action=message,
                         advance_timed=False,
@@ -606,16 +598,11 @@ class NpcMixin:
                 except Exception as e:
                     logging.getLogger(__name__).warning("NPC对话事件引擎tick失败: %s", e)
             self.current_state["game_time"] = new_time
+            event_changes, _, scheduled_result = self._settle_timed_events(old_time, new_time, triggered_events)
+            all_state_changes.extend(event_changes)
+            if scheduled_result.game_events:
+                self.current_state.setdefault("_pending_fire_events", []).extend(scheduled_result.game_events)
             if triggered_events:
-                self.current_state = self.event_scheduler.update_trackers(
-                    self.current_state, triggered_events, new_time, inplace=True
-                )
-                for evt in triggered_events:
-                    eid = evt.get("event_id", "") if isinstance(evt, dict) else ""
-                    evt_def = self._event_def_by_id.get(eid)
-                    if isinstance(evt_def, dict):
-                        log = self._apply_event_def_effects(evt_def, eid)
-                        all_state_changes.extend(log)
                 event_lines = []
                 for ev in triggered_events:
                     eid = ev.get("event_id", "") if isinstance(ev, dict) else str(ev)
