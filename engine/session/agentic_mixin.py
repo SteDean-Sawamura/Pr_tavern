@@ -5454,6 +5454,7 @@ class AgenticMixin:
 
     def _queryable_mechanics_definitions(self):
         npcs = list(self.script.get("npcs", []))
+        schedule_overrides = self.current_state.get("npc_schedule_overrides", {})
         npcs.extend({"id": npc_id, "name": npc.get("name", npc_id), "goals": npc.get("goals", [])}
                     for npc_id, npc in self.current_state.get("npcs", {}).items()
                     if npc_id not in self._npc_by_id and isinstance(npc, dict))
@@ -5464,6 +5465,12 @@ class AgenticMixin:
             "persistent_states": self.script.get("persistent_states", []),
             "world_properties": self.script.get("world_properties", []),
             "locations": self.script.get("locations", []),
+            "npc_schedules": [
+                {"npc_id": npc["id"], "npc_name": npc.get("name", npc["id"]),
+                 "schedule": npc.get("schedule") or [], "overrides": schedule_overrides.get(npc["id"]) or []}
+                for npc in self.script.get("npcs", [])
+                if npc.get("schedule") or schedule_overrides.get(npc["id"])
+            ],
             **{category: [
                 {"actor_id": actor.get("id", ""), "actor_name": actor.get("name", actor.get("id", "")), "goal": goal}
                 for actor in actors for goal in (actor.get("goals") or [])
@@ -5638,6 +5645,12 @@ class AgenticMixin:
             "entries": entries, "total": len(records), "offset": offset, "snapshot": snapshot, **list_args,
             "next_offset": offset + 5 if not detailed and len(records) > offset + 5 else None,
         }
+        if category == "npc_schedules":
+            result["notice"] = (
+                "当前分支已注册角色的完整基础 schedule 与正式状态中的 overrides；包含已到期覆盖，不表示正在生效。"
+                "不判断条件、优先级或到期，不解析位置、执行日程或纳入候选更新，非角色知情。"
+                "需要正式或候选在场、接触时，另用 question 查询；声明不能作为已发生或未来必然发生的事实。"
+            )
         if category in ("npc_goals", "org_goals"):
             result["notice"] = (
                 "当前分支完整目标声明与正式完成记录；goal_key 为 actor_id:目标id。"

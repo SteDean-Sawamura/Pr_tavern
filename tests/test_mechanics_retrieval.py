@@ -257,7 +257,7 @@ def test_full_context_advertises_rules_without_dumping_private_definitions(monke
 
 def test_consult_rules_schema_exposes_structured_retrieval_and_keeps_legacy_queries():
     schema = next(tool["function"]["parameters"] for tool in _unified_tools() if tool["function"]["name"] == "consult_rules")
-    assert set(schema["properties"]["category"]["enum"]) == set(RULE_CATEGORIES) | {"story_nodes", "locations", "npc_goals", "org_goals"}
+    assert set(schema["properties"]["category"]["enum"]) == set(RULE_CATEGORIES) | {"story_nodes", "locations", "npc_goals", "org_goals", "npc_schedules"}
     assert {"query", "rule_index", "offset", "snapshot"} <= schema["properties"].keys()
     assert "question" not in schema.get("required", [])
     session, _ = make_session()
