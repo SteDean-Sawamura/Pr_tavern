@@ -698,7 +698,13 @@ class PrepareMixin:
 
         # Fire before_generation triggers (via unified story tree + event engine)
         bg_inject, bg_notifications = self._fire_lifecycle_event("before_generation")
-        turn_instructions = list(bg_inject)
+        choice_instructions = self.current_state.get("_pending_choice_instructions", [])
+        turn_instructions = list(choice_instructions) + list(bg_inject)
+        if choice_instructions:
+            extra = "\n".join(choice_instructions)
+            if system_prompt:
+                system_prompt += "\n\n" + extra
+            history_context = (history_context + "\n\n## 选择后续指令\n" + extra).strip()
         if bg_inject:
             extra = "\n".join(bg_inject)
             if system_prompt:

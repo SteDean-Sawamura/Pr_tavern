@@ -709,6 +709,9 @@ class RegenerateMixin:
                 logging.getLogger(__name__).warning("重生成未通过事件结算校验：%s", feedback)
                 return {"error": str(NarrativeSettlementError(feedback)), "stage": stage}
 
+        if stage in ("all", "state"):
+            instructions = regen_ctx.get("turn_instructions", []) if stage == "all" else node.get("turn_instructions", [])
+            self._consume_choice_instructions(swipe_state, instructions)
         self._record_regen_swipe(
             node, new_narrative if stage == "all" else parsed.get("narrative", current_narrative),
             parsed.get("choices", []), swipe_state, swipe_state_changes, regen_agent_trace,

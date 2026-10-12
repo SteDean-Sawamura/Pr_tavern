@@ -3580,7 +3580,19 @@ npc_known 中只需包含需要改变的NPC（与当前状态不同的）。只�
                 self.event_engine.sync_story_tree_state(self.current_state)
         else:
             self._apply_event_result(result)
+        if result.inject_prompts:
+            self.current_state.setdefault("_pending_choice_instructions", []).extend(result.inject_prompts)
         return result
+
+    @staticmethod
+    def _consume_choice_instructions(state: dict, instructions: list[str]):
+        pending = state.get("_pending_choice_instructions", [])
+        if pending:
+            remaining = [instruction for instruction in pending if instruction not in instructions]
+            if remaining:
+                state["_pending_choice_instructions"] = remaining
+            else:
+                state.pop("_pending_choice_instructions")
 
     def _apply_story_tree_result(self, result):
         """Apply story tree effects to game state."""

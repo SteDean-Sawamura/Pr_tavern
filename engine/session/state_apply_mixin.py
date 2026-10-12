@@ -596,6 +596,7 @@ class StateApplyMixin:
             self._record_narrative_facts(result.get("narrative", ""), ctx)
 
         all_state_changes.extend(self._settle_actor_goals())
+        self._consume_choice_instructions(self.current_state, ctx.get("turn_instructions", []))
         result["state"] = self.current_state
         if node:
             node["state_changes"] = all_state_changes

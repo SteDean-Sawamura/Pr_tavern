@@ -1434,7 +1434,7 @@ def _player_state(current_state: dict, script: dict | None = None, session: Game
                 "lorebook_enabled_overrides", "lorebook_entry_overrides", "dynamic_lorebook", "script_variables",
                 "dynamic_story_content", "mechanics_overrides", "_npc_autonomy", "_node_context",
                 "pending_consequences", "events", "shelved_pc_data", "narrative_callbacks",
-                "information_network", "npc_schedule_overrides"):
+                "information_network", "npc_schedule_overrides", "_pending_choice_instructions"):
         state.pop(key, None)
     private_properties = _private_world_property_names(script)
     if "world_properties" in state:
