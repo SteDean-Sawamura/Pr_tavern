@@ -2395,6 +2395,13 @@ class AgenticMixin:
             if time_result.startswith("错误:"):
                 return time_result
             results.append(time_result)
+        elif ctx is not None and ctx.get("old_time"):
+            settled_time = next((update["end_time"] for update in reversed(
+                ctx.get("_accepted_state_updates", [])) if update.get("end_time")), None)
+            if settled_time:
+                error = self._validate_end_time(settled_time, ctx, args.get("location_change"), args)
+                if error:
+                    return f"错误: {error}"
         res_args = {k: args[k] for k in self._UPDATE_STATE_RES_KEYS if k in args}
         if res_args:
             results.append(self._run_state_tool("update_resources", res_args))
@@ -2403,13 +2410,6 @@ class AgenticMixin:
             spatial_result = self._run_state_tool("update_spatial", sp_args, ctx)
             if spatial_result.startswith("错误:"):
                 return spatial_result
-            if ctx is not None and ctx.get("old_time") and sp_args.get("location_change") and "end_time" not in args:
-                settled_time = next((update["end_time"] for update in reversed(
-                    ctx.get("_accepted_state_updates", [])) if update.get("end_time")), None)
-                if settled_time:
-                    error = self._validate_end_time(settled_time, ctx, sp_args["location_change"], args)
-                    if error:
-                        return f"错误: {error}"
             results.append(spatial_result)
         if "world_property_changes" in args:
             results.append(self._run_state_tool("update_world", {"world_property_changes": args["world_property_changes"]}))

@@ -2320,12 +2320,17 @@ class GameSession(
         minutes = (finish - start).total_seconds() / 60
         if minutes <= 0:
             return f"end_time 不得早于或等于当前时间 {old_time}"
+        updates = [*ctx.get("_accepted_state_updates", [])]
+        if pending_changes:
+            updates.append(pending_changes)
+        updates.append({"end_time": end_time})
+        projected_ctx = {**ctx, "_accepted_state_updates": updates, "new_time": end_time}
         requested_wait_minutes = ctx.get("requested_wait_minutes")
         if requested_wait_minutes is None and ctx.get("action_text") == "等待1小时，观察周围变化":
             requested_wait_minutes = 60
         if requested_wait_minutes and minutes < requested_wait_minutes:
             interrupted = False
-            for event in ctx.get("triggered_events", []):
+            for event in self._projected_events(projected_ctx):
                 event_time = parse_time(event.get("fire_time"))
                 if (event_time and start < event_time <= finish
                         and is_public_event(self.script, event.get("event_id", ""))):
@@ -2345,12 +2350,7 @@ class GameSession(
             return f"本次行动仅预估 {ctx.get('estimated_minutes', 30)} 分钟，不能推进 {minutes:.0f} 分钟；请按叙事实际进度重试"
         estimated_end = parse_time(ctx.get("new_time"))
         if estimated_end and finish > estimated_end:
-            updates = [*ctx.get("_accepted_state_updates", [])]
-            if pending_changes:
-                updates.append(pending_changes)
-            later_events = self._projected_events({
-                **ctx, "_accepted_state_updates": updates, "new_time": end_time,
-            })
+            later_events = self._projected_events(projected_ctx)
             skipped = [event for event in later_events if parse_time(event.get("fire_time")) > estimated_end]
             if skipped:
                 first = min(skipped, key=lambda event: event["fire_time"])
