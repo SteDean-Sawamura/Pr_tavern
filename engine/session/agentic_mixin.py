@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 _MODEL_WAIT_HEARTBEAT_SECONDS = 10
 _PLAYER_SPATIAL_FEEDBACK_LABEL = "玩家空间候选值（未提交，不含尚未结算的事件效果，非主角知情）: "
 _NPC_CONTACT_FEEDBACK_LABEL = "NPC接触候选（未提交，非角色知情）: "
+_EVENT_INSTRUCTION_FEEDBACK_LABEL = "定时事件叙事指令: "
 _PRE_PLAN_READ_TOOLS = frozenset({
     "recall_history", "query_lorebook", "query_npc_history",
     "check_inventory", "get_npc_attitude", "peek_upcoming_events",
@@ -152,7 +153,68 @@ def _json_result_section(result: dict, result_path: list, offset: int, summary_k
     return page
 
 
+def _bounded_event_instruction_feedback(feedback: dict, key: str, limit: int) -> str:
+    encoded = json.dumps(feedback, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded) <= limit:
+        return encoded
+    preview = {field: value for field, value in feedback.items() if field != key}
+    instructions = feedback.get(key)
+    if isinstance(instructions, list) and instructions:
+        preview.update(instructions_omitted=True, instruction_count=len(instructions), instruction_refs=[
+            {field: instruction[field] for field in ("event_id", "fire_time") if field in instruction}
+            for instruction in instructions
+        ])
+    elif instructions == []:
+        preview[key] = []
+    preview["read_hint"] = (
+        "正文省略，不算已读或撤回；用 consult_rules 在 one_time_events/cyclic_events 按 event_id 查询，"
+        "取 category、rule_index、snapshot，以 result_path=[definition,effects,inject_prompt]、offset=0 读字段，"
+        "按 next_offset 续读；快照失效丢弃旧片段重查。按各 fire_time 核对，非已发生或角色知情。"
+    )
+    encoded = json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded) <= limit:
+        return encoded
+    preview = {field: preview[field] for field in (
+        "through", "provisional", "instructions_omitted", "instruction_count", "read_hint", "error_code",
+    ) if field in preview}
+    preview["metadata_omitted"] = True
+    preview["read_hint"] = (
+        "指令及坐标省略，非撤回；用 consult_rules 重查 one_time_events/cyclic_events，按候选时间核对声明；"
+        "取新 rule_index/snapshot，以 result_path=[definition,effects,inject_prompt]、offset=0 重读，"
+        "按 next_offset 续读；失效重查，非已发生或角色知情。"
+    )
+    if instructions == []:
+        preview[key] = []
+    if _tool_result_failed(feedback):
+        preview.update(error="提交反馈详情省略，不能视为检查通过。", state_update_accepted=False,
+                       retry_hint="先重读指令并核对声明，再重传本次未接收参数；不要重复先前已接收更新。")
+    return json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
+
+
 def _bounded_tool_content(content: str, name: str, limit: int) -> str:
+    if name == "finalize_turn":
+        try:
+            feedback = json.loads(content)
+        except ValueError:
+            feedback = None
+        if isinstance(feedback, dict) and ("event_instructions" in feedback or feedback.get("instructions_omitted")):
+            return _bounded_event_instruction_feedback(feedback, "event_instructions", limit)
+    if name in ("update_state", "undo_my_last_action", "write_narrative") and _EVENT_INSTRUCTION_FEEDBACK_LABEL in content:
+        prefix, instruction_content = content.split(_EVENT_INSTRUCTION_FEEDBACK_LABEL, 1)
+        try:
+            feedback, end = json.JSONDecoder().raw_decode(instruction_content)
+        except ValueError:
+            feedback = None
+        if isinstance(feedback, dict):
+            reserve = min(len(prefix) + len(instruction_content[end:]), 600, limit // 3)
+            encoded = _EVENT_INSTRUCTION_FEEDBACK_LABEL + _bounded_event_instruction_feedback(
+                feedback, "instructions", limit - reserve - len(_EVENT_INSTRUCTION_FEEDBACK_LABEL) - 3,
+            )
+            remainder = prefix + instruction_content[end:]
+            available = limit - len(encoded) - 3
+            if len(remainder) <= available:
+                return prefix + encoded + instruction_content[end:]
+            return _bounded_tool_content(remainder, name, available) + " | " + encoded
     if name in ("update_state", "undo_my_last_action", "write_narrative") and _NPC_CONTACT_FEEDBACK_LABEL in content:
         prefix, contact_content = content.split(_NPC_CONTACT_FEEDBACK_LABEL, 1)
         try:
@@ -626,7 +688,7 @@ class AgenticMixin:
                             latest_exact_lore_result = message
                             break
                     state_feedback_tools = ("update_state", "undo_my_last_action", "write_narrative")
-                    state_feedback_markers = ("玩家空间候选值", "NPC接触候选", "变量候选值", "世界属性候选值", "本轮候选结算", "状态投影显示条件事件可能触发")
+                    state_feedback_markers = ("玩家空间候选值", "NPC接触候选", "变量候选值", "世界属性候选值", _EVENT_INSTRUCTION_FEEDBACK_LABEL, "本轮候选结算", "状态投影显示条件事件可能触发")
                     state_results = [message for message in msgs
                                      if message.get("role") == "tool"
                                       and tool_names.get(message.get("tool_call_id")) in state_feedback_tools
@@ -788,6 +850,10 @@ class AgenticMixin:
                                     }, ensure_ascii=False))
                                 else:
                                     summary_parts.append(f"[工具结果] {mc[:60]}")
+                            elif (tool_names.get(m.get("tool_call_id")) == "finalize_turn"
+                                  and isinstance(tool_result, dict) and _tool_result_failed(tool_result)
+                                  and ("event_instructions" in tool_result or tool_result.get("instructions_omitted"))):
+                                summary_parts.append("[工具失败] finalize_turn: " + _bounded_tool_content(mc, "finalize_turn", 6000))
                             elif tool_names.get(m.get("tool_call_id")) in state_feedback_tools:
                                 name = tool_names[m.get("tool_call_id")]
                                 if _tool_result_failed(mc):
@@ -799,7 +865,10 @@ class AgenticMixin:
                                     summary_parts.append(f"[工具执行记录] {name}: {receipt}")
                                     if m is latest_state_result:
                                         start = min(mc.find(marker) for marker in state_feedback_markers if marker in mc)
-                                        summary_parts.append("[状态投影反馈] " + mc[start:].replace("\n", "\\n"))
+                                        feedback = mc[start:]
+                                        if _EVENT_INSTRUCTION_FEEDBACK_LABEL in feedback and len(feedback) > 6000:
+                                            feedback = _bounded_tool_content(feedback, name, 6000)
+                                        summary_parts.append("[状态投影反馈] " + feedback.replace("\n", "\\n"))
                             else:
                                 summary_parts.append(f"[工具结果] {mc[:60]}")
                         elif role == "assistant":
@@ -2507,7 +2576,7 @@ class AgenticMixin:
         else:
             projected = self._projected_events(ctx, event_instructions=event_instructions) if end_time else []
         if event_instructions or ctx.get("_known_event_instructions"):
-            result += " | 定时事件叙事指令: " + json.dumps({
+            result += " | " + _EVENT_INSTRUCTION_FEEDBACK_LABEL + json.dumps({
                 "through": end_time or ctx["old_time"], "instructions": event_instructions, "provisional": True,
                 "hint": "仅供叙事 Agent 使用，不是玩家通知或角色知情证据；以本次候选为准，"
                         "未列出的旧指令已撤回。请按指令确认或修订叙事，不要重复提交已接收的状态更新。",
