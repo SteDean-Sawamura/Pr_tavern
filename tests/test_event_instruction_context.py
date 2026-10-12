@@ -1,5 +1,6 @@
 import copy
 import json
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -9,6 +10,8 @@ from engine.session.agentic_mixin import _AgentResult, _bounded_tool_content
 from engine.tool_schemas import _unified_tools
 from test_agent_state_compaction import compact, state_feedback
 from test_candidate_contacts import CONTACT, contact_feedback
+from test_event_narrative_consistency import proposal
+from test_finalize_event_dice import unstaged_session
 from test_player_spatial_feedback import spatial_feedback
 from test_scheduled_event_instructions import END, INSTRUCTION, REVISED, feedback_instructions, instruction_session
 
@@ -253,3 +256,199 @@ async def test_instruction_compaction_keeps_combined_dice_rejection_and_retry_bo
     assert receipt["prepared_event_dice"] == prepared and receipt["error_code"] == "event_dice_prepared"
     assert receipt["instructions_omitted"] is True and receipt["state_update_accepted"] is False
     assert "重传" in receipt["retry_hint"] and receipt["provisional"] is True
+
+
+def historical_finalizations(summary):
+    prefix = "[历史提交失败] finalize_turn: "
+    return [json.loads(line.removeprefix(prefix)) for line in summary.splitlines() if line.startswith(prefix)]
+
+
+async def compact_with_instruction_tail(session, record, previous_summary):
+    name, arguments, result = record
+    messages = [
+        {"role": "user", "content": "Continue the synthetic action."},
+        {"role": "user", "content": previous_summary},
+        {"role": "assistant", "content": "Synthetic prior context. " * 1600},
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "synthetic-latest-instructions", "type": "function",
+            "function": {"name": name, "arguments": json.dumps(arguments)},
+        }]},
+        {"role": "tool", "tool_call_id": "synthetic-latest-instructions", "content": result},
+        {"role": "user", "content": "Check only the latest candidate."},
+        {"role": "assistant", "content": "Ready."},
+    ]
+    events = [event async for event in session._agent_loop(
+        messages, "Synthetic system.", [], lambda tool, args: "", max_rounds=1,
+    )]
+    assert not any(event.get("type") == "error" for event in events)
+    sent = session.ai_provider.generate_with_tools.await_args.args[0]
+    assert sum(len(json.dumps(message, ensure_ascii=False)) for message in sent) < 30000
+    assert any(message.get("tool_call_id") == "synthetic-latest-instructions" for message in sent)
+    return sent[1]["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repeat", [1, 8, 500])
+@pytest.mark.parametrize("incremental", [False, True])
+async def test_many_rejected_windows_keep_only_latest_instructions_within_budget(repeat, incremental):
+    session, context, _ = context_session("cyclic_events", repeat=repeat)
+    context["new_time"] = "2030-01-01T10:20:00"
+    context["triggered_events"] = session.event_scheduler.check_events(
+        session.current_state, context["old_time"], context["new_time"], condition_eval=session._evaluate_condition,
+    )
+    records = []
+    summary = None
+    for count in range(1, 17):
+        through = datetime(2030, 1, 1, 9) + timedelta(minutes=5 * count)
+        arguments = {"end_time": through.isoformat()}
+        result = session._handle_finalize_turn(context, arguments)
+        feedback = json.loads(result)
+        assert feedback["error_code"] == "event_instructions_available"
+        assert feedback["state_update_accepted"] is False and len(feedback["event_instructions"]) == count
+        records.append(("finalize_turn", arguments, result))
+        if incremental:
+            before = copy.deepcopy((session.current_state, context))
+            summary = await compact(session, records[-1:], summary)
+            assert (session.current_state, context) == before
+    before = copy.deepcopy((session.current_state, context))
+    if not incremental:
+        summary = await compact(session, records)
+    for _ in range(3):
+        summary = await compact(session, [], summary)
+        latest = finalization_feedback(summary)
+        if "event_instructions" in latest:
+            assert latest["event_instructions"] == json.loads(records[-1][2])["event_instructions"]
+        else:
+            assert latest["instructions_omitted"] is True and latest["instruction_count"] == 16
+        historical, = historical_finalizations(summary)
+        assert historical["state_update_accepted"] is False and historical["instructions_superseded"] is True
+        assert not {"event_instructions", "instructions_omitted", "instruction_refs", "instruction_count"} & historical.keys()
+    assert (session.current_state, context) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("latest_kind", ["finalize_turn", "update_state", "withdraw"])
+@pytest.mark.parametrize("kept_tail", [False, True])
+async def test_new_instruction_feedback_supersedes_compressed_rejection(latest_kind, kept_tail):
+    session, context, old_text = context_session()
+    summary = await compact(session, [deliver(session, context, "finalize_turn")])
+    new_text = "Synthetic replacement instruction for the current window."
+    session.script["one_time_events"][0]["effects"]["inject_prompt"] = new_text
+    session.event_engine.events["test_shift"].effects["inject_prompt"] = new_text
+    if latest_kind == "withdraw":
+        arguments = {"end_time": "2030-01-01T09:01:00"}
+        record = "update_state", arguments, session._handle_update_state(arguments, context)
+        assert feedback_instructions(record[2])["instructions"] == []
+    else:
+        record = deliver(session, context, latest_kind)
+    before = copy.deepcopy((session.current_state, context))
+    summary = (await compact_with_instruction_tail(session, record, summary) if kept_tail
+               else await compact(session, [record], summary))
+    for _ in range(2):
+        assert old_text not in summary
+        historical, = historical_finalizations(summary)
+        assert historical["instructions_superseded"] is True and historical["state_update_accepted"] is False
+        if not kept_tail:
+            latest = finalization_feedback(summary) if latest_kind == "finalize_turn" else compressed_instructions(summary)
+            key = "event_instructions" if latest_kind == "finalize_turn" else "instructions"
+            assert latest[key] == ([] if latest_kind == "withdraw" else [
+                {"event_id": "test_shift", "fire_time": "2030-01-01T09:05:00", "text": new_text},
+            ])
+        summary = await compact(session, [], summary)
+    assert (session.current_state, context) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kept_tail", [False, True])
+async def test_new_rejection_supersedes_state_instructions_without_losing_other_feedback(kept_tail):
+    session, context, old_text = context_session()
+    arguments = {"end_time": END, "location_change": "test_origin", **CONTACT}
+    result = session._handle_update_state(arguments, context)
+    summary = await compact(session, [("update_state", arguments, result)])
+    expected_space, expected_contact = spatial_feedback(result), contact_feedback(result)
+    new_text = "Synthetic replacement instruction after reviewing the candidate."
+    session.script["one_time_events"][0]["effects"]["inject_prompt"] = new_text
+    session.event_engine.events["test_shift"].effects["inject_prompt"] = new_text
+    record = deliver(session, context, "finalize_turn")
+    before = copy.deepcopy((session.current_state, context))
+    summary = (await compact_with_instruction_tail(session, record, summary) if kept_tail
+               else await compact(session, [record], summary))
+    summary = await compact(session, [], summary)
+    assert old_text not in summary
+    state = " | " + state_feedback(summary).removeprefix("[状态投影反馈] ")
+    assert spatial_feedback(state) == expected_space and contact_feedback(state) == expected_contact
+    assert feedback_instructions(state)["instructions_superseded"] is True
+    assert (session.current_state, context) == before
+
+
+@pytest.mark.asyncio
+async def test_superseded_joint_failure_preserves_real_prepared_dice_and_other_rejections():
+    session, context = unstaged_session()
+    text = "Synthetic instruction accompanying a prepared event roll."
+    session.script["one_time_events"][0]["effects"] = {"inject_prompt": text}
+    session.event_engine.events["test_cancel"].effects = {"inject_prompt": text}
+    session.ai_provider = SimpleNamespace(generate_with_tools=AsyncMock(return_value={"content": "Done.", "tool_calls": []}))
+    arguments = proposal("unstaged_dice")
+    result = session._handle_finalize_turn(context, arguments)
+    original = json.loads(result)
+    assert original["prepared_event_dice"] and original["excluded_events"] and original["event_instructions"]
+    summary = await compact(session, [("finalize_turn", arguments, result)])
+    update = {"end_time": "2030-01-01T09:01:00"}
+    receipt = session._handle_update_state(update, context)
+    assert feedback_instructions(receipt)["instructions"] == []
+    before = copy.deepcopy((session.current_state, context))
+    summary = await compact(session, [("update_state", update, receipt)], summary)
+    summary = await compact(session, [], summary)
+    assert text not in summary and compressed_instructions(summary)["instructions"] == []
+    historical, = historical_finalizations(summary)
+    assert historical["instructions_superseded"] is True
+    for key, value in original.items():
+        if key != "event_instructions":
+            assert historical[key] == value
+    assert (session.current_state, context) == before
+    session.dice.roll_and_resolve.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kept_tail", [False, True])
+async def test_unrelated_rejected_update_does_not_supersede_instruction_feedback(kept_tail):
+    session, context, _ = context_session()
+    summary = await compact(session, [deliver(session, context, "finalize_turn")])
+    original = finalization_feedback(summary)
+    arguments = {"end_time": "invalid-time"}
+    result = session._handle_update_state(arguments, context)
+    assert result.startswith("错误:")
+    record = "update_state", arguments, result
+    before = copy.deepcopy((session.current_state, context))
+    summary = (await compact_with_instruction_tail(session, record, summary) if kept_tail
+               else await compact(session, [record], summary))
+    summary = await compact(session, [], summary)
+    assert finalization_feedback(summary) == original and not historical_finalizations(summary)
+    assert (session.current_state, context) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("previous_summary", [False, True])
+@pytest.mark.parametrize("kept_tail", [False, True])
+async def test_later_state_receipt_does_not_hide_instruction_withdrawal(previous_summary, kept_tail):
+    session, context, old_text = context_session()
+    records = [deliver(session, context, "finalize_turn")]
+    for minute in (1, 2):
+        arguments = {"end_time": f"2030-01-01T09:0{minute}:00"}
+        result = session._handle_update_state(arguments, context)
+        records.append(("update_state", arguments, result))
+    assert feedback_instructions(records[1][2])["instructions"] == []
+    assert "定时事件叙事指令: " not in records[2][2]
+    before = copy.deepcopy((session.current_state, context))
+    summary = await compact(session, records[:2]) if previous_summary or kept_tail else None
+    if kept_tail:
+        summary = await compact_with_instruction_tail(session, records[-1], summary)
+    else:
+        summary = await compact(session, records[-1:] if previous_summary else records, summary)
+    summary = await compact(session, [], summary)
+    assert old_text not in summary
+    historical, = historical_finalizations(summary)
+    assert historical["instructions_superseded"] is True and historical["state_update_accepted"] is False
+    instruction_line, = [line for line in summary.splitlines() if line.startswith("[定时事件指令反馈] ")]
+    assert feedback_instructions(" | " + instruction_line.removeprefix("[定时事件指令反馈] "))["instructions"] == []
+    assert (session.current_state, context) == before

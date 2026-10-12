@@ -191,6 +191,47 @@ def _bounded_event_instruction_feedback(feedback: dict, key: str, limit: int) ->
     return json.dumps(preview, ensure_ascii=False, separators=(",", ":"))
 
 
+def _standalone_event_instruction_feedback(content: str) -> str | None:
+    if _EVENT_INSTRUCTION_FEEDBACK_LABEL not in content:
+        return None
+    try:
+        feedback, _ = json.JSONDecoder().raw_decode(content.split(_EVENT_INSTRUCTION_FEEDBACK_LABEL, 1)[1])
+    except ValueError:
+        return None
+    if not isinstance(feedback, dict) or ("instructions" not in feedback and not feedback.get("instructions_omitted")):
+        return None
+    return ("[定时事件指令反馈] " + _EVENT_INSTRUCTION_FEEDBACK_LABEL
+            + _bounded_event_instruction_feedback(feedback, "instructions", 6000))
+
+
+def _historical_event_instruction_feedback(content: str, name: str) -> str | None:
+    if name == "finalize_turn" and _tool_result_failed(content):
+        prefix, payload, key = "", content, "event_instructions"
+    elif (name in ("update_state", "undo_my_last_action", "write_narrative")
+          and not _tool_result_failed(content) and _EVENT_INSTRUCTION_FEEDBACK_LABEL in content):
+        prefix, payload = content.split(_EVENT_INSTRUCTION_FEEDBACK_LABEL, 1)
+        prefix += _EVENT_INSTRUCTION_FEEDBACK_LABEL
+        key = "instructions"
+    else:
+        return None
+    try:
+        feedback, end = json.JSONDecoder().raw_decode(payload)
+    except ValueError:
+        return None
+    if not isinstance(feedback, dict) or (key not in feedback and not feedback.get("instructions_omitted")):
+        return None
+    historical = {field: value for field, value in feedback.items() if field not in (
+        key, "instructions_omitted", "instruction_count", "instruction_refs", "read_hint",
+    )}
+    if key == "instructions":
+        historical.pop("hint", None)
+    historical.update(instructions_superseded=True, history_note=(
+        "历史指令已被后续反馈取代，仅参考最新指令反馈，不要恢复旧候选；"
+        "本条参数接收状态及其他失败详情仍按原回执，不代表提交成功。"
+    ))
+    return prefix + json.dumps(historical, ensure_ascii=False, separators=(",", ":")) + payload[end:]
+
+
 def _bounded_tool_content(content: str, name: str, limit: int) -> str:
     if name == "finalize_turn":
         try:
@@ -696,6 +737,10 @@ class AgenticMixin:
                                               for marker in state_feedback_markers)
                                      and not _tool_result_failed(message.get("content"))]
                     latest_state_result = state_results[-1] if state_results else None
+                    latest_state_instructions = next((
+                        message for message in reversed(state_results)
+                        if _standalone_event_instruction_feedback(str(message.get("content", ""))) is not None
+                    ), None)
                     for m in middle:
                         role = m.get("role", "")
                         mc = str(m.get("content", ""))
@@ -869,6 +914,8 @@ class AgenticMixin:
                                         if _EVENT_INSTRUCTION_FEEDBACK_LABEL in feedback and len(feedback) > 6000:
                                             feedback = _bounded_tool_content(feedback, name, 6000)
                                         summary_parts.append("[状态投影反馈] " + feedback.replace("\n", "\\n"))
+                                    elif m is latest_state_instructions:
+                                        summary_parts.append(_standalone_event_instruction_feedback(mc))
                             else:
                                 summary_parts.append(f"[工具结果] {mc[:60]}")
                         elif role == "assistant":
@@ -884,7 +931,9 @@ class AgenticMixin:
                                 previous_lines = []
                                 for line in previous_summary.splitlines():
                                     if latest_state_result is not None and line.startswith("[状态投影反馈] "):
-                                        continue
+                                        line = _standalone_event_instruction_feedback(line)
+                                        if line is None:
+                                            continue
                                     if latest_exact_lore_result is not None and line.startswith("[世界书精确读取] "):
                                         line = (line.split("；证据片段：", 1)[0]
                                                 .split("；资料仅供推演", 1)[0]
@@ -895,7 +944,35 @@ class AgenticMixin:
                                 summary_parts.append(f"[玩家消息] {mc}")
                     summary_lines = []
                     mechanics_reads = set()
+                    historical_failures = set()
+                    failure_prefix = "[工具失败] finalize_turn: "
+                    historical_prefix = "[历史提交失败] finalize_turn: "
+                    state_prefix = "[状态投影反馈] "
+                    instruction_prefix = "[定时事件指令反馈] "
+                    latest_instruction_seen = any(
+                        _historical_event_instruction_feedback(
+                            str(message.get("content", "")), tool_names.get(message.get("tool_call_id"), ""),
+                        ) is not None
+                        for message in kept_tail if message.get("role") == "tool"
+                    )
                     for line in reversed("\n".join(summary_parts).splitlines()):
+                        if line.startswith((failure_prefix, state_prefix, instruction_prefix)):
+                            prefix = next(
+                                marker for marker in (failure_prefix, state_prefix, instruction_prefix) if line.startswith(marker)
+                            )
+                            historical = _historical_event_instruction_feedback(
+                                line.removeprefix(prefix), "finalize_turn" if prefix == failure_prefix else "update_state",
+                            )
+                            if historical is not None:
+                                if latest_instruction_seen:
+                                    if prefix == instruction_prefix:
+                                        continue
+                                    line = (historical_prefix if prefix == failure_prefix else state_prefix) + historical
+                                latest_instruction_seen = True
+                        if line.startswith(historical_prefix):
+                            if line in historical_failures:
+                                continue
+                            historical_failures.add(line)
                         if line.startswith("[剧本机制检索] "):
                             try:
                                 retrieval, _ = json.JSONDecoder().raw_decode(line.removeprefix("[剧本机制检索] "))
