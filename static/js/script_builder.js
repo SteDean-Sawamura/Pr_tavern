@@ -763,11 +763,21 @@ function _preserveScriptVisibilityMetadata(script, source) {
         locations: ['public_description', 'visual_profile'],
         npcs: ['public_profile', 'visual_profile'],
         lorebook: ['visibility', 'discoverable', 'known_by_npcs'],
-        cyclic_events: ['visibility', 'known_by_npcs'],
-        one_time_events: ['visibility', 'known_by_npcs'],
+        cyclic_events: ['visibility', 'known_by_npcs', 'effects', 'narrative_claims', 'rule_notes'],
+        one_time_events: ['visibility', 'known_by_npcs', 'effects', 'narrative_claims', 'rule_notes'],
     };
     for (const [section, fields] of Object.entries(sections)) {
         copyMissing(script[section], source[section], fields);
+    }
+    for (const section of ['npcs', 'organizations']) {
+        const references = new Map((source[section] || []).filter(actor => actor.id).map(actor => [actor.id, actor]));
+        const fields = section === 'npcs' ? ['rule_notes'] : ['rule_notes', 'on_complete_effects'];
+        for (const actor of script[section] || []) {
+            const reference = references.get(actor.id);
+            if (!reference) continue;
+            copyMissing((actor.goals || []).filter(goal => goal.id),
+                (reference.goals || []).filter(goal => goal.id), fields);
+        }
     }
     for (const tree of script.story_tree?.trees || []) {
         const reference = source.story_tree?.trees?.find(original => original.id === tree.id);
