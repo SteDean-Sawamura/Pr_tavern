@@ -638,13 +638,13 @@ def _unified_tools() -> list[dict]:
     # submit_plan: interactive plan with optional questions/options
     plan_tool = [{"type": "function", "function": {
         "name": "submit_plan",
-        "description": "提交本轮行动计划。可以包含需要用户确认的问题和选项。",
+        "description": "提交本轮行动计划。只有非空 questions 才会暂停并等待玩家回复；仅写计划不会等待。玩家明确要求先确认时，必须通过 questions 提出基于已见信息的确认问题，不能只在计划或叙事中承诺等待。",
         "parameters": {"type": "object", "properties": {
             "plan": {"type": "string", "description": "简短的行动计划说明"},
             "questions": {"type": "array", "items": {"type": "object", "properties": {
                 "question": {"type": "string", "description": "问题"},
                 "options": {"type": "array", "items": {"type": "string"}, "description": "可选项（2-4个）"},
-            }}, "description": "需要用户选择的问题（可选）"},
+            }}, "description": "需要玩家回答后才可继续的问题，每次1-2个。玩家明确要求先确认时必须填写；无需回复或确认时可省略或留空。"},
         }, "required": ["plan"]},
     }}]
 
