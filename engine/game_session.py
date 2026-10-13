@@ -262,19 +262,22 @@ class GameSession(
             copy.deepcopy(self.current_state.get("_npc_autonomy") or {}),
         )
 
+    def _snapshot_session_models(self):
+        return {"_" + name: copy.deepcopy(getattr(self, name).snapshot()) for name in
+                ("player_model", "npc_autonomy", "narrative_graph", "director_notes")}
+
     def _restore_session_models_from_state(self):
-        """Restore narrative_graph and player_model from current_state snapshot."""
-        ng_data = self.current_state.pop("_narrative_graph", None)
-        if ng_data:
-            self.narrative_graph = NarrativeGraph.from_snapshot(ng_data)
-        pm_data = self.current_state.pop("_player_model", None)
-        if pm_data:
-            self.player_model = PlayerModel.from_snapshot(pm_data)
+        """Restore branch-owned models without mutating their saved snapshots."""
+        self.narrative_graph = NarrativeGraph.from_snapshot(
+            copy.deepcopy(self.current_state.get("_narrative_graph") or {}),
+        )
+        self.player_model = PlayerModel.from_snapshot(
+            copy.deepcopy(self.current_state.get("_player_model") or {}),
+        )
         self._restore_npc_autonomy_from_state()
-        self.current_state.pop("_npc_autonomy", None)
-        dn_data = self.current_state.pop("_director_notes", None)
-        if dn_data:
-            self.director_notes = DirectorNotes.from_snapshot(dn_data)
+        self.director_notes = DirectorNotes.from_snapshot(
+            copy.deepcopy(self.current_state.get("_director_notes") or {}),
+        )
 
 
     def _build_logit_bias_hint(self) -> str:
@@ -699,16 +702,16 @@ class GameSession(
                 condition_eval=self._evaluate_condition,
                 advance_timed=False,
             )
-            self._apply_story_tree_result(st_res)
             inject_prompts.extend(st_res.inject_prompts)
+            self._apply_story_tree_result(st_res, inject_prompts=inject_prompts)
             notifications.extend(public_event_notifications(self.script, st_res))
         if self.event_engine:
             ee_res = self.event_engine.fire_event(
                 event_name, self.current_state,
                 condition_eval=self._evaluate_condition,
             )
-            self._apply_event_result(ee_res)
             inject_prompts.extend(ee_res.inject_prompts)
+            self._apply_event_result(ee_res, inject_prompts=inject_prompts)
             notifications.extend(public_event_notifications(self.script, ee_res))
         if self.trigger_engine and self.trigger_engine.triggers:
             actions = self.trigger_engine.fire(
@@ -1477,6 +1480,8 @@ class GameSession(
             ctx.setdefault("preflight_timings_ms", {})["route"] = 0
             self.current_state["_last_route"] = route
             self.current_state["_last_present_npcs"] = ctx.get("present_npc_ids", [])
+            if ctx.get("generation_baseline"):
+                ctx["generation_baseline"]["state"] = copy.deepcopy(self.current_state)
             return route
 
         retrieval_task = asyncio.create_task(timed("retrieval", self._enrich_with_rag(
@@ -1496,6 +1501,8 @@ class GameSession(
         ctx["route"] = route
         self._boost_lore_by_route(ctx.get("activated_lore", []), route)
         ctx["check_result"] = self._resolve_skill_check_from_route(route, action_text)
+        if ctx.get("generation_baseline"):
+            ctx["generation_baseline"]["state"] = copy.deepcopy(self.current_state)
         return route
 
     def _get_pipeline_mode(self) -> str:
@@ -2127,6 +2134,9 @@ class GameSession(
                         node.setdefault("check_result", nc.get("check_result"))
                         node.setdefault("triggered_consequences", nc.get("triggered_consequences"))
                         node.setdefault("achieved_milestones", nc.get("achieved_milestones"))
+                        for key in ("_generation_baseline", "turn_instructions", "stage_directives", "_turn_player_inputs"):
+                            if key in nc:
+                                node.setdefault(key, nc[key])
                     return snapshot
         except Exception:
             pass
@@ -2638,6 +2648,9 @@ class GameSession(
                 if key not in seen_sections:
                     seen_sections[key] = block
         merged_content = "\n\n".join(seen_sections.values())
+        _sd_world = self._format_stage_directives(ctx, "world", state=state)
+        if _sd_world:
+            merged_content += "\n\n## 当前剧情线指令\n" + _sd_world
 
         # end_time 决策指引
         if old_time:

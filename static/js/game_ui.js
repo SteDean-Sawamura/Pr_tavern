@@ -175,6 +175,7 @@ async function submitActionStream(action, overrideUrl, retryContext) {
     const isPartialRegeneration = isRegeneration && (action.stage === 'choices' || action.stage === 'state');
     if (!isPartialRegeneration) choicesArea.innerHTML = '';
     const content = document.getElementById('narrative-content');
+    content.querySelectorAll(':scope > .stream-interrupted').forEach(recovery => recovery.remove());
     const existingBlocks = content.querySelectorAll('.turn-block');
     const originalBlock = existingBlocks[existingBlocks.length - 1] || null;
     const block = document.createElement('div');
@@ -329,6 +330,7 @@ async function submitActionStream(action, overrideUrl, retryContext) {
     let sawServerError = false;
     let sawUnnumberedEvent = false;
     let discardPartial = false;
+    let preservePendingAction = false;
     let canControlStream = false;
     let isAgenticStream = false;
     let sawAgentPlan = false;
@@ -647,6 +649,7 @@ async function submitActionStream(action, overrideUrl, retryContext) {
                         } else if (parsed.type === 'model_waiting') {
                             waitingForPlayer = false;
                             armTimeout();
+                            agentToolsWrap.querySelector('.agent-tools-body')?.querySelector('.agent-waiting')?.remove();
                             if (typeof setMainMapAgentStatus === 'function') setMainMapAgentStatus(
                                 saveId, canControlStream ? '模型处理中，可插话或请求停止' : '模型处理中，可请求停止', agentControls);
                         } else if (parsed.type === 'model_output_started') {
@@ -839,47 +842,52 @@ async function submitActionStream(action, overrideUrl, retryContext) {
         if (receivedFinal && !pendingUndo) return;
         const msg = e.name === 'AbortError' ? '请求超时，请重试' : e.message;
         const hasPartialText = textDiv && textDiv.textContent.trim().length > 0;
-        const retryable = !discardPartial && (hasPartialText || sawAgentPlan ||
-            ((!e.status || e.status >= 500) && !isRegeneration && actionContext.actionId && (sawServerError || !sawUnnumberedEvent))) &&
+        const retryable = (discardPartial ? sawServerError && !isRegeneration && actionContext.actionId :
+            (hasPartialText || sawAgentPlan ||
+            ((!e.status || e.status >= 500) && !isRegeneration && actionContext.actionId && (sawServerError || !sawUnnumberedEvent)))) &&
             e.status !== 409 && !(isRegeneration && originalBlock);
+        preservePendingAction = retryable;
         let retryInterruptedAction = null;
         if (isRegeneration && originalBlock && !receivedFinal) {
             if (isPartialRegeneration) block.remove();
             else block.replaceWith(originalBlock);
         } else if (discardPartial) {
             block.remove();
+            retryContext?.interruptedBlocks?.forEach(oldBlock => oldBlock.remove());
             if (action.type === 'freeform' && !isRegeneration) {
                 const input = document.getElementById('freeform-input');
                 if (!input.value?.trim()) input.value = action.text || '';
             }
-        } else if (retryable) {
-            // 保留已展示的正文或计划，标注中断并提供重试按钮
+        } else if (!retryable) {
+            if (block && block.parentElement) block.remove();
+            if (action.type === 'freeform' && !isRegeneration) {
+                const input = document.getElementById('freeform-input');
+                if (!input.value?.trim()) input.value = action.text || '';
+            }
+        }
+        if (retryable) {
             const retryBar = document.createElement('div');
             retryBar.className = 'stream-interrupted';
             retryBar.innerHTML = `<span>（${sawServerError ? '推演失败' : '连接中断'}：${escapeHtml(msg)}）</span> `;
             const retryBtn = document.createElement('button');
             retryBtn.className = 'retry-btn';
             retryBtn.textContent = isRegeneration ? '重试' : sawServerError ? '重新推演' : '续接';
+            const retryAnchor = discardPartial ? retryBar : block;
             let retryStarted = false;
             retryInterruptedAction = () => {
-                if (retryStarted || currentSaveId !== saveId || isStreaming || block.parentElement !== content) return;
+                if (retryStarted || currentSaveId !== saveId || currentNodeId !== actionContext.baseNodeId ||
+                    isStreaming || retryAnchor.parentElement !== content) return;
                 retryStarted = true;
+                if (action.type === 'freeform' && input.value === action.text) input.value = '';
                 const request = submitActionStream(action, overrideUrl, {
-                    ...actionContext, streamId, interruptedBlocks: [...(retryContext?.interruptedBlocks || []), block],
+                    ...actionContext, streamId, interruptedBlocks: [...(retryContext?.interruptedBlocks || []), retryAnchor],
                 });
                 retryBar.remove();
                 return request;
             };
             retryBtn.addEventListener('click', retryInterruptedAction);
             retryBar.appendChild(retryBtn);
-            block.appendChild(retryBar);
-        } else {
-            // 无内容时移除失败的 turn block
-            if (block && block.parentElement) block.remove();
-            if (action.type === 'freeform' && !isRegeneration) {
-                const input = document.getElementById('freeform-input');
-                if (!input.value?.trim()) input.value = action.text || '';
-            }
+            (discardPartial ? content : block).appendChild(retryBar);
         }
         if (typeof recordMainMapStreamEvent === 'function') recordMainMapStreamEvent(saveId, streamToken, {
             type: pendingUndo ? 'undo_refresh_error' : 'error',
@@ -908,7 +916,7 @@ async function submitActionStream(action, overrideUrl, retryContext) {
             updateStatusPanel(currentState);
         } catch (_) { /* 刷新失败不阻塞 */ }
     } finally {
-        if (!overrideUrl && (receivedFinal || wasAborted || sawServerError)) {
+        if (!overrideUrl && (receivedFinal || wasAborted || (sawServerError && !preservePendingAction))) {
             try { sessionStorage.removeItem(pendingActionKey); } catch (_) { /* storage is optional */ }
         }
         window.removeEventListener('beforeunload', confirmStreamUnload);

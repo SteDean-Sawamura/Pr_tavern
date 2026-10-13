@@ -465,7 +465,8 @@ def _bound_tool_messages(messages: list[dict], max_chars: int) -> list[dict]:
     for index, message in enumerate(messages):
         if total <= max_chars - 1000:
             break
-        if message.get("role") != "tool":
+        if (message.get("role") != "tool"
+                or tool_names.get(message.get("tool_call_id")) == "submit_plan"):
             continue
         content = message.get("content") or ""
         limit = max(1000, min(20000, max_chars - 1000 - (total - sizes[index])))
@@ -602,7 +603,8 @@ class AgenticMixin:
         _narrative_text = ""  # 最终叙事：仅从明确终止点获取
         _continuation_prefix = ""  # #11: 截断续写时保存前一段文本
         pending_inject = None
-        pending_interrupted_injections = []
+        pending_interrupted_injections = list(getattr(self, "_inject_queue", ()) or ())
+        msgs.extend({"role": "user", "content": message} for message in pending_interrupted_injections)
         pending_plan_record = None
         pending_plan_id = None
         terminal_repair_count = 0
@@ -899,6 +901,8 @@ class AgenticMixin:
                                   and isinstance(tool_result, dict) and _tool_result_failed(tool_result)
                                   and ("event_instructions" in tool_result or tool_result.get("instructions_omitted"))):
                                 summary_parts.append("[工具失败] finalize_turn: " + _bounded_tool_content(mc, "finalize_turn", 6000))
+                            elif tool_names.get(m.get("tool_call_id")) == "submit_plan":
+                                summary_parts.append("[计划反馈] " + mc.replace("\n", "\\n"))
                             elif tool_names.get(m.get("tool_call_id")) in state_feedback_tools:
                                 name = tool_names[m.get("tool_call_id")]
                                 if _tool_result_failed(mc):
@@ -1594,6 +1598,8 @@ class AgenticMixin:
             review_msgs, review_sys = self.prompt_builder.build_narrative_review_prompt(
                 narrative, action_text, present_npcs, pc_name=pc_name,
                 private_script=private_script, known_context=known_context,
+                plan_reply_context=ctx.get("_review_plan_reply"),
+                turn_player_inputs=ctx.get("_turn_player_inputs"),
             )
             raw = await self.ai_provider.generate(
                 review_msgs, system=review_sys, max_tokens=500,
@@ -1604,12 +1610,12 @@ class AgenticMixin:
             logger.warning("review LLM 调用失败: %s", e)
             return "审查通过（LLM不可用）"
 
-    def _format_agent_instructions(self, ctx: dict, stages: tuple[str, ...]) -> str:
+    def _format_agent_instructions(self, ctx: dict, stages: tuple[str, ...], *, state: dict | None = None) -> str:
         lines = list(ctx.get("turn_instructions", []))
         directives = ctx.get("stage_directives", {})
         for stage in stages:
             lines.extend(f"[{stage}] {directive}" for directive in directives.get(stage, []))
-        instructions = self.script_variables.expand_macros("\n".join(lines), self.current_state)
+        instructions = self.script_variables.expand_macros("\n".join(lines), self.current_state if state is None else state)
         return "<turn_instructions>\n" + instructions + "\n</turn_instructions>" if lines else ""
 
     def _visible_interactables_context(self) -> str:
@@ -2563,7 +2569,7 @@ class AgenticMixin:
         if "world_property_changes" in args:
             results.append(self._run_state_tool("update_world", {"world_property_changes": args["world_property_changes"]}))
         result = " | ".join(results) if results else "无状态变更"
-        if ctx is not None and ctx.get("old_time"):
+        if ctx is not None and (ctx.get("old_time") or "_accepted_state_updates" in ctx):
             ctx.setdefault("_accepted_state_updates", []).append(args)
             if prepare_event_dice and any(update.get("end_time") for update in ctx["_accepted_state_updates"]):
                 prepared = self._prepare_unstaged_event_dice(ctx)
@@ -2579,7 +2585,7 @@ class AgenticMixin:
         return result
 
     def _state_projection_feedback(self, ctx: dict, *, acknowledge_event_instructions: bool = True) -> str:
-        if not ctx.get("old_time"):
+        if not ctx.get("old_time") and "_accepted_state_updates" not in ctx:
             return ""
         updates = ctx.get("_accepted_state_updates", [])
         variable_ids = list(ctx.get("_state_feedback_variable_ids", []))
@@ -2632,6 +2638,9 @@ class AgenticMixin:
             values = {property_id: properties.get(property_id) for property_id in property_ids}
             missing = [property_id for property_id in property_ids if property_id not in properties]
             result += _candidate_value_feedback("world_properties", values, missing)
+        if not ctx.get("old_time"):
+            return result + (f" | 状态候选（未提交、未执行回合生命周期；已接受 {len(updates)} 次状态更新）；"
+                             "已接受的更新无需重复提交")
         end_time = next((update["end_time"] for update in reversed(updates) if update.get("end_time")), None)
         event_instructions = []
         if contact_ids:
@@ -2914,6 +2923,17 @@ class AgenticMixin:
         if instructions:
             user_parts.append(instructions)
         user_parts.append(f"<player_action>\n{action_text}\n</player_action>")
+        player_inputs = self.prompt_builder.format_turn_player_inputs(ctx.get("_turn_player_inputs"))
+        if player_inputs:
+            user_parts.append(player_inputs)
+        plan_reply_context = ctx.get("_review_plan_reply")
+        if plan_reply_context:
+            user_parts.append("<plan_reply_context>\n"
+                              + json.dumps(plan_reply_context, ensure_ascii=False) + "\n</plan_reply_context>")
+            system += (
+                "\nplan_reply_context 是玩家回复时的计划、问题、选项与回复原文，仅供解释玩家行动。"
+                "按原问题理解序号等简短回复；不要把整个计划、未确认部分或默认选项当作玩家已确认。"
+            )
         old_time = ctx.get("old_time", "")
         if old_time:
             if ctx.get("is_system_opening"):
@@ -3015,6 +3035,8 @@ class AgenticMixin:
             stage_key="state", max_tokens=4096,
             result_holder=holder,
         ):
+            if event.get("type") == "user_inject":
+                ctx.setdefault("_turn_player_inputs", []).append({"message": event["message"]})
             if streaming:
                 if event.get("type") == "tool_call" and event.get("tool_name") == "write_narrative":
                     event = {**event, "tool_args": {
@@ -3115,14 +3137,16 @@ class AgenticMixin:
         )
         unified_tools = _unified_tools()
         read_tools = [tool for tool in unified_tools
-                      if tool["function"]["name"] in ("query_lorebook", "peek_upcoming_events")]
+                      if tool["function"]["name"] in ("query_lorebook", "peek_upcoming_events", "consult_rules")]
         finalize = copy.deepcopy(next(tool for tool in unified_tools
                                       if tool["function"]["name"] == "finalize_turn"))
+        node = self.world_tree.get_node(self.world_tree.active_node_id) or {}
 
         if stage == "choices":
             system = (
                 "你是游戏结算引擎。以下是本轮已完成的叙事，请为玩家生成4个新的行动选项。\n"
                 "涉及剧本设定或临近事件时，可先查询资料或预览事件。\n"
+                "完整声明与现值可用 consult_rules 按类别查询；只读已提交状态，提出选项不等于执行或结算选项。\n"
                 "调用 finalize_turn 工具提交选项和一句话摘要。不要修改叙事内容。\n"
                 + state_context
             )
@@ -3132,10 +3156,15 @@ class AgenticMixin:
             system = (
                 "你是游戏结算引擎。以下是本轮已完成的叙事，请分析叙事内容并结算状态变更。\n"
                 "涉及剧本设定或时间推进时，可先查询资料或预览临近事件。\n"
+                "声明机制与现值可用 consult_rules 按类别查询；状态校验失败时先核对再重试。\n"
+                "variables、world_properties 可用 include_candidates=true 查询已接收更新的候选值；候选不含事件或回合生命周期。\n"
                 "调用 update_state 和/或 manage_npcs 工具提交状态变更，然后调用 finalize_turn 完成。\n"
                 "不要修改叙事或选项，只关注状态结算。\n"
                 + state_context
             )
+            instructions = self._format_agent_instructions(node, ("world", "npc"), state=current_state)
+            if instructions:
+                system += "\n\n" + instructions
             action_tools = [t for t in CONSOLIDATED_SETTLEMENT_TOOLS
                             if t["function"]["name"] in ("update_state", "manage_npcs")]
             finalize_fields = {"end_time", "state_changes", "inventory_changes",
@@ -3160,7 +3189,13 @@ class AgenticMixin:
         self._reset_stage45_tool_buffers()
         self._turn_summary_override = ""
         ctx = {"tool_results": [], "_finalize_narrative": narrative}
+        if stage == "state":
+            ctx["_accepted_state_updates"] = []
         user_msg = f"玩家行动: {action_text}\n\n叙事:\n{narrative}"
+        turn_player_inputs = copy.deepcopy(node.get("_turn_player_inputs") or [])
+        player_inputs = self.prompt_builder.format_turn_player_inputs(turn_player_inputs)
+        if player_inputs:
+            user_msg += "\n\n" + player_inputs
         holder = _AgentResult()
 
         agent_events = self._agent_loop(
@@ -3173,17 +3208,33 @@ class AgenticMixin:
             async for event in agent_events:
                 if streaming:
                     yield event
+                if event.get("type") == "aborted":
+                    if not streaming:
+                        yield event
+                    return
         finally:
             await agent_events.aclose()
 
+        if getattr(self, "_abort_flag", False):
+            yield {"type": "aborted", "label": f"局部重生成({stage})"}
+            return
+        if not any(record.get("name") == "finalize_turn"
+                   and not record.get("deferred") and not _tool_result_failed(record.get("result"))
+                   for record in holder.records):
+            raise IncompleteAgentTurnError("局部Agent未完成结算，重生成失败，请重试")
+
         # 提取结果
-        result = {"stage": stage}
+        result = {"stage": stage, "_turn_player_inputs": turn_player_inputs + [
+            {"message": entry["message"]} for entry in holder.user_injections
+        ]}
         if stage == "choices":
             result["choices"] = list(self._choices_tool_calls)
             result["summary"] = self._turn_summary_override or ""
         elif stage == "state":
             state_calls = []
             for record in holder.records:
+                if record.get("deferred") or _tool_result_failed(record.get("result")):
+                    continue
                 if record["name"] == "update_state":
                     state_calls.extend(self._explode_update_state(record["args"]))
                 elif record["name"] == "manage_npcs":
@@ -3685,6 +3736,9 @@ class AgenticMixin:
             if visible_narrative:
                 parts.append(f"<previous_round>{visible_narrative[-1500:]}</previous_round>")
         parts.append(f"<player_action>{player_action.get('text', '')}</player_action>")
+        player_inputs = self.prompt_builder.format_turn_player_inputs(ctx.get("_turn_player_inputs"))
+        if player_inputs:
+            parts.append(player_inputs)
         destination = self._map_travel_destination(player_action)
         if destination:
             parts.append(f"<map_travel>玩家尝试前往目标地点ID：{destination}；尚未抵达。"
@@ -3838,6 +3892,9 @@ class AgenticMixin:
     def _build_unified_context(self, ctx: dict, player_action: dict) -> str:
         """Build per-turn user message for the unified agent (reuses foreground context)."""
         parts = [self._build_foreground_context(ctx, player_action, unified=True)]
+        player_inputs = self.prompt_builder.format_turn_player_inputs(ctx.get("_turn_player_inputs"))
+        if player_inputs:
+            parts.append(player_inputs)
         mechanics = {category: len(entries) for category, entries in self._queryable_mechanics_definitions().items() if entries}
         if mechanics:
             parts.append(
@@ -4018,6 +4075,8 @@ class AgenticMixin:
         _start = time.monotonic()
         _warnings: list[str] = []
         action_text = ctx.get("action_text") or player_action.get("text", "")
+        ctx.pop("_review_plan_reply", None)
+        ctx["_turn_player_inputs"] = copy.deepcopy(ctx.get("_turn_player_inputs") or [])
         ctx["_map_travel_destination"] = self._map_travel_destination(player_action)
         ctx.setdefault("tool_results", [])
         self._reset_stage45_tool_buffers()
@@ -4044,11 +4103,20 @@ class AgenticMixin:
         semantic_review_task = None
         reviewed_narrative = ""
         semantic_review_calls = 0
+        semantic_review_attempts = 0
         semantic_review_timings_ms = []
         semantic_revision_required = False
         semantic_review_exhausted = False
         first_draft_at = None
         first_text_at = None
+
+        def _record_plan_reply(reply):
+            ctx["_plan_reply"] = reply
+            ctx["_review_plan_reply"] = {
+                "plan": ctx.get("_agent_plan", ""),
+                "questions": copy.deepcopy(ctx.get("_agent_plan_questions") or []),
+                "reply": reply,
+            }
 
         async def _timed_semantic_review(narrative):
             started = time.monotonic()
@@ -4067,6 +4135,7 @@ class AgenticMixin:
             nonlocal call_index, terminal_completed, plan_submitted
             nonlocal semantic_review_task, reviewed_narrative, semantic_review_calls, semantic_revision_required
             nonlocal semantic_review_exhausted
+            nonlocal semantic_review_attempts
             nonlocal first_draft_at
             record_index = call_index
             call_index += 1
@@ -4080,7 +4149,7 @@ class AgenticMixin:
                 args["text"] = _clean_narrative_text(args.get("text") or "", ctx)
             elif name in ("finalize_turn", "delegate_settlement") and args.get("narrative"):
                 args["narrative"] = _clean_narrative_text(args["narrative"], ctx)
-            if name == "write_narrative" and semantic_review_calls >= 3:
+            if name == "write_narrative" and semantic_review_attempts >= 3:
                 if (args.get("text") or "").strip() != ctx.get("_finalize_narrative", "").strip():
                     return json.dumps({"error": "叙事已达审查次数上限，请使用上一稿结算。"}, ensure_ascii=False)
             if name in ("finalize_turn", "delegate_settlement"):
@@ -4101,7 +4170,7 @@ class AgenticMixin:
                         if review and review.get("pass") is False and violations:
                             semantic_revision_required = True
                             ctx["_semantic_review_status"] = "revision_required"
-                            if semantic_review_calls >= 3:
+                            if semantic_review_attempts >= 3:
                                 semantic_review_exhausted = True
                             return json.dumps({
                                 "error": "叙事语义审查未通过；请调用 write_narrative 修订后重新结算。",
@@ -4178,7 +4247,7 @@ class AgenticMixin:
                 submitted = ctx.get("_finalize_narrative", "")
                 if submitted and first_draft_at is None:
                     first_draft_at = time.monotonic()
-                if submitted and submitted != reviewed_narrative and semantic_review_calls < 3:
+                if submitted and submitted != reviewed_narrative and semantic_review_attempts < 3:
                     if semantic_review_task is not None:
                         semantic_review_task.cancel()
                         await asyncio.gather(semantic_review_task, return_exceptions=True)
@@ -4186,6 +4255,7 @@ class AgenticMixin:
                     semantic_review_task = asyncio.create_task(
                         _timed_semantic_review(submitted))
                     semantic_review_calls += 1
+                    semantic_review_attempts += 1
                     ctx["_semantic_review_status"] = "pending"
                 elif semantic_revision_required:
                     ctx["_semantic_review_status"] = (
@@ -4278,7 +4348,7 @@ class AgenticMixin:
                 report_tool_start=streaming,
                 after_plan_context=lambda: (
                     self._build_unified_system(), self._build_unified_context(ctx, player_action)),
-                on_plan_reply=lambda reply: ctx.__setitem__("_plan_reply", reply),
+                on_plan_reply=_record_plan_reply,
                 on_tool_batch=_capture_tool_batch,
                 suppress_plan_questions=bool(ctx.get("is_system_opening")),
                 first_model_interval=first_model_interval,
@@ -4290,6 +4360,10 @@ class AgenticMixin:
                 if semantic_review_exhausted:
                     raise SemanticReviewError()
                 if event.get("type") == "user_inject":
+                    player_input = {"message": event["message"]}
+                    if holder.user_injections[-1].get("plan_reply") and ctx.get("_review_plan_reply"):
+                        player_input["plan_reply_context"] = copy.deepcopy(ctx["_review_plan_reply"])
+                    ctx["_turn_player_inputs"].append(player_input)
                     action_text += "\n玩家补充：" + event["message"]
                     ctx["action_text"] = action_text
                     if semantic_review_task is not None:
@@ -4297,6 +4371,8 @@ class AgenticMixin:
                         await asyncio.gather(semantic_review_task, return_exceptions=True)
                     semantic_review_task = None
                     reviewed_narrative = ""
+                    semantic_review_attempts = 0
+                    semantic_revision_required = False
                     review_ready_for_stream = False
                     ctx["_semantic_review_status"] = "stale"
                 if event.get("type") == "_early_reviewed_text":
@@ -5271,6 +5347,8 @@ class AgenticMixin:
     def _timed_event_revision_feedback(self, ctx: dict, narrative: str | None = None,
                                        *, settled_end_time: str | None = None,
                                        settled_state: dict | None = None) -> str:
+        if not (settled_end_time or ctx.get("old_time") or ctx.get("new_time")):
+            return ""
         from engine.event_scheduler import parse_time
 
         end_time = settled_end_time or next((update["end_time"] for update in reversed(
@@ -5513,7 +5591,7 @@ class AgenticMixin:
         if feedback:
             if map_travel_feedback:
                 ctx["_map_travel_revision_feedback"] = map_travel_feedback
-            if state_args and ctx.get("old_time"):
+            if state_args and "_accepted_state_updates" in ctx:
                 ctx["_accepted_state_updates"].pop()
                 if previous_event_keys is None:
                     ctx.pop("_conditioned_event_keys", None)
@@ -5743,8 +5821,11 @@ class AgenticMixin:
         include_candidates = args.get("include_candidates", False)
         if type(include_candidates) is not bool:
             return json.dumps({"error": "include_candidates 必须是布尔值"}, ensure_ascii=False)
-        if include_candidates and (not (runtime or category in ("variables", "world_properties")) or not (ctx or {}).get("old_time")):
-            return json.dumps({"error": "候选值仅支持进行中回合的 variables、world_properties 或 story_nodes 运行态查询"}, ensure_ascii=False)
+        state_candidates = category in ("variables", "world_properties") and "_accepted_state_updates" in (ctx or {})
+        if include_candidates and (not (runtime or category in ("variables", "world_properties"))
+                                   or not ((ctx or {}).get("old_time") or state_candidates)):
+            return json.dumps({"error": "候选值仅支持进行中回合的 variables、world_properties 或 story_nodes 运行态查询；"
+                                       "局部状态重生成仅支持 variables、world_properties"}, ensure_ascii=False)
         runtime_session = self
         event_projection = {}
         projected_state = None
@@ -5825,7 +5906,8 @@ class AgenticMixin:
             updates = ctx.get("_accepted_state_updates", [])
             projection = {
                 "provisional": True, "accepted_updates": len(updates), "excludes_unsettled_events": True,
-                "as_of": next((update["end_time"] for update in reversed(updates) if update.get("end_time")), ctx["old_time"]),
+                "as_of": next((update["end_time"] for update in reversed(updates) if update.get("end_time")),
+                              ctx.get("old_time", self.current_state.get("game_time"))),
                 **event_projection,
             }
         revision = hashlib.sha256(json.dumps([

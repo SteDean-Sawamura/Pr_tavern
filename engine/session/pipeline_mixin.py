@@ -194,6 +194,8 @@ class PipelineMixin:
             narrative, action_text, present_npcs,
             pc_name=_st.get("player", {}).get("name", ""),
             private_script=private_script, known_context=known_context,
+            plan_reply_context=ctx.get("_review_plan_reply"),
+            turn_player_inputs=ctx.get("_turn_player_inputs"),
         )
         for max_tokens in (500, 1500):
             try:
@@ -297,13 +299,16 @@ class PipelineMixin:
                 parts.append(f"[{key}] {assembled[key]}")
         return "\n".join(parts)
 
+    def _format_stage_directives(self, ctx: dict, stage: str, *, state: dict) -> str:
+        directives = ctx.get("stage_directives", {}).get(stage) or []
+        return self.script_variables.expand_macros("\n".join(directives), state)
+
     async def _execute_pipeline(
         self, ctx: dict, route: dict, player_action: dict, *,
         streaming: bool = False,
         state_baseline: dict | None = None,
     ):
-        """Shared Stage 1→5 pipeline. Async generator yielding intermediate chunks
-        and a final pipeline_result.
+        """Generate narrative, state and NPC candidates; defer choices until settlement.
 
         state_baseline: if provided (regenerate), use this instead of self.current_state
                         for prompt building. None means use self.current_state.
@@ -339,8 +344,8 @@ class PipelineMixin:
         _tools = GAME_TOOLS if self.script.get("settings", {}).get("ai_tools_enabled") else None
         _use_native_tools = _tools and hasattr(self.ai_provider, 'generate_with_tools')
         _focus_npcs = route.get("focus_npcs") or ctx.get("present_npc_ids")
-        _sd_plot = ctx.get("stage_directives", {}).get("plot")
-        _plot_hctx = "\n".join(["## 当前剧情线指令"] + _sd_plot) if _sd_plot else ""
+        _sd_plot = self._format_stage_directives(ctx, "plot", state=_state)
+        _plot_hctx = "## 当前剧情线指令\n" + _sd_plot if _sd_plot else ""
         _pacing = _state.get("pacing_state", {})
         _pacing_tension = _pacing.get("tension", 50)
         _pacing_rec = _pacing.get("recommendation", "")
@@ -383,9 +388,12 @@ class PipelineMixin:
             _plot_hctx = (_plot_hctx + f"\n\n{_profile_hint}").strip() if _plot_hctx else _profile_hint
 
         if route.get("scene_type") == "opening":
-            _opening_base = ctx.get("base_history_context", "")
+            _opening_base = self.script_variables.expand_macros(ctx.get("base_history_context", ""), _state)
             if _opening_base:
                 _plot_hctx = (_opening_base + "\n\n" + _plot_hctx).strip() if _plot_hctx else _opening_base
+        elif ctx.get("turn_instructions"):
+            _turn_instructions = self.script_variables.expand_macros("\n".join(ctx["turn_instructions"]), _state)
+            _plot_hctx = (f"## 本轮声明指令\n{_turn_instructions}\n\n" + _plot_hctx).strip()
 
         # Feature #1: NPC scene hijack directive
         if route.get("scene_type") == "npc_hijack":
@@ -546,13 +554,13 @@ class PipelineMixin:
             if _nearby_hint and narrative_msgs:
                 narrative_msgs[-1]["content"] += _nearby_hint
             # Inject stage directives
-            _sd_env = ctx.get("stage_directives", {}).get("env")
-            _sd_char = ctx.get("stage_directives", {}).get("char")
+            _sd_env = self._format_stage_directives(ctx, "env", state=_state)
+            _sd_char = self._format_stage_directives(ctx, "char", state=_state)
             _extra_directives = []
             if _sd_env:
-                _extra_directives.append("## 环境剧情线指令\n" + "\n".join(_sd_env))
+                _extra_directives.append("## 环境剧情线指令\n" + _sd_env)
             if _sd_char:
-                _extra_directives.append("## 角色剧情线指令\n" + "\n".join(_sd_char))
+                _extra_directives.append("## 角色剧情线指令\n" + _sd_char)
             if _extra_directives and narrative_msgs:
                 narrative_msgs[-1]["content"] += "\n\n" + "\n\n".join(_extra_directives)
 
@@ -614,9 +622,9 @@ class PipelineMixin:
                     env_msgs, env_sys = self.prompt_builder.build_env_render_prompt(
                         plot_decision, _state
                     )
-                    _sd_env = ctx.get("stage_directives", {}).get("env")
+                    _sd_env = self._format_stage_directives(ctx, "env", state=_state)
                     if _sd_env and env_msgs:
-                        env_msgs[-1]["content"] += "\n\n## 环境剧情线指令\n" + "\n".join(_sd_env)
+                        env_msgs[-1]["content"] += "\n\n## 环境剧情线指令\n" + _sd_env
                     try:
                         raw_env = await self.ai_provider.generate(env_msgs, system=env_sys, max_tokens=8192, **self._stage_kwargs("narrative"))
                     except Exception as _env_err:
@@ -631,9 +639,9 @@ class PipelineMixin:
                     triggered_events=ctx.get("triggered_events"),
                     triggered_consequences=ctx.get("triggered_consequences"),
                 )
-                _sd_char = ctx.get("stage_directives", {}).get("char")
+                _sd_char = self._format_stage_directives(ctx, "char", state=_state)
                 if _sd_char and char_msgs:
-                    char_msgs[-1]["content"] += "\n\n## 角色剧情线指令\n" + "\n".join(_sd_char)
+                    char_msgs[-1]["content"] += "\n\n## 角色剧情线指令\n" + _sd_char
                 if env_text and char_msgs:
                     _env_brief = env_text[:150]
                     char_msgs[-1]["content"] += f"\n\n== 已确定的环境描写（角色行为须与之一致）==\n{_env_brief}"
@@ -646,6 +654,13 @@ class PipelineMixin:
 
             # --- Stage 3: 叙事润色整合 ---
             compose_history = await _compose_ctx_task
+            for _stage, _label, _missing in (
+                ("env", "环境", not env_text),
+                ("char", "角色", not char_text),
+            ):
+                _directive = self._format_stage_directives(ctx, _stage, state=_state)
+                if _missing and _directive:
+                    compose_history += f"\n\n## {_label}剧情线指令\n" + _directive
 
             compose_msgs, compose_sys = self.prompt_builder.build_narrative_compose_prompt(
                 plot_decision, env_text, char_text, _state, recent_openings,
@@ -696,9 +711,9 @@ class PipelineMixin:
                 )
 
                 # stage directives → resource
-                _sd_world = ctx.get("stage_directives", {}).get("world")
+                _sd_world = self._format_stage_directives(ctx, "world", state=_state)
                 if _sd_world and wld_msgs:
-                    wld_msgs[-1]["content"] += "\n\n## 当前剧情线指令\n" + "\n".join(_sd_world)
+                    wld_msgs[-1]["content"] += "\n\n## 当前剧情线指令\n" + _sd_world
                 # lorebook context → resource
                 _core_lore = self._build_lore_context_for_core(ctx.get("activated_lore", []))
                 if _core_lore and res_msgs:
@@ -923,11 +938,9 @@ class PipelineMixin:
         if new_scene and isinstance(new_scene, dict):
             _state["scene_details"] = new_scene
 
-        # --- Stage 4a ‖ Stage 5 并行（可由路由跳过）---
         _run_npc = not _skip_npc_reaction or (_skip_state and (
             route.get("scene_type") == "social" or "new_npc" in (route.get("systems") or [])
         ))
-        _run_choices = not _skip_choices
 
         if not _run_npc:
             print("[Route skip] skip_npc_reaction=True → 跳过 Stage 4a NPC反应")
@@ -949,109 +962,43 @@ class PipelineMixin:
             _npc_base_lore, "npc", npc_ids=_present_npc_ids,
         ) if _npc_base_lore else None
 
-        _sd_npc = ctx.get("stage_directives", {}).get("npc")
+        _sd_npc = self._format_stage_directives(ctx, "npc", state=_state)
         if _sd_npc:
-            _npc_dir = "## 当前剧情线NPC指令\n" + "\n".join(_sd_npc)
+            _npc_dir = "## 当前剧情线NPC指令\n" + _sd_npc
             npc_rag_context = (npc_rag_context + "\n" + _npc_dir).strip() if npc_rag_context else _npc_dir
 
         raw_npc = ""
-        raw_choices = ""
-        _use_npc_choices_tools = bool(_tools and _use_native_tools)
-
-        if (_run_npc or _run_choices) and _use_npc_choices_tools:
-            # --- 工具调用路径：NPC反应/选项生成改为结构化工具调用，不走自由文本解析 ---
-            # 每个 stage 收集 (kind, msgs, sys_prompt, tools_schema, max_tokens, stage_key, label, critical)
-            _45_specs = []
-
-            if _run_npc:
-                _npc_msgs, _npc_sys = self.prompt_builder.build_npc_reaction_prompt(
-                    narrative, action_text, _state,
-                    check_result=ctx.get("check_result"),
-                    present_npc_ids=ctx.get("present_npc_ids"),
-                    npc_history=npc_rag_context,
-                    npc_lore=npc_filtered_lore,
-                )
-                _45_specs.append(("npc", _npc_msgs, _npc_sys, NPC_REACTION_TOOLS,
-                                  4096, "state", "NPC关系推演", True))
-
-            if _run_choices:
-                _choices_msgs, _choices_sys = self.prompt_builder.build_choices_prompt(
-                    narrative, action_text, _state,
-                    turn_number=self.turn_number, activated_lore=ctx["activated_lore"],
-                    event_sections=ctx.get("event_sections"),
-                    pc_discovered_lore=_state.get("pc_discovered_lore", []))
-                _45_specs.append(("choices", _choices_msgs, _choices_sys, CHOICES_TOOLS,
-                                  8192, "choices", "选项生成", False))
-
-            self._reset_stage45_tool_buffers()
-            _45_raw = await asyncio.gather(*[
-                self._run_stage45_tools(msgs, sys_prompt, tools_schema,
-                                        max_tokens=max_tokens, stage_key=stage_key, label=label)
-                for (_kind, msgs, sys_prompt, tools_schema, max_tokens, stage_key, label, _crit) in _45_specs
-            ], return_exceptions=True)
-
-            for (kind, _m, _s, _t, _mt, _sk, label, critical), response in zip(_45_specs, _45_raw):
-                if isinstance(response, BaseException):
-                    logger.warning("%s工具调用失败: %s", label, response)
-                    if critical:
-                        _warnings.append(f"{label}工具调用失败，本回合该部分变化可能未记录")
-                    continue
-                calls = response["tool_calls"]
-                if not calls and response["content"]:
-                    if kind == "npc":
+        if _run_npc:
+            npc_msgs, npc_sys = self.prompt_builder.build_npc_reaction_prompt(
+                narrative, action_text, _state,
+                check_result=ctx.get("check_result"),
+                present_npc_ids=ctx.get("present_npc_ids"),
+                npc_history=npc_rag_context,
+                npc_lore=npc_filtered_lore,
+            )
+            try:
+                if _use_native_tools:
+                    self._reset_stage45_tool_buffers()
+                    response = await self._run_stage45_tools(
+                        npc_msgs, npc_sys, NPC_REACTION_TOOLS,
+                        max_tokens=4096, stage_key="state", label="NPC关系推演",
+                    )
+                    if not response["tool_calls"]:
                         raw_npc = response["content"]
-                    else:
-                        raw_choices = response["content"]
-                for tc in calls:
-                    if kind == "npc":
-                        self._run_npc_reaction_tool(tc.get("name", ""), tc.get("arguments") or {})
-                    else:
-                        self._run_choices_tool(tc.get("name", ""), tc.get("arguments") or {})
-
-            self._merge_npc_reaction_tool_results(parsed, narrative)
-            self._merge_choices_tool_results(parsed)
-        elif _run_npc or _run_choices:
-            _4a5_coros = []
-            _4a5_labels = []
-
-            if _run_npc:
-                npc_msgs, npc_sys = self.prompt_builder.build_npc_reaction_prompt(
-                    narrative, action_text, _state,
-                    check_result=ctx.get("check_result"),
-                    present_npc_ids=ctx.get("present_npc_ids"),
-                    npc_history=npc_rag_context,
-                    npc_lore=npc_filtered_lore,
-                )
-                _4a5_coros.append(_retry_on_failure(
-                    lambda: self.ai_provider.generate(npc_msgs, system=npc_sys, max_tokens=4096, **self._stage_kwargs("state")),
-                    max_retries=1, label="NPC反应", raise_on_failure=True,
-                ))
-                _4a5_labels.append(("NPC关系推演", True))
-
-            if _run_choices:
-                choices_msgs, choices_sys = self.prompt_builder.build_choices_prompt(
-                    narrative, action_text, _state,
-                    turn_number=self.turn_number, activated_lore=ctx["activated_lore"],
-                    event_sections=ctx.get("event_sections"),
-                    pc_discovered_lore=_state.get("pc_discovered_lore", []))
-                _4a5_coros.append(_retry_on_failure(
-                    lambda: self.ai_provider.generate(choices_msgs, system=choices_sys, max_tokens=8192, **self._stage_kwargs("choices")),
-                    max_retries=1, label="选项生成", raise_on_failure=True,
-                ))
-                _4a5_labels.append(("选项生成", False))
-            _4a5_raw = await asyncio.gather(*_4a5_coros, return_exceptions=True)
-            _4a5_results, _4a5_warns = self._sanitize_gather_results(_4a5_raw, _4a5_labels)
-            _warnings.extend(_4a5_warns)
-
-            idx = 0
-            if _run_npc:
-                raw_npc = _4a5_results[idx]
-                idx += 1
-            if _run_choices:
-                raw_choices = _4a5_results[idx]
+                    for call in response["tool_calls"]:
+                        self._run_npc_reaction_tool(call.get("name", ""), call.get("arguments") or {})
+                    self._merge_npc_reaction_tool_results(parsed, narrative)
+                else:
+                    raw_npc = await _retry_on_failure(
+                        lambda: self.ai_provider.generate(npc_msgs, system=npc_sys, max_tokens=4096, **self._stage_kwargs("state")),
+                        max_retries=1, label="NPC反应", raise_on_failure=True,
+                    )
+            except Exception as exc:
+                logger.warning("NPC关系推演失败: %s", exc)
+                _warnings.append("NPC关系推演失败，本回合该部分变化可能未记录")
         # merge NPC results into parsed
         if raw_npc:
-            npc_parsed = self.response_parser.parse_npc_reaction(raw_npc)
+            npc_parsed = self.response_parser.parse_npc_reaction(strip_think_tags(raw_npc))
             for k, v in npc_parsed.items():
                 if k == "scene_details" and parsed.get("scene_details"):
                     sd = parsed["scene_details"]
@@ -1073,14 +1020,10 @@ class PipelineMixin:
                 else:
                     parsed[k] = v
 
-        if raw_choices:
-            parsed["choices"] = self.response_parser.parse_choices(raw_choices)
-
-        parsed["choices"] = self._filter_player_visible_choices(
-            parsed.get("choices") or [], narrative, state=_state, ctx=ctx,
-        )
-        if not parsed.get("choices"):
-            parsed["choices"] = self._generate_context_choices(_state)
+        parsed["choices"] = []
+        ctx["_workflow_choices"] = {
+            "skip": _skip_choices, "native": bool(_use_native_tools), "action_text": action_text,
+        }
 
         yield {
             "type": "pipeline_result",
@@ -1093,6 +1036,48 @@ class PipelineMixin:
             "compose_msgs": compose_msgs,
             "compose_sys": compose_sys,
         }
+
+    async def _generate_settled_workflow_choices(self, narrative: str, ctx: dict) -> list[dict]:
+        state = self.current_state
+        options = ctx["_workflow_choices"]
+        if options["skip"]:
+            return self._enrich_choice_previews(self._generate_context_choices(state))
+        activated_lore, _ = self.prompt_builder.scan_lorebook(
+            options["action_text"], [node.get("ai_response", "") for node in ctx.get("recent_nodes", [])] + [narrative],
+            timed_state=state.get("lorebook_timed_state"), turn_number=self.turn_number, state=state,
+        )
+        event_sections = self.prompt_builder._format_events_for_prompt(self.event_engine.get_events_for_prompt(state))
+        messages, system = self.prompt_builder.build_choices_prompt(
+            narrative, options["action_text"], state, turn_number=self.turn_number,
+            activated_lore=activated_lore, event_sections=event_sections,
+            pc_discovered_lore=state.get("pc_discovered_lore", []),
+        )
+        parsed = {}
+        raw_choices = ""
+        try:
+            if options["native"]:
+                self._choices_tool_calls = []
+                response = await self._run_stage45_tools(
+                    messages, system, CHOICES_TOOLS, max_tokens=8192, stage_key="choices", label="选项生成",
+                )
+                if not response["tool_calls"]:
+                    raw_choices = response["content"]
+                for call in response["tool_calls"]:
+                    self._run_choices_tool(call.get("name", ""), call.get("arguments") or {})
+                self._merge_choices_tool_results(parsed)
+            else:
+                raw_choices = await _retry_on_failure(
+                    lambda: self.ai_provider.generate(messages, system=system, max_tokens=8192, **self._stage_kwargs("choices")),
+                    max_retries=1, label="选项生成", raise_on_failure=True,
+                )
+        except Exception as exc:
+            logger.warning("选项生成失败，使用结算后上下文选项: %s", exc)
+        if raw_choices:
+            parsed["choices"] = self.response_parser.parse_choices(strip_think_tags(raw_choices))
+        choices = self._filter_player_visible_choices(
+            parsed.get("choices") or [], narrative, state=state, ctx={**ctx, "event_sections": event_sections},
+        )
+        return self._enrich_choice_previews(self._replace_generic_choices(choices) or self._generate_context_choices(state))
 
     def _run_turn_computations(self, story_tree_result, check_result, achieved_milestones):
         """Two-phase turn computations with explicit dependency ordering."""
@@ -1119,7 +1104,7 @@ class PipelineMixin:
     async def _build_compose_context(self, plot_decision: str, ctx: dict, scope: str = "moderate", *, state: dict | None = None) -> str:
         """Build compose_history for Stage 3, can run in parallel with Stage 2."""
         _st = state if state is not None else self.current_state
-        compose_history = ctx.get("base_history_context", "")
+        compose_history = self.script_variables.expand_macros(ctx.get("base_history_context", ""), _st)
         cm = ctx.get("context_memory", "")
         if cm:
             compose_history = (compose_history + "\n\n" + cm).strip() if compose_history else cm
@@ -1141,9 +1126,9 @@ class PipelineMixin:
                 for r in fh_hits:
                     fh_lines.append(f"第{r['turn']}回合: {r['text'][:80]}")
                 compose_history = (compose_history + "\n\n" + "\n".join(fh_lines)).strip()
-        _sd_compose = ctx.get("stage_directives", {}).get("compose")
+        _sd_compose = self._format_stage_directives(ctx, "compose", state=_st)
         if _sd_compose:
-            compose_history = (compose_history + "\n\n## 当前剧情线指令\n" + "\n".join(_sd_compose)).strip()
+            compose_history = (compose_history + "\n\n## 当前剧情线指令\n" + _sd_compose).strip()
         if self.story_tree_engine:
             _upcoming = self.story_tree_engine.get_upcoming_nodes(_st, limit=2)
             if _upcoming:

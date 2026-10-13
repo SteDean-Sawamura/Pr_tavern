@@ -94,3 +94,56 @@ for (const [description, event, expected] of [
     assert.deepEqual(removed, [true]);
     assert.equal(view.activity.hidden, false);
 });
+
+for (const boundary of ['retry', 'save', 'activity-save', 'action', 'newer-entry', 'detached']) {
+    test(`map withdraws a rejected draft and guards its retry against ${boundary}`, async () => {
+        const view = setup(true);
+        const token = {};
+        let retries = 0;
+        function element() {
+            return {
+                className: '', children: [], listeners: {},
+                classList: { add() {}, remove() {} },
+                appendChild(child) {
+                    child.remove();
+                    this.children.push(child);
+                    child.parentElement = this;
+                },
+                remove() {
+                    if (!this.parentElement) return;
+                    const siblings = this.parentElement.children;
+                    siblings.splice(siblings.indexOf(this), 1);
+                    this.parentElement = null;
+                },
+                addEventListener(type, callback) { this.listeners[type] = callback; },
+            };
+        }
+        Object.assign(view.activity, element());
+        view.context.document.createElement = element;
+        view.context.window._activeGameAction = token;
+        view.context._mainMapActivityAction = token;
+        const record = source.match(/function recordMainMapStreamEvent\(saveId, actionToken, event\) \{[\s\S]*?\n\}/)[0];
+        vm.runInContext(record, view.context);
+        view.context.recordMainMapStreamEvent('test-save', token, { type: 'text', content: 'Synthetic rejected draft' });
+        const draft = view.activity.children[0];
+        assert.equal(draft.className, 'main-map-activity-entry draft');
+        view.context.recordMainMapStreamEvent('test-save', token, {
+            type: 'error', discard_partial: true, server_error: true, retryable: true,
+            retry: async () => { retries += 1; return 'retried'; },
+        });
+        assert.equal(draft.parentElement, null);
+        assert.equal(view.activity.children.length, 1);
+        const entry = view.activity.children[0];
+        assert.equal(entry.textContent, '结算校验未通过，草稿已撤回');
+        const button = entry.children[0];
+        assert.equal(button.textContent, '重新推演');
+        if (boundary === 'save') view.context.currentSaveId = 'other';
+        if (boundary === 'activity-save') view.context._mainMapActivitySaveId = 'other';
+        if (boundary === 'action') view.context._mainMapActivityAction = {};
+        if (boundary === 'newer-entry') view.activity.appendChild(element());
+        if (boundary === 'detached') entry.remove();
+        const result = await button.listeners.click();
+        assert.equal(retries, boundary === 'retry' ? 1 : 0);
+        assert.equal(result, boundary === 'retry' ? 'retried' : undefined);
+    });
+}

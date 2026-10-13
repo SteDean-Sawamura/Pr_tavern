@@ -802,8 +802,6 @@ async def test_preplan_interjection_does_not_answer_an_unseen_question_plan(monk
     loop.ai_provider.generate_with_tools = AsyncMock(side_effect=[
         {"content": "", "tool_calls": [{"id": "first", "name": "submit_plan",
                                        "arguments": {"plan": "First", "questions": questions}}]},
-        {"content": "", "tool_calls": [{"id": "second", "name": "submit_plan",
-                                       "arguments": {"plan": "Revised", "questions": questions}}]},
         {"content": "Done", "tool_calls": []},
     ])
     loop._active_agent_stream = True
@@ -814,33 +812,36 @@ async def test_preplan_interjection_does_not_answer_an_unseen_question_plan(monk
     ))
     holder = _AgentResult()
     events = loop._agent_loop([{"role": "user", "content": "Go"}], "system", [],
-                              lambda name, args: "Recorded", max_rounds=3,
+                              lambda name, args: "Recorded", max_rounds=2,
                               interactive_plan=True, result_holder=holder)
 
-    first = await anext(events)
-    assert first["tool_name"] == "submit_plan"
-    assert not first.get("show_plan")
-    assert "plan_id" not in first
     assert (await anext(events)) == {
         "type": "user_inject", "label": "agent", "message": "Avoid the north gate",
     }
-    second = await anext(events)
-    assert second["tool_name"] == "submit_plan"
-    assert second["plan_id"] == loop._pending_agent_plan_id
+    plan = await anext(events)
+    assert plan["tool_name"] == "submit_plan"
+    assert plan["show_plan"] is True
+    assert plan["plan_id"] == loop._pending_agent_plan_id
     assert (await anext(events))["type"] == "agent_waiting"
+    assert loop.ai_provider.generate_with_tools.await_count == 1
+    assert loop._inject_queue == []
+    assert holder.user_injections == [
+        {"round": 1, "label": "agent", "message": "Avoid the north gate", "plan_reply": False},
+    ]
     assert {"role": "user", "content": "Avoid the north gate"} in (
-        loop.ai_provider.generate_with_tools.await_args_list[1].args[0]
+        loop.ai_provider.generate_with_tools.await_args_list[0].args[0]
     )
     await game_routes.inject_message("preplan", game_routes.InjectMessageRequest(
-        message="Right", stream_id="preplan", plan_id=second["plan_id"],
+        message="Right", stream_id="preplan", plan_id=plan["plan_id"],
     ))
     assert [event["type"] async for event in events] == ["user_inject", "agent_done"]
+    assert loop.ai_provider.generate_with_tools.await_count == 2
     assert holder.plan_waits == 1
-    assert "player_reply" not in holder.records[0]
-    assert holder.records[1]["player_reply"] == "Right"
+    assert len(holder.records) == 1
+    assert holder.records[0]["player_reply"] == "Right"
     assert holder.user_injections == [
-        {"round": 2, "label": "agent", "message": "Avoid the north gate", "plan_reply": False},
-        {"round": 3, "label": "agent", "message": "Right", "plan_reply": True},
+        {"round": 1, "label": "agent", "message": "Avoid the north gate", "plan_reply": False},
+        {"round": 2, "label": "agent", "message": "Right", "plan_reply": True},
     ]
 
 
@@ -1254,15 +1255,20 @@ async def test_stop_at_tool_start_boundary_prevents_dispatch(monkeypatch, tool_n
 
 
 @pytest.mark.asyncio
-async def test_last_agent_round_leaves_interjection_unacknowledged():
+async def test_prequeued_interjection_is_read_within_the_only_agent_round():
     loop = PlanLoop([])
-    loop._inject_queue.append("太晚的插话")
+    loop._inject_queue.append("预先排队的补充")
     events = await _collect_events(loop._agent_loop(
         [{"role": "user", "content": "Go"}], "system", [],
         lambda name, args: "Recorded", max_rounds=1,
     ))
-    assert [event["type"] for event in events] == ["tool_call", "agent_max_rounds"]
-    assert loop._inject_queue == ["太晚的插话"]
+    assert [event["type"] for event in events] == ["user_inject", "tool_call", "agent_max_rounds"]
+    assert events[0]["message"] == "预先排队的补充"
+    assert loop.ai_provider.generate_with_tools.await_count == 1
+    assert {"role": "user", "content": "预先排队的补充"} in (
+        loop.ai_provider.generate_with_tools.await_args.args[0]
+    )
+    assert loop._inject_queue == []
 
 
 @pytest.mark.asyncio
@@ -1277,8 +1283,11 @@ async def test_plain_confirmation_outside_a_plan_reaches_the_model():
         [{"role": "user", "content": "Go"}], "system", [],
         lambda name, args: "Recorded", max_rounds=2,
     ))
-    assert [event["type"] for event in events] == ["tool_call", "user_inject", "agent_done"]
-    assert {"role": "user", "content": "确认"} in loop.ai_provider.generate_with_tools.await_args_list[1].args[0]
+    assert [event["type"] for event in events] == ["user_inject", "tool_call", "agent_done"]
+    assert loop.ai_provider.generate_with_tools.await_count == 2
+    for request in loop.ai_provider.generate_with_tools.await_args_list:
+        assert request.args[0].count({"role": "user", "content": "确认"}) == 1
+    assert loop._inject_queue == []
 
 
 @pytest.mark.asyncio

@@ -114,4 +114,4 @@ async def index():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info", timeout_graceful_shutdown=5)

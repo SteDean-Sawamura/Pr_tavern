@@ -6,10 +6,12 @@ import copy
 import json
 import logging
 import re
+from dataclasses import asdict
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from engine.prompt_builder import PromptBuilder
+from engine.dice import DiceResult
 from engine.event_scheduler import parse_time
 from engine.session.agentic_mixin import NarrativeSettlementError
 from ai.base import strip_think_tags
@@ -24,99 +26,83 @@ PLAY_STYLE_INTERVAL = 5
 class RegenerateMixin:
     """重生成（regenerate）、Swipe 切换、续写、历史摘要、风格分析相关方法"""
 
-    def _prepare_regen_dice(self, action_text: str, baseline: dict,
-                            dice_rolls=(), estimated_minutes: int = 30) -> dict:
-        event_items = {
-            item["id"]: item for item in self.script.get("random_items", [])
-            if item.get("trigger_type") == "event_linked"
+    _REGEN_CONTEXT_KEYS = ("_generation_baseline", "turn_instructions", "stage_directives", "_turn_player_inputs",
+                           "check_result", "triggered_consequences", "achieved_milestones")
+
+    def _capture_generation_baseline(self, ctx: dict) -> dict:
+        return {
+            "version": 1,
+            "state": copy.deepcopy(self.current_state),
+            "state_changes": copy.deepcopy(ctx.get("all_state_changes", [])),
+            "dice": {
+                "items": copy.deepcopy(ctx.get("candidate_conditional_items", {})),
+                "results": {item_id: asdict(result) for item_id, result in
+                            ctx.get("candidate_conditional_dice_results", {}).items()},
+                "states": copy.deepcopy(ctx.get("candidate_conditional_dice_state", {})),
+                "event_results": {item_id: asdict(result) for item_id, result in
+                                  ctx.get("candidate_event_dice_results", {}).items()},
+                "event_states": copy.deepcopy(ctx.get("candidate_event_dice_state", {})),
+                "new_time": ctx["new_time"],
+                "settled": copy.deepcopy([
+                    dice for dice in ctx.get("dice_dicts", [])
+                    if not dice.get("candidate_event_id") and not dice.get("candidate_destination")
+                ]),
+            },
         }
-        candidates = {"items": {}, "results": {}, "states": {},
-                      "event_items": {}, "event_results": {}, "event_states": {},
-                      "new_time": "", "triggered_events": [],
-                      "conditional_event_candidates": [],
-                      "prompt": [], "settled": [
-                          copy.deepcopy(dice) for dice in dice_rolls
-                          if dice.get("random_item_id") not in event_items
-                      ]}
+
+    @staticmethod
+    def _generation_dice(baseline: dict) -> dict:
+        dice = copy.deepcopy(baseline["dice"])
+        for key in ("results", "event_results"):
+            dice[key] = {item_id: DiceResult(**result) for item_id, result in dice[key].items()}
+        return dice
+
+    @staticmethod
+    def _remember_generation_dice(baseline: dict, dice: dict) -> None:
+        baseline["dice"]["event_states"] = copy.deepcopy(dice["event_states"])
+        baseline["dice"]["event_results"] = {
+            item_id: asdict(result) for item_id, result in dice["event_results"].items()
+        }
+
+    @staticmethod
+    def _require_generation_baseline(node: dict) -> dict:
+        baseline = node.get("_generation_baseline")
+        if not isinstance(baseline, dict) or baseline.get("version") != 1:
+            raise ValueError("此节点缺少生成前检查点，请先完整重生成，再重算状态。")
+        return baseline
+
+    async def _prepare_full_regeneration(self, node: dict, parent_state: dict) -> tuple[dict, dict]:
         previous_state = self.current_state
+        previous_node = self.world_tree.active_node_id
+        previous_turn = self.turn_number
+        previous_models = {name: getattr(self, name) for name in
+                           ("player_model", "npc_autonomy", "narrative_graph", "director_notes")}
         try:
-            self.current_state = copy.deepcopy(baseline)
-            old_time = baseline.get("game_time", "")
-            previous_location = baseline.get("player", {}).get("location")
-            estimated_time = old_time
-            if estimated_minutes:
-                estimated_time = self._advance_game_time(
-                    old_time, timedelta(minutes=estimated_minutes),
-                )
-            candidates["new_time"] = estimated_time
-            candidates["triggered_events"] = self.event_scheduler.check_events(
-                self.current_state, old_time, estimated_time,
-                condition_eval=self._evaluate_condition,
-            )
-            conditioned_ids = {
-                event["id"] for section in ("one_time_events", "cyclic_events")
-                for event in self.script.get(section, []) if event.get("condition")
-            }
-            if conditioned_ids:
-                initial_events = {
-                    (event["event_id"], event["fire_time"])
-                    for event in candidates["triggered_events"]
-                }
-                candidates["conditional_event_candidates"] = [
-                    event for event in self.event_scheduler.check_events(
-                        self.current_state, old_time, estimated_time,
-                    )
-                    if event["event_id"] in conditioned_ids
-                    and (event["event_id"], event["fire_time"]) not in initial_events
-                ]
-            if not baseline.get("dice_check_enabled", True):
-                return candidates
-            event_times = {
-                event["event_id"]: event.get("fire_time", "")
-                for event in candidates["triggered_events"]
-            }
-            for item_id, item in event_items.items():
-                event_id = item.get("linked_event_id")
-                if event_id not in event_times:
-                    continue
-                candidates["event_items"][item_id] = item
-                result = self._roll_or_sustain(item)
-                candidates["event_states"][item_id] = copy.deepcopy(
-                    self.current_state.get("random_item_state", {}).get(item_id)
-                )
-                if result is not None:
-                    candidates["event_results"][item_id] = result
-                    entry = self._dice_result_to_dict(result)
-                    entry["candidate_event_id"] = event_id
-                    entry["candidate_fire_time"] = event_times[event_id]
-                    candidates["prompt"].append(entry)
-            for item in self.script.get("random_items", []):
-                condition = item.get("trigger_condition")
-                if (item.get("trigger_type") != "conditional"
-                        or not self._condition_has_destination_change(condition)
-                        or not self._random_item_condition_matches(condition, action_text, old_time)
-                        or self._random_item_condition_matches(
-                            condition, action_text, old_time, initial_location=previous_location,
-                        )):
-                    continue
-                item_id = item["id"]
-                candidates["items"][item_id] = item
-                result = self._roll_or_sustain(item)
-                candidates["states"][item_id] = copy.deepcopy(
-                    self.current_state.get("random_item_state", {}).get(item_id)
-                )
-                if result is not None:
-                    candidates["results"][item_id] = result
-                    entry = self._dice_result_to_dict(result)
-                    entry["candidate_destination"] = True
-                    candidates["prompt"].append(entry)
-            candidates["settled"] = [
-                dice for dice in candidates["settled"]
-                if dice.get("random_item_id") not in candidates["items"]
-            ]
+            for name, model in previous_models.items():
+                setattr(self, name, copy.deepcopy(model))
+            self.current_state = copy.deepcopy(parent_state)
+            self._hydrate_branch_runtime(self.current_state)
+            self._restore_session_models_from_state()
+            self.world_tree.active_node_id = node["parent_id"]
+            self.world_tree._branch_dirty = True
+            self.turn_number = max(0, previous_turn - 1)
+            action = copy.deepcopy(node.get("player_action") or {"type": "freeform", "text": ""})
+            ctx = self._prepare_turn(action)
+            ctx["_turn_player_inputs"] = copy.deepcopy(node.get("_turn_player_inputs") or [])
+            ctx["turn_instructions"] = list(dict.fromkeys([
+                *node.get("turn_instructions", []), *ctx.get("turn_instructions", []),
+            ]))
+            route = await self._enrich_and_route(action, ctx)
+            ctx["generation_baseline"]["state"].update(self._snapshot_session_models())
+            return ctx, route
         finally:
             self.current_state = previous_state
-        return candidates
+            self.world_tree.active_node_id = previous_node
+            self.world_tree._branch_dirty = True
+            self.turn_number = previous_turn
+            for name, model in previous_models.items():
+                setattr(self, name, model)
+            self._hydrate_branch_runtime(previous_state)
 
     def _hydrate_branch_runtime(self, state: dict):
         self._hydrate_mechanics_runtime(state)
@@ -303,7 +289,7 @@ class RegenerateMixin:
                 if not destination_dice:
                     return
                 results, event_dice_changes = self._settle_event_linked_dice(
-                    event_id, event_dice_context, settled_event_items,
+                    event_id, event_dice_context, settled_event_items, stage_unstaged=True,
                 )
                 destination_dice["settled"].extend(self._dice_result_to_dict(result) for result in results)
                 changes.extend(event_dice_changes)
@@ -363,12 +349,15 @@ class RegenerateMixin:
     def _record_regen_swipe(self, node: dict, narrative: str, choices: list,
                             state: dict, changes: list[dict], agent_trace: dict | None = None,
                             triggered_events: list[str] | None = None,
-                            dice_rolls: list[dict] | None = None) -> None:
+                            dice_rolls: list[dict] | None = None,
+                            generation_context: dict | None = None,
+                            outgoing_state: dict | None = None) -> None:
         self._enrich_choice_previews(choices)
         self.prompt_builder.track_dynamic_lore(self.current_state)
         swipes = node.setdefault("swipes", [])
         if not swipes:
-            original = node.get("state_snapshot") or copy.deepcopy(self.current_state)
+            original = (outgoing_state if outgoing_state is not None else
+                        node.get("state_snapshot") or copy.deepcopy(self.current_state))
             swipes.append({
                 "narrative": node.get("ai_response", ""),
                 "choices": node.get("choices_presented", []),
@@ -378,6 +367,7 @@ class RegenerateMixin:
                 "game_time": node.get("game_time", original.get("game_time", "")),
                 "triggered_events": copy.deepcopy(node.get("triggered_events", [])),
                 "dice_rolls": copy.deepcopy(node.get("dice_rolls", [])),
+                **{key: copy.deepcopy(node[key]) for key in self._REGEN_CONTEXT_KEYS if key in node},
             })
             node["_shared_strip_keys"] = {
                 key: copy.deepcopy(original[key])
@@ -386,7 +376,12 @@ class RegenerateMixin:
         else:
             active_index = node.get("active_swipe_index", 0)
             if 0 <= active_index < len(swipes):
+                if outgoing_state is not None:
+                    swipes[active_index]["state_snapshot"] = copy.deepcopy(self._slim_snapshot(outgoing_state))
                 swipes[active_index]["agent_trace"] = copy.deepcopy(node.get("agent_trace"))
+                for key in self._REGEN_CONTEXT_KEYS:
+                    if key in node:
+                        swipes[active_index][key] = copy.deepcopy(node[key])
         if triggered_events is None:
             triggered_events = node.get("triggered_events", [])
         if dice_rolls is None:
@@ -400,7 +395,11 @@ class RegenerateMixin:
             "game_time": state.get("game_time", ""),
             "triggered_events": copy.deepcopy(triggered_events),
             "dice_rolls": copy.deepcopy(dice_rolls),
+            **{key: copy.deepcopy(node[key]) for key in self._REGEN_CONTEXT_KEYS if key in node},
+            **copy.deepcopy(generation_context or {}),
         })
+        if generation_context:
+            node.update(copy.deepcopy(generation_context))
         node["active_swipe_index"] = len(swipes) - 1
         node["ai_response"] = narrative
         node["choices_presented"] = choices
@@ -429,6 +428,8 @@ class RegenerateMixin:
         if not node:
             return {"error": "No active node"}
 
+        self.current_state.update(self._snapshot_session_models())
+        self._restore_session_models_from_state()
         action = node.get("player_action") or {"type": "freeform", "text": ""}
         is_system_opening = isinstance(action, dict) and action.get("type") == "system"
         game_time = node.get("game_time", "")
@@ -438,11 +439,9 @@ class RegenerateMixin:
         recent = [n for n in all_recent if n["id"] != self.world_tree.active_node_id][-5:]
         recent_messages = [n.get("ai_response", "") for n in recent]
         action_text = action.get("text", "") if isinstance(action, dict) else str(action)
+        player_inputs = self.prompt_builder.format_turn_player_inputs(node.get("_turn_player_inputs"))
 
-        dice_dicts = node.get("dice_rolls", [])
         check_result = node.get("check_result")
-        triggered_consequences = node.get("triggered_consequences")
-        achieved_milestones = node.get("achieved_milestones")
 
         current_narrative = node.get("ai_response", "")
         current_choices = node.get("choices_presented", [])
@@ -450,7 +449,6 @@ class RegenerateMixin:
         regen_working_state = None
 
         # 计算在场NPC和历史上下文（regenerate也需要）
-        # 使用父节点快照的位置作为基准（regenerate 的状态基线是父节点）
         parent_id = node.get("parent_id")
         parent_snapshot = None
         if parent_id:
@@ -461,137 +459,54 @@ class RegenerateMixin:
                     parent_snapshot = await self._load_snapshot_from_db(parent_id)
                     if parent_snapshot:
                         parent_node["state_snapshot"] = parent_snapshot
-        # regen_baseline: the state BEFORE this turn (what AI should see as "current")
-        regen_baseline = copy.deepcopy(parent_snapshot if parent_snapshot else self.current_state)
+        generation_baseline = None
+        if stage == "all":
+            if not parent_snapshot:
+                return {"error": "Previous state snapshot not found"}
+            regen_ctx, regen_route = await self._prepare_full_regeneration(node, parent_snapshot)
+            generation_baseline = regen_ctx["generation_baseline"]
+        elif stage == "state":
+            try:
+                generation_baseline = copy.deepcopy(self._require_generation_baseline(node))
+            except ValueError as exc:
+                return {"error": str(exc), "stage": stage}
+        regen_baseline = copy.deepcopy(
+            self.current_state if stage == "choices" else
+            generation_baseline["state"] if generation_baseline else
+            (parent_snapshot if parent_snapshot else self.current_state)
+        )
         previous_state = self.current_state
         try:
             self.current_state = regen_baseline
             self._hydrate_branch_runtime(regen_baseline)
-            event_instructions = self._replay_pending_event_cascades() if stage in ("all", "state") else []
-            activated_lore, _ = self.prompt_builder.scan_lorebook(
-                action_text, recent_messages,
-                timed_state=regen_baseline.get("lorebook_timed_state"),
-                turn_number=self.turn_number,
-                state=regen_baseline,
-            )
             regen_present_npc_ids, _ = self._compute_present_npcs(regen_baseline)
-
-            if stage == "all" and self._agentic_unified_enabled():
-                regen_history_context = ""
-                regen_context_memory = ""
-            else:
-                history_summary = regen_baseline.get("history_summary", "")
-                regen_history_context = self.prompt_builder.build_history_context(recent, history_summary)
-                regen_context_memory = self.prompt_builder.build_context_memory(recent, regen_baseline)
-                if regen_context_memory:
-                    regen_history_context = (regen_history_context + "\n\n" + regen_context_memory).strip() if regen_history_context else regen_context_memory
-
-            regen_retrieval_context = {}
-            regen_history_context, regen_lore_ids = await self._enrich_with_rag(
-                action_text, recent, activated_lore, regen_history_context, regen_retrieval_context,
-            )
+            if stage != "all":
+                activated_lore, _ = self.prompt_builder.scan_lorebook(
+                    action_text, recent_messages,
+                    timed_state=regen_baseline.get("lorebook_timed_state"),
+                    turn_number=self.turn_number,
+                    state=regen_baseline,
+                )
         finally:
             self.current_state = previous_state
             self._hydrate_branch_runtime(previous_state)
 
-        estimated_minutes = (node.get("_pipeline_ctx") or {}).get("estimated_minutes")
-        if estimated_minutes is None:
-            estimated_minutes = 0 if is_system_opening else 30
-        destination_dice = (
-            self._prepare_regen_dice(
-                action_text, regen_baseline, dice_dicts, estimated_minutes,
-            )
-            if stage in ("all", "state") else None
-        )
+        destination_dice = self._generation_dice(generation_baseline) if generation_baseline else None
 
         if stage == "all":
-            # Build pipeline ctx: prefer persisted ctx from node, fallback to manual reconstruction
-            saved_ctx = node.get("_pipeline_ctx")
-            saved_route = node.get("_pipeline_route")
-
-            if saved_ctx and saved_route:
-                regen_ctx = dict(saved_ctx)
-                regen_route = dict(saved_route)
-                # Override fields that regenerate must refresh
-                regen_ctx["recent_nodes"] = recent
-                regen_ctx["history_context"] = regen_history_context
-                regen_ctx["activated_lore"] = activated_lore
-                regen_ctx["lore_ids_from_rag"] = regen_lore_ids
-                regen_ctx["event_sections"] = PromptBuilder._format_events_for_prompt(
-                    self.event_engine.get_events_for_prompt(regen_baseline)
-                )
-            else:
-                # Fallback for historical nodes without _pipeline_ctx
-                _regen_sd: dict[str, list[str]] = {}
-                _regen_es = regen_baseline.get("events", {})
-                for _eid, _evs in _regen_es.items():
-                    if _evs.get("status") != "active":
-                        continue
-                    _ev = self.event_engine.events.get(_eid)
-                    if _ev and hasattr(_ev, "metadata") and _ev.metadata.get("stage_directives"):
-                        for _stg, _dir in _ev.metadata["stage_directives"].items():
-                            _regen_sd.setdefault(_stg, []).append(_dir)
-                if self.story_tree_engine:
-                    _sts = regen_baseline.get("story_tree_state", {})
-                    for _nid in _sts.get("active", []):
-                        _sn = self.story_tree_engine._nodes.get(_nid)
-                        if _sn and _sn.get("stage_directives"):
-                            for _stg, _dir in _sn["stage_directives"].items():
-                                _regen_sd.setdefault(_stg, []).append(_dir)
-
-                regen_ctx = {
-                    "check_result": check_result,
-                    "dice_dicts": dice_dicts,
-                    "triggered_consequences": triggered_consequences,
-                    "achieved_milestones": achieved_milestones,
-                    "present_npc_ids": regen_present_npc_ids,
-                    "nearby_npc_ids": [],
-                    "activated_lore": activated_lore,
-                    "stage_directives": node.get("stage_directives", _regen_sd),
-                    "turn_instructions": node.get("turn_instructions", []),
-                    "event_sections": PromptBuilder._format_events_for_prompt(
-                        self.event_engine.get_events_for_prompt(regen_baseline)
-                    ),
-                    "old_time": regen_baseline.get("game_time", ""),
-                    "estimated_minutes": estimated_minutes,
-                    "is_system_opening": is_system_opening,
-                    "recent_nodes": recent,
-                    "prev_plot_decision": recent[-1].get("plot_decision", "") if recent else "",
-                    "base_history_context": regen_history_context,
-                    "history_context": regen_history_context,
-                    "lore_ids_from_rag": regen_lore_ids,
-                    "context_memory": regen_context_memory,
-                }
-                regen_route = {"scope": "moderate", "scene_type": "", "systems": None}
-
-            regen_ctx.update(regen_retrieval_context)
-            regen_ctx["turn_instructions"] = list(dict.fromkeys([
-                *regen_ctx.get("turn_instructions", []), *event_instructions,
-            ]))
-            regen_ctx["old_time"] = regen_baseline.get("game_time", "")
-            regen_ctx["is_system_opening"] = is_system_opening
-            regen_ctx["new_time"] = destination_dice["new_time"]
-            regen_ctx["estimated_minutes"] = estimated_minutes
-            regen_ctx["triggered_events"] = destination_dice["triggered_events"]
-            regen_ctx["conditional_event_candidates"] = destination_dice["conditional_event_candidates"]
             regen_ctx["candidate_event_dice_state"] = destination_dice["event_states"]
             regen_ctx["candidate_event_dice_results"] = destination_dice["event_results"]
-            regen_ctx["initial_event_count"] = len(destination_dice["triggered_events"])
-            regen_ctx["dice_dicts"] = (
-                destination_dice["settled"] + destination_dice["prompt"]
-            )
-
             # hint injection
             regen_action = dict(action)
             if hint:
                 regen_action["text"] = action_text + f"\n[重生成倾向] 请让本次叙事偏向以下方向：{hint}"
 
             regen_plot_reasoning = ""
-            # agentic_unified 模式走统一 Agent
-            if self._agentic_unified_enabled():
-                self.current_state = copy.deepcopy(regen_baseline)
-                try:
-                    self._hydrate_branch_runtime(self.current_state)
+            self.current_state = copy.deepcopy(regen_baseline)
+            try:
+                self._hydrate_branch_runtime(self.current_state)
+                self._restore_session_models_from_state()
+                if self._agentic_unified_enabled():
                     async for item in self._execute_unified_agent(
                         regen_ctx, regen_route, regen_action, streaming=False,
                     ):
@@ -604,21 +519,21 @@ class RegenerateMixin:
                             plot_decision = item.get("plot_decision", "")
                             regen_working_state = self.current_state
                             break
-                finally:
-                    self.current_state = previous_state
-                    self._hydrate_branch_runtime(previous_state)
-            else:
-                async for item in self._execute_pipeline(
-                    regen_ctx, regen_route, regen_action,
-                    state_baseline=regen_baseline,
-                ):
-                    if item["type"] == "pipeline_result":
-                        raw_narrative = item["narrative"]
-                        parsed = item["parsed"]
-                        parsed["narrative"] = raw_narrative
-                        regen_plot_reasoning = item.get("plot_reasoning", "")
-                        plot_decision = item.get("plot_decision", "")
-                        break
+                else:
+                    async for item in self._execute_pipeline(
+                        regen_ctx, regen_route, regen_action,
+                        state_baseline=regen_baseline,
+                    ):
+                        if item["type"] == "pipeline_result":
+                            raw_narrative = item["narrative"]
+                            parsed = item["parsed"]
+                            parsed["narrative"] = raw_narrative
+                            regen_plot_reasoning = item.get("plot_reasoning", "")
+                            plot_decision = item.get("plot_decision", "")
+                            break
+            finally:
+                self.current_state = previous_state
+                self._hydrate_branch_runtime(previous_state)
 
         elif stage == "choices":
             event_sections = PromptBuilder._format_events_for_prompt(
@@ -627,6 +542,8 @@ class RegenerateMixin:
                 current_narrative, action_text, regen_baseline,
                 turn_number=self.turn_number, activated_lore=activated_lore,
                 event_sections=event_sections)
+            if player_inputs:
+                choices_msgs[-1]["content"] += "\n\n" + player_inputs
             raw_choices = await self.ai_provider.generate(
                 choices_msgs, system=choices_sys, max_tokens=8192, **self._stage_kwargs("choices"))
             raw_choices = strip_think_tags(raw_choices)
@@ -665,6 +582,12 @@ class RegenerateMixin:
                 check_result=check_result,
                 event_sections=PromptBuilder._format_events_for_prompt(self.event_engine.get_events_for_prompt(regen_baseline)),
             )
+            for messages, stages in ((npc_msgs, ("npc",)), (res_msgs, ()), (spa_msgs, ()),
+                                     (tmp_msgs, ()), (wld_msgs, ("world",)), (ext_msgs, ())):
+                instructions = self._format_agent_instructions(node, stages, state=regen_baseline)
+                instructions = "\n\n".join(part for part in (instructions, player_inputs) if part)
+                if instructions:
+                    messages[-1]["content"] += "\n\n" + instructions
             _regen_raw = await asyncio.gather(
                 self.ai_provider.generate(npc_msgs, system=npc_sys, max_tokens=4096, **self._stage_kwargs("state")),
                 self.ai_provider.generate(res_msgs, system=res_sys, max_tokens=4096, **self._stage_kwargs("state")),
@@ -724,13 +647,34 @@ class RegenerateMixin:
                 return {"error": str(NarrativeSettlementError(feedback)), "stage": stage}
 
         if stage in ("all", "state"):
+            if stage == "all" and "_workflow_choices" in regen_ctx:
+                try:
+                    self.current_state = swipe_state
+                    self._hydrate_branch_runtime(swipe_state)
+                    parsed["choices"] = await self._generate_settled_workflow_choices(new_narrative, regen_ctx)
+                finally:
+                    self.current_state = previous_state
+                    self._hydrate_branch_runtime(previous_state)
             instructions = regen_ctx.get("turn_instructions", []) if stage == "all" else node.get("turn_instructions", [])
             self._consume_choice_instructions(swipe_state, instructions)
+            swipe_state_changes = copy.deepcopy(generation_baseline["state_changes"]) + swipe_state_changes
+        generation_context = None
+        if generation_baseline:
+            self._remember_generation_dice(generation_baseline, destination_dice)
+            generation_context = {"_generation_baseline": generation_baseline}
+        if stage == "all":
+            generation_context = {
+                "_generation_baseline": generation_baseline,
+                **{key: regen_ctx.get(key) for key in self._REGEN_CONTEXT_KEYS if key != "_generation_baseline"},
+            }
+        swipe_state.update(self._snapshot_session_models())
         self._record_regen_swipe(
             node, new_narrative if stage == "all" else parsed.get("narrative", current_narrative),
             parsed.get("choices", []), swipe_state, swipe_state_changes, regen_agent_trace,
             regen_event_ids,
             dice_rolls=destination_dice["settled"] if destination_dice else None,
+            generation_context=generation_context,
+            outgoing_state=previous_state,
         )
         if stage == "all" and regen_plot_reasoning:
             node["plot_reasoning"] = regen_plot_reasoning
@@ -1021,6 +965,8 @@ class RegenerateMixin:
 
         current_index = node.get("active_swipe_index", 0)
         if 0 <= current_index < len(swipes):
+            for name in ("player_model", "npc_autonomy", "narrative_graph", "director_notes"):
+                self.current_state["_" + name] = copy.deepcopy(getattr(self, name).snapshot())
             self.prompt_builder.track_dynamic_lore(self.current_state)
             swipes[current_index]["state_snapshot"] = copy.deepcopy(
                 self._slim_snapshot(self.current_state)
@@ -1029,6 +975,9 @@ class RegenerateMixin:
             swipes[current_index]["game_time"] = node.get("game_time", "")
             swipes[current_index]["triggered_events"] = copy.deepcopy(node.get("triggered_events", []))
             swipes[current_index]["dice_rolls"] = copy.deepcopy(node.get("dice_rolls", []))
+            for key in self._REGEN_CONTEXT_KEYS:
+                if key in node:
+                    swipes[current_index][key] = copy.deepcopy(node[key])
 
         node["active_swipe_index"] = index
         swipe = swipes[index]
@@ -1039,6 +988,11 @@ class RegenerateMixin:
             node["triggered_events"] = copy.deepcopy(swipe["triggered_events"])
         if "dice_rolls" in swipe:
             node["dice_rolls"] = copy.deepcopy(swipe["dice_rolls"])
+        for key in self._REGEN_CONTEXT_KEYS:
+            if key in swipe:
+                node[key] = copy.deepcopy(swipe[key])
+            else:
+                node.pop(key, None)
         if swipe.get("agent_trace"):
             node["agent_trace"] = swipe["agent_trace"]
         else:
@@ -1056,6 +1010,7 @@ class RegenerateMixin:
             node["game_time"] = swipe.get("game_time", restored.get("game_time", ""))
             self.current_state = restored
             self._hydrate_branch_runtime(restored)
+            self._restore_session_models_from_state()
 
         self._discard_stale_script_blueprint()
 

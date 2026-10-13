@@ -261,8 +261,8 @@ async def test_agent_rule_update_resumes_auto_choice_and_persists_once(tmp_path,
                     original_apply = current._apply_story_tree_result
                     interrupted = []
 
-                    def fail_after_resolution(result):
-                        original_apply(result)
+                    def fail_after_resolution(result, *, inject_prompts=None):
+                        original_apply(result, inject_prompts=inject_prompts)
                         if any(node["id"] == "test_decision" for node in result.newly_completed):
                             interrupted.append(copy.deepcopy(current.current_state))
                             raise RuntimeError("Synthetic interruption after decision effects")

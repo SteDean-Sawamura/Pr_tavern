@@ -1339,12 +1339,25 @@ class PromptNarrativeMixin:
         messages = [{"role": "user", "content": content}]
         return messages, system
 
+    @staticmethod
+    def format_turn_player_inputs(inputs: list[dict] | None) -> str:
+        if not inputs:
+            return ""
+        return (
+            "以下是本次行动中已经收到的玩家补充，按发生顺序解释；重生成时仍保留这些意图。"
+            "plan_reply_context 仅用于按原问题解释回复，不代表玩家同意整个计划或未确认部分。"
+            "后来的明确修改优先；旧回复不是对新问题的回答，新问题仍需等待新确认。\n"
+            + _xml("turn_player_inputs", json.dumps(inputs, ensure_ascii=False))
+        )
+
     def build_narrative_review_prompt(
         self, narrative: str, action_text: str,
         present_npcs: list[dict],
         pc_name: str = "",
         private_script: list[dict] | None = None,
         known_context: str = "",
+        plan_reply_context: dict | None = None,
+        turn_player_inputs: list[dict] | None = None,
     ) -> tuple[list[dict], str]:
         """Stage 3.5: 叙事质量评审 prompt。"""
         loader = PromptLoader.get()
@@ -1370,10 +1383,17 @@ class PromptNarrativeMixin:
 
         sections = [
             _xml("player_action", action_text),
+            self.format_turn_player_inputs(turn_player_inputs),
             _xml("narrative", narrative),
             _xml("npcs_present", npc_info),
             _xml("protagonist_name", pc_name if pc_name else ""),
         ]
+        if plan_reply_context:
+            sections.append(_xml("plan_reply_context", json.dumps(plan_reply_context, ensure_ascii=False)))
+            system += (
+                "\nplan_reply_context 是玩家回复时的计划、问题、选项与回复原文，仅供解释玩家行动。"
+                "按原问题理解序号等简短回复；不要把整个计划、未确认部分或默认选项当作玩家已确认。"
+            )
         if private_script:
             sections.append(_xml("active_script_private", json.dumps(private_script, ensure_ascii=False)))
             sections.append(_xml("recent_player_visible", known_context))

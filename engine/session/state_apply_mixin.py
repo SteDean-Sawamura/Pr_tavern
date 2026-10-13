@@ -25,6 +25,22 @@ logger = logging.getLogger(__name__)
 class StateApplyMixin:
     """State application: parsed response handling, inventory, weather, emotions."""
 
+    def _replace_generic_choices(self, choices: list[dict]) -> list[dict]:
+        generic_texts = {"继续探索", "与周围的人交谈", "做其他事情", "环顾四周", "离开这里"}
+        generic_indices = [index for index, choice in enumerate(choices) if choice.get("text") in generic_texts]
+        if not generic_indices:
+            return choices
+        context_choices = self._generate_context_choices()
+        if len(generic_indices) == len(choices):
+            return context_choices
+        for index in generic_indices:
+            for candidate in context_choices:
+                if not any(choice.get("text") == candidate["text"] for choice in choices):
+                    candidate["id"] = choices[index].get("id", f"c{index+1}")
+                    choices[index] = candidate
+                    break
+        return choices
+
     async def _apply_parsed_response(
         self: GameSession, parsed: dict, raw_response: str, player_action: dict, ctx: dict,
     ) -> dict:
@@ -32,28 +48,8 @@ class StateApplyMixin:
 
         Returns the full result dict.
         """
-        # FLOW-3: Replace generic fallback choices with context-aware ones
-        _GENERIC_TEXTS = {"继续探索", "与周围的人交谈", "做其他事情", "环顾四周", "离开这里"}
-        choices = parsed.get("choices", [])
-        if choices:
-            generic_indices = [i for i, c in enumerate(choices) if c.get("text") in _GENERIC_TEXTS]
-            if generic_indices:
-                if len(generic_indices) == len(choices):
-                    # 全部泛化：整体替换
-                    parsed["choices"] = self._generate_context_choices()
-                else:
-                    # 部分泛化：逐条替换
-                    context_choices = self._generate_context_choices()
-                    for idx in generic_indices:
-                        # 从 context_choices 中取一个未出现在当前列表中的替代
-                        replacement = None
-                        for cc in context_choices:
-                            if not any(c.get("text") == cc["text"] for c in choices):
-                                replacement = cc
-                                break
-                        if replacement:
-                            replacement["id"] = choices[idx].get("id", f"c{idx+1}")
-                            choices[idx] = replacement
+        if parsed.get("choices"):
+            parsed["choices"] = self._replace_generic_choices(parsed["choices"])
 
         new_time = ctx["new_time"]
         triggered_events = ctx["triggered_events"]
@@ -196,7 +192,7 @@ class StateApplyMixin:
         settled_item_ids = set()
 
         def settle_event_dice(event_id):
-            results, changes = self._settle_event_linked_dice(event_id, ctx, settled_item_ids)
+            results, changes = self._settle_event_linked_dice(event_id, ctx, settled_item_ids, stage_unstaged=True)
             actual_dice_results.extend(results)
             all_state_changes.extend(changes)
 
@@ -391,6 +387,14 @@ class StateApplyMixin:
             }
             node["turn_instructions"] = ctx.get("turn_instructions", [])
             node["stage_directives"] = ctx["stage_directives"]
+            if ctx.get("_turn_player_inputs"):
+                node["_turn_player_inputs"] = copy.deepcopy(ctx["_turn_player_inputs"])
+            if ctx.get("generation_baseline"):
+                self._remember_generation_dice(ctx["generation_baseline"], {
+                    "event_states": ctx.get("candidate_event_dice_state", {}),
+                    "event_results": ctx.get("candidate_event_dice_results", {}),
+                })
+                node["_generation_baseline"] = ctx["generation_baseline"]
             if ctx.get("route"):
                 node["_pipeline_route"] = ctx["route"]
 
@@ -596,6 +600,10 @@ class StateApplyMixin:
             self._record_narrative_facts(result.get("narrative", ""), ctx)
 
         all_state_changes.extend(self._settle_actor_goals())
+        if "_workflow_choices" in ctx:
+            result["choices"] = parsed["choices"] = await self._generate_settled_workflow_choices(result["narrative"], ctx)
+            if node:
+                node["choices_presented"] = copy.deepcopy(result["choices"])
         self._consume_choice_instructions(self.current_state, ctx.get("turn_instructions", []))
         result["state"] = self.current_state
         if node:

@@ -44,6 +44,7 @@ class _ActionStreamJournal:
         self.completed_at = None
         self.snapshot = None
         self.failed = False
+        self.task = None
 
     def append(self, event):
         self.events.append(event)
@@ -148,6 +149,7 @@ async def _rollback_generation_state(session, snapshot):
     deferred = getattr(session, "_deferred_story_task", None)
     if deferred is not None and deferred is not snapshot["deferred_story_task"]:
         tasks.add(deferred)
+    tasks.difference_update(getattr(session, "_index_tasks", ()))
     for task in tasks:
         task.cancel()
     if tasks:
@@ -155,6 +157,9 @@ async def _rollback_generation_state(session, snapshot):
     session._deferred_story_task = snapshot["deferred_story_task"]
     session._deferred_story_source = snapshot["deferred_story_source"]
 
+    lorebook = getattr(getattr(session, "prompt_builder", None), "lorebook", None)
+    outgoing_lore = {entry.id: (entry.content, entry.entry_type, entry.comment)
+                     for entry in getattr(lorebook, "entries", ())}
     tree = session.world_tree
     current_active = tree.active_node_id
     if current_active and current_active != snapshot["active"]:
@@ -190,6 +195,13 @@ async def _rollback_generation_state(session, snapshot):
         session._hydrate_actor_goals(session.current_state)
     if hasattr(session, "prompt_builder"):
         session.prompt_builder.sync_shelved_pc_knowledge(session.current_state)
+    if lorebook is not None and hasattr(session, "_sync_lorebook_vectors"):
+        restored_lore = {entry.id: (entry.content, entry.entry_type, entry.comment)
+                         for entry in lorebook.entries}
+        session._sync_lorebook_vectors({
+            entry_id for entry_id in outgoing_lore.keys() | restored_lore.keys()
+            if outgoing_lore.get(entry_id) != restored_lore.get(entry_id)
+        })
 
 
 def _get_session_lock(save_id: str) -> asyncio.Lock:
@@ -288,6 +300,13 @@ def _sessions_put(save_id: str, session: GameSession):
 
 
 async def _persist_sessions_on_shutdown():
+    actions = [journal.task for journal in _action_streams.values()
+               if journal.task is not None and not journal.task.done()]
+    for task in actions:
+        task.cancel()
+    if actions:
+        await asyncio.gather(*actions, return_exceptions=True)
+
     retiring = [task for session in _sessions.values()
                 if (task := getattr(session, "_eviction_task", None))]
     if retiring:
@@ -1145,7 +1164,8 @@ async def game_action_stream(save_id: str, req: ActionRequest):
                     task.add_done_callback(on_persist_done)
             finally:
                 _set_agent_stream_active(session, False)
-                lock.release()
+                if not req.action_id:
+                    lock.release()
 
     if not req.action_id:
         return StreamingResponse(saving_event_stream(), media_type="text/event-stream")
@@ -1164,17 +1184,23 @@ async def game_action_stream(save_id: str, req: ActionRequest):
         raise
 
     async def run_action():
+        events = saving_event_stream()
         try:
-            async for event in saving_event_stream():
+            async for event in events:
                 journal.append(event)
         except Exception as exc:
             logger.exception("流式行动失败 — save=%s, action=%s", save_id, req.action_id)
             journal.append(f"data: {json.dumps({'type': 'error', 'message': str(exc), 'discard_partial': True}, ensure_ascii=False)}\n\n")
         finally:
-            journal.failed = not persisted
-            journal.finish()
+            await events.aclose()
 
-    asyncio.create_task(run_action())
+    def on_action_done(done):
+        journal.failed = not persisted
+        journal.finish()
+        lock.release()
+
+    journal.task = asyncio.create_task(run_action())
+    journal.task.add_done_callback(on_action_done)
     return _replay_action_stream(journal)
 
 
@@ -2117,7 +2143,7 @@ async def regenerate(save_id: str, stage: str = "all", hint: str = ""):
             logger.info("重新生成完成 — stage=%s, swipe=%d/%d",
                         stage, result.get("swipe_index", 0) + 1, result.get("total_swipes", 1))
             return _public_result(result, session)
-        except HTTPException:
+        except (HTTPException, asyncio.CancelledError):
             await _rollback_generation_state(session, snapshot)
             raise
         except Exception as e:
@@ -2151,7 +2177,7 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
         orig_snapshot = node.get("state_snapshot")
         replay_instructions = {
             key: copy.deepcopy(node[key])
-            for key in ("turn_instructions", "stage_directives") if key in node
+            for key in ("turn_instructions", "stage_directives", "_turn_player_inputs") if key in node
         }
         action_text = orig_action.get("text", "") if isinstance(orig_action, dict) else str(orig_action)
         if stage == "all":
@@ -2173,17 +2199,13 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
                 action["text"] = action.get("text", "") + f"\n[重生成倾向] {hint}"
         else:
             partial_baseline = None
+            generation_baseline = None
             if stage == "state":
-                parent_id = node.get("parent_id")
-                parent_node = session.world_tree.get_node(parent_id) if parent_id else None
-                if not parent_node:
-                    raise HTTPException(status_code=400, detail="Previous state snapshot not found")
-                partial_baseline = parent_node.get("state_snapshot")
-                if not partial_baseline:
-                    partial_baseline = await session._load_snapshot_from_db(parent_id)
-                if not partial_baseline:
-                    raise HTTPException(status_code=400, detail="Previous state snapshot not found")
-                partial_baseline = copy.deepcopy(partial_baseline)
+                try:
+                    generation_baseline = copy.deepcopy(session._require_generation_baseline(node))
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc))
+                partial_baseline = copy.deepcopy(generation_baseline["state"])
     except HTTPException:
         lock.release()
         raise
@@ -2249,11 +2271,18 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
                         "agent_trace": copy.deepcopy(original_node.get("agent_trace")),
                         "game_time": original_node.get("game_time", ""),
                         "triggered_events": copy.deepcopy(original_node.get("triggered_events", [])),
+                        "dice_rolls": copy.deepcopy(original_node.get("dice_rolls", [])),
+                        **{key: copy.deepcopy(original_node[key]) for key in session._REGEN_CONTEXT_KEYS
+                           if key in original_node},
                     })
                 else:
                     active_index = original_node.get("active_swipe_index", 0)
                     if 0 <= active_index < len(swipes):
+                        swipes[active_index]["state_snapshot"] = copy.deepcopy(pre_regen_state)
                         swipes[active_index]["agent_trace"] = copy.deepcopy(original_node.get("agent_trace"))
+                        for key in session._REGEN_CONTEXT_KEYS:
+                            if key in original_node:
+                                swipes[active_index][key] = copy.deepcopy(original_node[key])
                 swipes.append({
                     "narrative": new_node.get("ai_response", ""),
                     "choices": new_node.get("choices_presented", []),
@@ -2262,6 +2291,8 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
                     "agent_trace": copy.deepcopy(chunk.get("agent_trace")),
                     "game_time": new_node.get("game_time", ""),
                     "triggered_events": copy.deepcopy(new_node.get("triggered_events", [])),
+                    "dice_rolls": copy.deepcopy(new_node.get("dice_rolls", [])),
+                    **{key: copy.deepcopy(new_node[key]) for key in session._REGEN_CONTEXT_KEYS if key in new_node},
                 })
                 preserved = {
                     key: original_node.get(key)
@@ -2296,14 +2327,15 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
 
     async def event_stream_partial():
         nonlocal final_result, persisted, inner_stream, partial_baseline
+        destination_dice = None
         if stage == "state":
             session.current_state = copy.deepcopy(partial_baseline)
             for key in session._SWIPE_STRIP_KEYS:
                 if key not in session.current_state and key in pre_regen_state:
                     session.current_state[key] = copy.deepcopy(pre_regen_state[key])
             session._hydrate_branch_runtime(session.current_state)
-            session._replay_pending_event_cascades()
             partial_baseline = copy.deepcopy(session.current_state)
+            destination_dice = session._generation_dice(generation_baseline)
         inner_stream = session._regen_partial_agent(
             stage, orig_narrative, action_text, session.current_state, streaming=True,
         )
@@ -2326,6 +2358,7 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
                     try:
                          state, state_changes, triggered_events = session._settle_regen_state(
                              parsed, partial_baseline, present_npc_ids,
+                             action_text=action_text, destination_dice=destination_dice,
                              is_system_opening=(isinstance(orig_action, dict)
                                                 and orig_action.get("type") == "system"),
                              map_travel_destination=(session._map_travel_destination(
@@ -2336,10 +2369,22 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
                         yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
                         return
                     choices = copy.deepcopy(orig_choices)
+                    state_changes = copy.deepcopy(generation_baseline["state_changes"]) + state_changes
+                    session._consume_choice_instructions(state, node.get("turn_instructions", []))
+                    session._remember_generation_dice(generation_baseline, destination_dice)
                 trace = chunk.get("agent_trace")
+                generation_context = {}
+                if "_turn_player_inputs" in chunk:
+                    generation_context["_turn_player_inputs"] = chunk["_turn_player_inputs"]
+                if stage == "state":
+                    generation_context["_generation_baseline"] = generation_baseline
+                state.update(session._snapshot_session_models())
                 session._record_regen_swipe(
                     node, orig_narrative, choices, state, state_changes, trace,
                     triggered_events if stage == "state" else None,
+                    dice_rolls=destination_dice["settled"] if destination_dice else None,
+                    generation_context=generation_context,
+                    outgoing_state=pre_regen_state,
                 )
                 final_result = {
                     "type": "final",
@@ -2391,6 +2436,7 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
                 yield 'data: {"type": "agent_controls_closed"}\n\n'
                 return
             snapshot = _capture_generation_state(session)
+            session.current_state.update(session._snapshot_session_models())
             pre_regen_side_effects = copy.deepcopy((
                 session.script, session._npc_by_id, session._npc_name_to_id,
                 session.prompt_builder._npc_by_id, session.prompt_builder._npc_name_map,
@@ -2404,10 +2450,10 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
             orig_narrative = node.get("ai_response", "")
             orig_choices = node.get("choices_presented", [])
             orig_state_changes = node.get("state_changes", [])
-            orig_snapshot = node.get("state_snapshot")
+            orig_snapshot = pre_regen_state
             replay_instructions = {
                 key: copy.deepcopy(node[key])
-                for key in ("turn_instructions", "stage_directives") if key in node
+                for key in ("turn_instructions", "stage_directives", "_turn_player_inputs") if key in node
             }
             action_text = orig_action.get("text", "") if isinstance(orig_action, dict) else str(orig_action)
             prepared = True
@@ -2420,6 +2466,10 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
                 session.turn_number = max(0, session.turn_number - 1)
                 session.world_tree.active_node_id = parent_id
                 session.world_tree._branch_dirty = True
+                session._hydrate_branch_runtime(session.current_state)
+                session._restore_session_models_from_state()
+            else:
+                session._restore_session_models_from_state()
             source = event_stream_all() if stage == "all" else event_stream_partial()
             async for data in source:
                 yield data
@@ -2524,10 +2574,15 @@ async def swipe_jump(save_id: str, index: int = 0, expected_node_id: str | None 
                 raise HTTPException(status_code=404, detail="Game session not found")
         await session._drain_background_tasks()
         _check_swipe_context(session, expected_node_id, expected_swipe_index, expected_total_swipes)
-        result = session.swipe_to_index(index)
-        if not result:
-            raise HTTPException(status_code=400, detail="Invalid swipe index")
-        await _update_node_in_db(session, result)
+        snapshot = _capture_generation_state(session)
+        try:
+            result = session.swipe_to_index(index)
+            if not result:
+                raise HTTPException(status_code=400, detail="Invalid swipe index")
+            await _update_node_in_db(session, result)
+        except (Exception, asyncio.CancelledError):
+            await _rollback_generation_state(session, snapshot)
+            raise
         return _public_result(result, session)
 
 
@@ -2546,10 +2601,15 @@ async def swipe_direction(save_id: str, direction: str, expected_node_id: str | 
                 raise HTTPException(status_code=404, detail="Game session not found")
         await session._drain_background_tasks()
         _check_swipe_context(session, expected_node_id, expected_swipe_index, expected_total_swipes)
-        result = session.swipe_to(direction)
-        if not result:
-            raise HTTPException(status_code=400, detail="No swipes available")
-        await _update_node_in_db(session, result)
+        snapshot = _capture_generation_state(session)
+        try:
+            result = session.swipe_to(direction)
+            if not result:
+                raise HTTPException(status_code=400, detail="No swipes available")
+            await _update_node_in_db(session, result)
+        except (Exception, asyncio.CancelledError):
+            await _rollback_generation_state(session, snapshot)
+            raise
         logger.info("Swipe %s — save=%s, swipe=%d/%d",
                     direction, save_id, result.get("swipe_index", 0) + 1, result.get("total_swipes", 1))
         return _public_result(result, session)
@@ -3462,7 +3522,7 @@ async def _save_node(session: GameSession, result: dict, action_id: Optional[str
             if node.get("thinking"):
                 node_context["thinking"] = node["thinking"]
             for key in ("swipes", "active_swipe_index", "_shared_strip_keys", "agent_trace", "query_exchanges",
-                        "turn_instructions", "stage_directives"):
+                        "turn_instructions", "stage_directives", "_generation_baseline", "_turn_player_inputs"):
                 if key in node:
                     node_context[key] = node[key]
             if scene_image_path:
@@ -3694,7 +3754,7 @@ async def _restore_session(save_id: str) -> GameSession | None:
                 if nc.get("scene_image_path"):
                     node_data["scene_image_path"] = nc["scene_image_path"]
                 for key in ("swipes", "active_swipe_index", "_shared_strip_keys", "agent_trace", "query_exchanges",
-                            "turn_instructions", "stage_directives"):
+                            "turn_instructions", "stage_directives", "_generation_baseline", "_turn_player_inputs"):
                     if key in nc:
                         node_data[key] = nc[key]
             session.world_tree.nodes[row["id"]] = node_data
@@ -3772,7 +3832,7 @@ async def _restore_session(save_id: str) -> GameSession | None:
             session._restore_dynamic_story()
 
         session._hydrate_branch_runtime(session.current_state)
-        session._restore_npc_autonomy_from_state()
+        session._restore_session_models_from_state()
 
         # Re-index lorebook entries to VectorMemory (collection may be stale or missing)
         if session.vector_memory:
@@ -3820,7 +3880,7 @@ async def _update_node_in_db(session: GameSession, result: dict):
             if node.get("thinking"):
                 node_context["thinking"] = node["thinking"]
             for key in ("swipes", "active_swipe_index", "_shared_strip_keys", "agent_trace", "query_exchanges",
-                        "turn_instructions", "stage_directives"):
+                        "turn_instructions", "stage_directives", "_generation_baseline", "_turn_player_inputs"):
                 if key in node:
                     node_context[key] = node[key]
             if node_context:

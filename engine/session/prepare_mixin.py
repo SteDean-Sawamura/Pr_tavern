@@ -486,13 +486,15 @@ class PrepareMixin:
 
         # Story tree evaluation
         story_tree_result = None
+        story_tree_instructions = []
         if self.story_tree_engine:
             story_tree_result = self.story_tree_engine.evaluate(
                 self.current_state, self.turn_number,
                 condition_eval=self._evaluate_condition,
                 advance_timed=action_type != "system",
             )
-            self._apply_story_tree_result(story_tree_result)
+            story_tree_instructions = list(story_tree_result.inject_prompts)
+            self._apply_story_tree_result(story_tree_result, inject_prompts=story_tree_instructions)
 
         all_state_changes.extend(self._run_turn_computations(story_tree_result, check_result, achieved_milestones))
 
@@ -716,9 +718,9 @@ class PrepareMixin:
         # Inject story tree prompts into system prompt
         all_notifications = list(bg_notifications)
         if story_tree_result:
-            if story_tree_result.inject_prompts:
-                turn_instructions.extend(story_tree_result.inject_prompts)
-                st_extra = "\n".join(story_tree_result.inject_prompts)
+            if story_tree_instructions:
+                turn_instructions.extend(story_tree_instructions)
+                st_extra = "\n".join(story_tree_instructions)
                 if system_prompt:
                     system_prompt += "\n\n" + st_extra
                 history_context = (history_context + "\n\n## 剧情推进\n" + st_extra).strip()
@@ -753,7 +755,7 @@ class PrepareMixin:
                     for stage, directive in node["stage_directives"].items():
                         stage_directives.setdefault(stage, []).append(directive)
 
-        return {
+        ctx = {
             "old_time": old_time,
             "new_time": new_time,
             "estimated_minutes": estimated_minutes,
@@ -800,6 +802,8 @@ class PrepareMixin:
             "npc_autonomy_events": npc_autonomy_events,
             "candidate_npc_autonomy_events": candidate_npc_autonomy_events,
         }
+        ctx["generation_baseline"] = self._capture_generation_baseline(ctx)
+        return ctx
 
     def _roll_always_active_dice(self) -> list:
         results = []

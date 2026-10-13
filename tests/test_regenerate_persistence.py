@@ -112,12 +112,18 @@ async def test_stream_regenerate_preserves_swipes_after_restore(tmp_path, monkey
         assert restored.world_tree.active_node_id == original_id
         assert restored.get_all_swipes()[0]["narrative_preview"] == "Original"
         assert restored.get_all_swipes()[1]["narrative_preview"] == "New"
-        assert restored.swipe_to("left")["state"] == old_state
+        saved_models = {
+            "_player_model": {"choice_history": [], "style_tags": {}, "preferred_pace": "normal"},
+            "_npc_autonomy": {"npc_states": {}},
+            "_narrative_graph": {"nodes": {}, "edges": []},
+            "_director_notes": {"notes": []},
+        }
+        assert restored.swipe_to("left")["state"] == {**old_state, **saved_models}
         activated, _ = restored.prompt_builder.scan_lorebook("OldScene", [], state=restored.current_state)
         assert [(entry.id, entry.content) for entry in activated] == [
             ("scene_fact", "Original scene")
         ]
-        assert restored.swipe_to("right")["state"] == new_state
+        assert restored.swipe_to("right")["state"] == {**new_state, **saved_models}
         activated, _ = restored.prompt_builder.scan_lorebook("NewScene", [], state=restored.current_state)
         assert [(entry.id, entry.content) for entry in activated] == [
             ("scene_fact", "Replacement scene")
@@ -127,7 +133,7 @@ async def test_stream_regenerate_preserves_swipes_after_restore(tmp_path, monkey
         game_routes._sessions.pop(save_id)
         restored = await game_routes._restore_session(save_id)
         assert restored.get_all_swipes()[0]["active"] is True
-        assert restored.current_state == old_state
+        assert restored.current_state == {**old_state, **saved_models}
     finally:
         await database.close_pool()
 
@@ -218,6 +224,11 @@ async def test_partial_state_regenerate_persists_swipes_and_restores(tmp_path, m
         }}
 
     session._regen_partial_agent = partial
+    session.current_state = copy.deepcopy(parent_state)
+    session.world_tree.get_node(original_id)["_generation_baseline"] = session._capture_generation_baseline({
+        "new_time": old_state["game_time"],
+    })
+    session.current_state = copy.deepcopy(old_state)
     try:
         async with database.get_db() as db:
             await db.execute(
