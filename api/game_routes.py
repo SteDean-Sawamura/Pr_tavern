@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from config import DATA_DIR
+from ai.base import ModelOutputUnavailableError
 from db.database import get_db
 from engine.game_session import GameSession
 from engine.event_scheduler import is_public_event, is_public_story_node
@@ -27,6 +28,14 @@ from engine.class_system import ClassRegistry
 
 router = APIRouter()
 logger = logging.getLogger("tavern.game")
+
+
+def _generation_error_event(error):
+    event = {"type": "error", "message": "生成失败，请稍后重试", "discard_partial": True}
+    if isinstance(error, ModelOutputUnavailableError):
+        event.update(message=error.public_message, code="model_output_unavailable",
+                     model_output={"reason": error.reason, **error.diagnostics})
+    return event
 
 # In-memory session store with LRU eviction (save_id -> GameSession)
 _MAX_SESSIONS = 50
@@ -1143,13 +1152,13 @@ async def game_action_stream(save_id: str, req: ActionRequest):
                                     MapTravelSettlementError)):
                     error["discard_partial"] = True
                 yield f"data: {json.dumps(error, ensure_ascii=False)}\n\n"
-            except Exception:
+            except Exception as exc:
                 logger.exception("流式行动失败 — save=%s", save_id)
                 if getattr(session, "_inject_queue", None):
                     for control_event in _close_agent_control_events(session):
                         yield f"data: {json.dumps(control_event, ensure_ascii=False)}\n\n"
                     yield 'data: {"type": "agent_controls_closed"}\n\n'
-                error = {"type": "error", "message": "生成失败，请稍后重试", "discard_partial": True}
+                error = _generation_error_event(exc)
                 yield f"data: {json.dumps(error, ensure_ascii=False)}\n\n"
             finally:
                 await events.aclose()
@@ -2506,7 +2515,7 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
                     error["discard_partial"] = True
             else:
                 logger.exception("流式重生成失败 — save=%s, stage=%s", save_id, stage)
-                error = {"type": "error", "message": "生成失败，请稍后重试", "discard_partial": True}
+                error = _generation_error_event(exc)
             if (getattr(session, "_active_agent_stream", False) or getattr(session, "_inject_queue", None)
                     or getattr(session, "_abort_request_pending", False)):
                 for control_event in _close_agent_control_events(session):

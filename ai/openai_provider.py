@@ -3,7 +3,7 @@
 import logging
 import json
 import re
-from ai.base import AIProvider, strip_think_tags, stream_strip_think, with_retry
+from ai.base import AIProvider, ModelOutputUnavailableError, strip_think_tags, stream_strip_think, with_retry
 from typing import AsyncIterator
 
 logger = logging.getLogger("tavern.ai")
@@ -246,17 +246,30 @@ class OpenAIProvider(AIProvider):
         calls = {}
         usage_data = {}
         output_started = False
+        diagnostics = {"chunk_count": 0, "choice_chunk_count": 0, "finish_reasons": [],
+                       "requested_output_limit": kwargs.get("max_tokens", self.max_tokens),
+                       "prompt_tokens": None, "completion_tokens": None, "reasoning_tokens": None}
         async with stream:
             async for chunk in stream:
+                diagnostics["chunk_count"] += 1
                 usage = getattr(chunk, "usage", None)
                 if usage:
                     usage_data = {
                         "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
                         "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
                     }
+                    diagnostics.update(
+                        prompt_tokens=getattr(usage, "prompt_tokens", None),
+                        completion_tokens=getattr(usage, "completion_tokens", None),
+                        reasoning_tokens=getattr(getattr(usage, "completion_tokens_details", None), "reasoning_tokens", None),
+                    )
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
                     continue
+                diagnostics["choice_chunk_count"] += 1
+                finish_reason = getattr(choices[0], "finish_reason", None)
+                if finish_reason is not None and finish_reason not in diagnostics["finish_reasons"]:
+                    diagnostics["finish_reasons"].append(finish_reason)
                 delta = choices[0].delta
                 if not output_started and (getattr(delta, "content", None)
                                            or getattr(delta, "reasoning_content", None)
@@ -280,12 +293,16 @@ class OpenAIProvider(AIProvider):
                             entry["prepared"] = True
                             yield {"type": "tool_preparing", "tool_name": entry["name"]}
 
-        if not content_parts and not calls:
-            raise RuntimeError("AI 返回空响应（choices 为空）")
         content = "".join(content_parts)
+        diagnostics["raw_content_characters"] = len(content)
         reasoning = "".join(reasoning_parts) or None
         if reasoning and "<think>" not in content.lower():
             content = f"<think>{reasoning}</think>{content}"
+        visible_content = strip_think_tags(content)
+        diagnostics.update(visible_content_characters=len(visible_content),
+                           reasoning_characters=len(reasoning or ""), tool_call_count=len(calls))
+        if not visible_content.strip() and not calls:
+            raise ModelOutputUnavailableError(diagnostics)
         tool_calls = []
         for entry in (calls[index] for index in sorted(calls)):
             try:
@@ -294,6 +311,6 @@ class OpenAIProvider(AIProvider):
                 arguments = {}
             tool_calls.append({"id": entry["id"], "name": entry["name"], "arguments": arguments})
         yield {"type": "response", "response": {
-            "content": strip_think_tags(content), "reasoning_content": reasoning,
+            "content": visible_content, "reasoning_content": reasoning,
             "tool_calls": tool_calls or None, "usage": usage_data,
         }}

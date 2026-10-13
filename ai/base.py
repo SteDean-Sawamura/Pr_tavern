@@ -1,6 +1,7 @@
 """Abstract base class for AI providers."""
 
 import asyncio
+import json
 import logging
 import re
 from abc import ABC, abstractmethod
@@ -10,8 +11,34 @@ from typing import AsyncIterator
 logger = logging.getLogger("tavern.ai")
 
 
+class ModelOutputUnavailableError(RuntimeError):
+    def __init__(self, diagnostics: dict):
+        self.diagnostics = {}
+        for name in ("chunk_count", "choice_chunk_count", "raw_content_characters", "visible_content_characters",
+                     "reasoning_characters", "tool_call_count", "requested_output_limit", "prompt_tokens",
+                     "completion_tokens", "reasoning_tokens"):
+            value = diagnostics.get(name)
+            self.diagnostics[name] = value if type(value) is int and value >= 0 else None
+        reasons = []
+        for value in diagnostics.get("finish_reasons", []):
+            reason = value if isinstance(value, str) and value in (
+                "stop", "length", "tool_calls", "function_call", "content_filter",
+            ) else "other"
+            if reason not in reasons:
+                reasons.append(reason)
+        self.diagnostics["finish_reasons"] = reasons
+        self.reason = "reasoning_only" if (self.diagnostics["reasoning_characters"] or 0) > 0 else "empty_output"
+        description = ("只返回了思考内容，没有可用正文或工具调用"
+                       if self.reason == "reasoning_only" else "没有返回可用正文或工具调用")
+        prefix = "模型报告因长度限制结束，" if reasons == ["length"] else "模型"
+        self.public_message = prefix + description + "。"
+        super().__init__(self.public_message + " " + json.dumps(self.diagnostics, ensure_ascii=True, sort_keys=True))
+
+
 def _is_retryable(exc: Exception) -> bool:
     """B21: 只对瞬时错误重试 — 网络/超时/限流/5xx；不对鉴权/参数错误等永久错误重试。"""
+    if isinstance(exc, ModelOutputUnavailableError):
+        return False
     name = type(exc).__name__
     msg = str(exc).lower()
     # 永久错误：API key 无效、参数错误、内容策略拦截
