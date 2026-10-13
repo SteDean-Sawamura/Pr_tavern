@@ -1,5 +1,6 @@
 """AI configuration API routes — multi-profile support."""
 
+import copy
 import json
 import logging
 import re
@@ -458,6 +459,7 @@ async def get_ai_provider_instance():
     if _provider_cache["fingerprint"] == fp and _provider_cache["instance"] is not None:
         return _provider_cache["instance"]
     instance = _create_provider_from_profile(profile)
+    instance._tavern_stage_models = _parse_profile_stage_models(profile)
     _provider_cache["profile_id"] = profile.get("id")
     _provider_cache["fingerprint"] = fp
     _provider_cache["instance"] = instance
@@ -469,6 +471,10 @@ async def get_active_stage_models() -> dict:
     profile = await get_active_profile()
     if not profile:
         return {}
+    return _parse_profile_stage_models(profile)
+
+
+def _parse_profile_stage_models(profile: dict) -> dict:
     sm = profile.get("stage_models")
     if isinstance(sm, str) and sm:
         try:
@@ -476,7 +482,7 @@ async def get_active_stage_models() -> dict:
         except Exception:
             return {}
     if isinstance(sm, dict):
-        return sm
+        return copy.deepcopy(sm)
     return {}
 
 

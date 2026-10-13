@@ -202,7 +202,7 @@ class PipelineMixin:
                 ctx["_semantic_review_model_calls"] = ctx.get("_semantic_review_model_calls", 0) + 1
                 raw = await self.ai_provider.generate(
                     msgs, system=sys_prompt, max_tokens=max_tokens,
-                    **self._stage_kwargs("state"),
+                    **(self._stage_kwargs("review") or self._stage_kwargs("state")),
                 )
                 raw = strip_think_tags(raw or "")
                 match = re.search(r'\{.*\}', raw, re.DOTALL)

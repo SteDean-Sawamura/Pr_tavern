@@ -158,8 +158,9 @@ class StoryDirectorMixin:
             "anchors": self._script_anchor_briefs(),
         }
         self._deferred_story_source = source
+        planner = copy.copy(self)
         self._deferred_story_task = self._schedule_deferred_task(
-            self._director_task_script_plan(context)
+            planner._director_task_script_plan(context)
         )
 
     async def _director_task_script_plan(self, context: dict) -> dict | None:

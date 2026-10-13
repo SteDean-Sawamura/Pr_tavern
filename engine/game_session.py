@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import inspect
 import json
 import logging
 import random
@@ -129,6 +130,7 @@ class GameSession(
         self.ai_provider = ai_provider
         self.pipeline_mode = config.PIPELINE_MODE
         self.stage_models = stage_models or {}
+        self.task_model_routes = None
         self.save_id = save_id or str(uuid.uuid4())
         self.dice = DiceRoller()
         self.state_manager = StateManager(script)
@@ -252,7 +254,9 @@ class GameSession(
         if not model:
             # 其次检查全局任务级模型路由（config.py / API 动态配置）
             import config
-            routes = getattr(config, 'TASK_MODEL_ROUTES', {})
+            routes = self.task_model_routes
+            if routes is None:
+                routes = getattr(config, 'TASK_MODEL_ROUTES', {})
             model = routes.get(stage)
         return {"model": model} if model else {}
 
@@ -1657,14 +1661,16 @@ class GameSession(
         8-stage pipeline: plot_decision → env‖char → compose → npc‖world → choices.
         Falls back to legacy 3-step if new pipeline encounters critical errors.
         """
-        if not self.ai_provider:
-            raise RuntimeError("AI provider not configured")
         turn_started = _time.monotonic()
         await self._drain_background_tasks(timeout=None, include_index=False)
         self._consume_script_blueprint()
         background_ms = int((_time.monotonic() - turn_started) * 1000)
         if on_background_drained is not None:
-            on_background_drained()
+            pending = on_background_drained()
+            if inspect.isawaitable(pending):
+                await pending
+        if not self.ai_provider:
+            raise RuntimeError("AI provider not configured")
 
         preflight_model_calls = {"intent": 0, "route": 0}
         intent_started = _time.monotonic()
@@ -1732,8 +1738,6 @@ class GameSession(
         session 层不做 rollback，避免双重回滚导致状态混乱。
         调用方需自行在 finally 中处理 state/turn_number/world_tree 的恢复。
         """
-        if not self.ai_provider:
-            raise RuntimeError("AI provider not configured")
         if self._agentic_unified_enabled():
             yield {"type": "preflight", "stage": "background"}
         turn_started = _time.monotonic()
@@ -1764,13 +1768,17 @@ class GameSession(
         if not self._abort_flag:
             self._consume_script_blueprint()
         if on_background_drained is not None and not self._abort_flag:
-            on_background_drained()
+            pending = on_background_drained()
+            if inspect.isawaitable(pending):
+                await pending
 
         preflight_model_calls = {"intent": 0, "route": 0}
         if self._abort_flag:
             yield {"type": "aborted", "label": "准备阶段"}
             yield {"type": "agent_controls_closed"}
             return
+        if not self.ai_provider:
+            raise RuntimeError("AI provider not configured")
         if self._agentic_unified_enabled():
             yield {"type": "preflight", "stage": "intent"}
         intent_started = _time.monotonic()

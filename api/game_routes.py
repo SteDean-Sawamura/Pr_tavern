@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import config
 import hashlib
 import json
 import logging
@@ -345,9 +346,24 @@ async def _get_ai_provider_async():
     return await get_ai_provider_instance()
 
 
-async def _get_stage_models_async():
+async def _get_stage_models_async(ai_provider=None):
+    snapshot = getattr(ai_provider, "_tavern_stage_models", None)
+    if snapshot is not None:
+        return copy.deepcopy(snapshot)
     from api.config_routes import get_active_stage_models
     return await get_active_stage_models()
+
+
+async def _refresh_session_ai(session):
+    if not hasattr(session, "_profile_ai_provider") or session.ai_provider is not session._profile_ai_provider:
+        return
+    ai_provider = await _get_ai_provider_async()
+    stage_models = await _get_stage_models_async(ai_provider) if ai_provider is not None else {}
+    task_model_routes = copy.deepcopy(config.TASK_MODEL_ROUTES)
+    session.ai_provider = ai_provider
+    session._profile_ai_provider = ai_provider
+    session.stage_models = stage_models
+    session.task_model_routes = task_model_routes
 
 
 class NewGameRequest(BaseModel):
@@ -667,8 +683,10 @@ async def new_game(req: NewGameRequest):
 
     # Create session
     ai_provider = await _get_ai_provider_async()
-    stage_models = await _get_stage_models_async()
+    stage_models = await _get_stage_models_async(ai_provider)
     session = GameSession(script, ai_provider, stage_models=stage_models)
+    session._profile_ai_provider = ai_provider
+    session.task_model_routes = copy.deepcopy(config.TASK_MODEL_ROUTES)
     session._last_activity_time = time.time()
     stream_opening = req.stream_opening and (session._agentic_enabled() or session._agentic_unified_enabled())
 
@@ -912,9 +930,10 @@ async def game_action(save_id: str, req: ActionRequest):
         )
         previous_blueprint = copy.deepcopy(session.current_state.get("plot_blueprint"))
 
-        def capture_after_background():
+        async def capture_after_background():
             nonlocal snapshot
             snapshot = _capture_generation_state(session)
+            await _refresh_session_ai(session)
 
         try:
             if isinstance(session, GameSession):
@@ -1012,9 +1031,10 @@ async def game_action_stream(save_id: str, req: ActionRequest):
         auto_reply_waiting = False
         injections_recovered = False
 
-        def capture_after_background():
+        async def capture_after_background():
             nonlocal snapshot
             snapshot = _capture_generation_state(session)
+            await _refresh_session_ai(session)
 
         if isinstance(session, GameSession):
             action_stream = session.process_action_stream(action, on_background_drained=capture_after_background)
@@ -2114,6 +2134,7 @@ async def regenerate(save_id: str, stage: str = "all", hint: str = ""):
             await session._drain_background_tasks()
         snapshot = _capture_generation_state(session)
         try:
+            await _refresh_session_ai(session)
             result = await session.regenerate(stage=stage, hint=hint)
             if result.get("error"):
                 raise HTTPException(status_code=400, detail=result["error"])
@@ -2436,6 +2457,7 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
                 yield 'data: {"type": "agent_controls_closed"}\n\n'
                 return
             snapshot = _capture_generation_state(session)
+            await _refresh_session_ai(session)
             session.current_state.update(session._snapshot_session_models())
             pre_regen_side_effects = copy.deepcopy((
                 session.script, session._npc_by_id, session._npc_name_to_id,
@@ -3703,10 +3725,12 @@ async def _restore_session(save_id: str) -> GameSession | None:
 
         # Get AI provider
         ai_provider = await _get_ai_provider_async()
-        stage_models = await _get_stage_models_async()
+        stage_models = await _get_stage_models_async(ai_provider)
 
         # Create session
         session = GameSession(script, ai_provider, save_id=save_id, stage_models=stage_models)
+        session._profile_ai_provider = ai_provider
+        session.task_model_routes = copy.deepcopy(config.TASK_MODEL_ROUTES)
 
         # Load tree nodes (ordered by created_at to ensure children_ids ordering)
         cursor = await db.execute(

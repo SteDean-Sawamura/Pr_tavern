@@ -3338,7 +3338,7 @@ async function editProfile(profileId) {
 
         // Fill stage_models overrides
         const sm = p.stage_models || {};
-        for (const stage of ['narrative', 'choices', 'state', 'summary', 'knowledge_graph']) {
+        for (const stage of ['narrative', 'choices', 'state', 'review', 'summary', 'knowledge_graph']) {
             const el = document.getElementById('profile-sm-' + stage);
             if (el) el.value = sm[stage] || '';
         }
@@ -3364,7 +3364,7 @@ function _resetProfileForm() {
     document.getElementById('profile-base-url').value = '';
     document.getElementById('profile-model').value = 'gpt-4o';
     document.getElementById('profile-max-tokens').value = '2048';
-    for (const stage of ['narrative', 'choices', 'state', 'summary', 'knowledge_graph']) {
+    for (const stage of ['narrative', 'choices', 'state', 'review', 'summary', 'knowledge_graph']) {
         const el = document.getElementById('profile-sm-' + stage);
         if (el) el.value = '';
     }
@@ -3383,7 +3383,7 @@ async function saveNewProfile() {
     const maxTokens = parseInt(document.getElementById('profile-max-tokens').value) || 2048;
 
     const stageModels = {};
-    for (const stage of ['narrative', 'choices', 'state', 'summary', 'knowledge_graph']) {
+    for (const stage of ['narrative', 'choices', 'state', 'review', 'summary', 'knowledge_graph']) {
         const el = document.getElementById('profile-sm-' + stage);
         const v = el ? el.value.trim() : '';
         if (v) stageModels[stage] = v;
