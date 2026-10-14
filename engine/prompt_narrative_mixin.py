@@ -1346,6 +1346,7 @@ class PromptNarrativeMixin:
         return (
             "以下是本次行动中已经收到的玩家补充，按发生顺序解释；重生成时仍保留这些意图。"
             "plan_reply_context 仅用于按原问题解释回复，不代表玩家同意整个计划或未确认部分。"
+            "已明确回答的原问题视为已解决；在已确认范围内继续执行，不要重复要求同一确认。"
             "后来的明确修改优先；旧回复不是对新问题的回答，新问题仍需等待新确认。\n"
             + _xml("turn_player_inputs", json.dumps(inputs, ensure_ascii=False))
         )
@@ -1393,6 +1394,7 @@ class PromptNarrativeMixin:
             system += (
                 "\nplan_reply_context 是玩家回复时的计划、问题、选项与回复原文，仅供解释玩家行动。"
                 "按原问题理解序号等简短回复；不要把整个计划、未确认部分或默认选项当作玩家已确认。"
+                "已明确确认的执行范围不应再被退回等待同一确认；若规则不允许执行，应说明实际阻碍，而非假定玩家尚未回答。"
             )
         if private_script:
             sections.append(_xml("active_script_private", json.dumps(private_script, ensure_ascii=False)))

@@ -33,11 +33,12 @@ NARRATIVES = {
 @pytest.mark.parametrize("value", [4, 9])
 @pytest.mark.parametrize("mode", ["first", "second", "replanned", "no_questions"])
 @pytest.mark.parametrize("delegated", [False, True])
-async def test_plan_reply_reaches_review_and_declared_action_survives_reload(tmp_path, monkeypatch, value, mode, delegated):
+@pytest.mark.parametrize("end_time", ["2030-01-01T09:00:00", "2030-01-01T09:05:00"], ids=["instant", "elapsed"])
+async def test_plan_reply_reaches_review_and_declared_action_survives_reload(tmp_path, monkeypatch, value, mode, delegated, end_time):
     script = copy.deepcopy(large_session(value).script)
     script["locations"] = [{"id": "test_room", "name": "Reading room"}]
     script["story_tree"]["trees"][0]["nodes"][2]["action_rule"] = {
-        option: {"end_time": "2030-01-01T09:05:00",
+        option: {"end_time": end_time,
                  "variable_changes": [{"id": "test_variables_2", "op": "set", "value": value + index}]}
         for index, option in enumerate(PLAN["questions"][0]["options"])
     }
@@ -253,6 +254,7 @@ async def test_plan_reply_reaches_review_and_declared_action_survives_reload(tmp
                     )).fetchone()
                 assert saved_reply["reply"] == reply
                 assert session.current_state["script_variables"] == root_state["script_variables"]
+                assert session.current_state["game_time"] == root_state["game_time"]
                 release.set()
             response = await asyncio.wait_for(pending, 10)
             assert reviews
@@ -277,6 +279,7 @@ async def test_plan_reply_reaches_review_and_declared_action_survives_reload(tmp
             expected_value = value + int(selected == "Leave")
             assert declaration["variable_changes"][0]["value"] == expected_value
             assert session.current_state["script_variables"]["test_variables_2"] == expected_value
+            assert final["state"]["game_time"] == session.current_state["game_time"] == end_time
             assert session.script == original_script
             assert "SYNTHETIC_RULE_BUDGET_BODY" in json.dumps(requests)
             assert "SYNTHETIC_RULE_BUDGET_BODY" not in response.text
@@ -290,6 +293,7 @@ async def test_plan_reply_reaches_review_and_declared_action_survives_reload(tmp
             restored = await game_routes._restore_session(session.save_id)
             assert restored is not None and restored is not session
             assert restored.current_state["script_variables"]["test_variables_2"] == expected_value
+            assert restored.current_state["game_time"] == end_time
             trace = restored.world_tree.get_node(final["node_id"])["agent_trace"]
             assert sum(record["tool"] == "update_state" for record in trace["rounds"]) == 1
             assert "SYNTHETIC_RULE_BUDGET_BODY" not in json.dumps(trace)

@@ -2922,6 +2922,7 @@ class AgenticMixin:
                 user_parts.append(
                     f"<time_context>\n当前游戏时间: {old_time}\n"
                     "你是end_time的唯一决策者。根据叙事最后场景的时间输出绝对时间戳：\n"
+                    "若未发生耗时行为，可等于当前时间；下列范围是参考，不是最低耗时。明确等待、旅途及剧本成本仍须满足，计划、正文与结算不能互相矛盾。\n"
                     "- 对话/观察/翻阅文件: 当前时间 +10~30分钟\n"
                     "- 常规互动/短途移动: 当前时间 +30分钟~2小时\n"
                     "- 长途旅行/大型战斗: 当前时间 +2~8小时\n"
@@ -4160,6 +4161,8 @@ class AgenticMixin:
                             return json.dumps({
                                 "error": "叙事语义审查未通过；请调用 write_narrative 修订后重新结算。",
                                 "violations": violations,
+                                "state_update_accepted": False,
+                                "retry_hint": "本次结算参数未接收；修订后须重传仍适用的参数，不要重复此前已接收的 update_state。保留玩家已经明确确认的执行范围，不要为规避审查退回重复确认。",
                             }, ensure_ascii=False)
                         semantic_revision_required = False
                         ctx["_semantic_review_status"] = "passed" if review and review.get("pass") else "unavailable"

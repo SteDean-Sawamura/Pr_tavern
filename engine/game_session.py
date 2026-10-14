@@ -2355,8 +2355,8 @@ class GameSession(
                 return f"系统开场不推进时间，end_time 必须为 {old_time}"
             return ""
         minutes = (finish - start).total_seconds() / 60
-        if minutes <= 0:
-            return f"end_time 不得早于或等于当前时间 {old_time}"
+        if minutes < 0:
+            return f"end_time 不得早于当前时间 {old_time}"
         updates = [*ctx.get("_accepted_state_updates", [])]
         if pending_changes:
             updates.append(pending_changes)

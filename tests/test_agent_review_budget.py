@@ -114,7 +114,14 @@ async def test_interjection_gets_fresh_review_budget_and_persists(
         async def monitored_dispatch(name, arguments):
             if name == terminal and not terminal_entered.is_set():
                 terminal_entered.set()
-            return await dispatch(name, arguments)
+            result = await dispatch(name, arguments)
+            if name in {"finalize_turn", "delegate_settlement"} and result.startswith("{"):
+                feedback = json.loads(result)
+                if feedback.get("error", "").startswith("叙事语义审查未通过"):
+                    assert feedback["state_update_accepted"] is False
+                    assert "重传仍适用的参数" in feedback["retry_hint"]
+                    assert "不要重复此前已接收的 update_state" in feedback["retry_hint"]
+            return result
 
         async with aclosing(original_loop(messages, system, tools, monitored_dispatch, **kwargs)) as events:
             async for event in events:
