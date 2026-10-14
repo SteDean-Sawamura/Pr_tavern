@@ -41,6 +41,12 @@ class StateApplyMixin:
                     break
         return choices
 
+    def _apply_narrative_output_rules(self, text: str) -> str:
+        rules = self.script.get("post_processing_rules", [])
+        if rules:
+            text = self._apply_post_processing(text, rules)
+        return self.regex_engine.apply(text, "ai_output") if text else text
+
     async def _apply_parsed_response(
         self: GameSession, parsed: dict, raw_response: str, player_action: dict, ctx: dict,
     ) -> dict:
@@ -55,16 +61,10 @@ class StateApplyMixin:
         triggered_events = ctx["triggered_events"]
         all_state_changes = ctx["all_state_changes"]
 
-        # Post-processing rules
-        rules = self.script.get("post_processing_rules", [])
-        if rules:
-            parsed["narrative"] = self._apply_post_processing(
-                parsed.get("narrative", raw_response), rules
-            )
-
-        # Regex scripts on AI output
-        if parsed.get("narrative"):
-            parsed["narrative"] = self.regex_engine.apply(parsed["narrative"], "ai_output")
+        if not ctx.get("_unified_narrative_output") and (
+            self.script.get("post_processing_rules") or parsed.get("narrative")
+        ):
+            parsed["narrative"] = self._apply_narrative_output_rules(parsed.get("narrative", raw_response))
 
         # O-1: 复用共享方法处理通用 state 变更（state_changes / npc_attitude /
         # persistent_states / world_properties / inventory / consequences /

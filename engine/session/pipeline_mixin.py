@@ -197,7 +197,8 @@ class PipelineMixin:
             plan_reply_context=ctx.get("_review_plan_reply"),
             turn_player_inputs=ctx.get("_turn_player_inputs"),
         )
-        for max_tokens in (500, 1500):
+        for max_tokens in (getattr(self.ai_provider, "review_max_tokens", 500),
+                           getattr(self.ai_provider, "review_retry_max_tokens", 1500)):
             try:
                 ctx["_semantic_review_model_calls"] = ctx.get("_semantic_review_model_calls", 0) + 1
                 raw = await self.ai_provider.generate(

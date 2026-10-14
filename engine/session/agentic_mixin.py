@@ -1573,42 +1573,18 @@ class AgenticMixin:
         return await self._run_tool_native_async(name, args)
 
     async def _review_narrative_tool(self, narrative: str, ctx: dict) -> str:
-        """叙事审查：全部交给 LLM 语义审核。"""
+        """通过共享评审入口返回结构化结果。"""
         if not narrative.strip():
             return "错误：叙事为空"
 
+        review = None
         try:
-            state = self.current_state
-            pc_name = state.get("player", ).get("name", "")
-            npc_states = state.get("npcs", {})
-            npc_defs = {n["id"]: n for n in self.script.get("npcs", []) if "id" in n}
-            present_npcs = []
-            for nid in (ctx.get("present_npc_ids") or [])[:6]:
-                ns = npc_states.get(nid, {})
-                nd = npc_defs.get(nid, {})
-                if not isinstance(ns, dict):
-                    continue
-                present_npcs.append({
-                    "id": nid,
-                    "name": ns.get("name", nid),
-                    "title": ns.get("title") or nd.get("title") or nd.get("role") or nd.get("occupation", ""),
-                })
-            action_text = ctx.get("action_text", "")
-            private_script, known_context = self._narrative_review_evidence(ctx)
-            review_msgs, review_sys = self.prompt_builder.build_narrative_review_prompt(
-                narrative, action_text, present_npcs, pc_name=pc_name,
-                private_script=private_script, known_context=known_context,
-                plan_reply_context=ctx.get("_review_plan_reply"),
-                turn_player_inputs=ctx.get("_turn_player_inputs"),
-            )
-            raw = await self.ai_provider.generate(
-                review_msgs, system=review_sys, max_tokens=500,
-                **self._stage_kwargs("state")
-            )
-            return raw.strip() if raw else "审查通过"
+            review = await self._review_narrative(narrative, ctx.get("action_text", ""), ctx)
         except Exception as e:
             logger.warning("review LLM 调用失败: %s", e)
-            return "审查通过（LLM不可用）"
+        return json.dumps(review if review is not None else {
+            "available": False, "pass": None, "violations": [],
+        }, ensure_ascii=False)
 
     def _format_agent_instructions(self, ctx: dict, stages: tuple[str, ...], *, state: dict | None = None) -> str:
         lines = list(ctx.get("turn_instructions", []))
@@ -2461,6 +2437,8 @@ class AgenticMixin:
         if name == "write_narrative" and ctx is not None:
             text = _clean_narrative_text(args.get("text") or "", ctx)
             args["text"] = text
+            if ctx.get("_unified_narrative_output"):
+                text = self._prepare_unified_narrative(text, ctx)
             if not text:
                 return json.dumps({"error": "叙事不能为空"}, ensure_ascii=False)
             if self._narrative_quotes_private_script(text):
@@ -4076,6 +4054,7 @@ class AgenticMixin:
         _warnings: list[str] = []
         action_text = ctx.get("action_text") or player_action.get("text", "")
         ctx.pop("_review_plan_reply", None)
+        ctx["_unified_narrative_output"] = True
         ctx["_turn_player_inputs"] = copy.deepcopy(ctx.get("_turn_player_inputs") or [])
         ctx["_map_travel_destination"] = self._map_travel_destination(player_action)
         ctx.setdefault("tool_results", [])
@@ -4125,6 +4104,10 @@ class AgenticMixin:
             finally:
                 semantic_review_timings_ms.append(int((time.monotonic() - started) * 1000))
 
+        async def _fix_npc_narrative(narrative):
+            revised = await self._maybe_fix_npc_voices(narrative, self.current_state, ctx.get("present_npc_ids"))
+            return narrative if revised == narrative else self._prepare_unified_narrative(revised, ctx)
+
         async def _capture_visible_events():
             route_task = ctx.get("_preflight_route_task")
             if route_task is not None:
@@ -4149,8 +4132,10 @@ class AgenticMixin:
                 args["text"] = _clean_narrative_text(args.get("text") or "", ctx)
             elif name in ("finalize_turn", "delegate_settlement") and args.get("narrative"):
                 args["narrative"] = _clean_narrative_text(args["narrative"], ctx)
+                if args["narrative"] != ctx.get("_finalize_narrative", ""):
+                    args["narrative"] = self._prepare_unified_narrative(args["narrative"], ctx)
             if name == "write_narrative" and semantic_review_attempts >= 3:
-                if (args.get("text") or "").strip() != ctx.get("_finalize_narrative", "").strip():
+                if self._prepare_unified_narrative(args.get("text") or "", ctx) != ctx.get("_finalize_narrative", "").strip():
                     return json.dumps({"error": "叙事已达审查次数上限，请使用上一稿结算。"}, ensure_ascii=False)
             if name in ("finalize_turn", "delegate_settlement"):
                 if args.get("narrative") and args["narrative"].strip() != ctx.get("_finalize_narrative", "").strip():
@@ -4462,12 +4447,16 @@ class AgenticMixin:
             raise IncompleteAgentTurnError("统一Agent未完成结算：请重试本轮行动")
 
         # 叙事来源优先级：write_narrative 工具 > content 自由文本 > 摘要兜底
-        narrative = ctx.get("_finalize_narrative", "").strip() or (holder.text or "").strip()
+        submitted_narrative = ctx.get("_finalize_narrative", "").strip()
+        narrative = submitted_narrative or (holder.text or "").strip()
         if not narrative:
             logger.warning("统一Agent未输出叙事文本，使用摘要兜底")
             narrative = ctx.get("_turn_summary_override") or self._turn_summary_override or "（叙事生成失败）"
 
-        narrative = _clean_narrative_text(narrative, ctx)
+        narrative = (_clean_narrative_text(narrative, ctx) if submitted_narrative
+                     else self._prepare_unified_narrative(narrative, ctx))
+        if not narrative:
+            raise IncompleteAgentTurnError("剧本输出处理后叙事为空，无法完成本轮")
 
         # Streaming: emit complete narrative
         if streaming and narrative != streamed_narrative and not (buffer_sensitive_narrative or buffer_timed_narrative or buffer_until_settlement):
@@ -4479,9 +4468,7 @@ class AgenticMixin:
             streamed_narrative = narrative
 
         # NPC voice consistency
-        narrative = _clean_narrative_text(await self._maybe_fix_npc_voices(
-            narrative, self.current_state, ctx.get("present_npc_ids"),
-        ), ctx)
+        narrative = await _fix_npc_narrative(narrative)
 
         if self._delegated_settlement and not getattr(self, '_abort_flag', False):
             async for event in self._run_background_agent(
@@ -4513,10 +4500,10 @@ class AgenticMixin:
             self._delegated_settlement = False
             revised = _clean_narrative_text(ctx.get("_finalize_narrative", narrative).strip(), ctx)
             if revised != narrative:
-                narrative = _clean_narrative_text(await self._maybe_fix_npc_voices(
-                    revised, self.current_state, ctx.get("present_npc_ids"),
-                ), ctx)
+                narrative = await _fix_npc_narrative(revised)
 
+        if not narrative:
+            raise IncompleteAgentTurnError("剧本输出处理后叙事为空，无法完成本轮")
         if narrative != reviewed_narrative:
             semantic_review_calls += 1
             try:
@@ -4722,8 +4709,18 @@ class AgenticMixin:
             "agent_trace": trace,
         }
 
+    def _prepare_unified_narrative(self, text: str, ctx: dict) -> str:
+        text = _clean_narrative_text(text, ctx)
+        if not text or text == ctx.get("_finalize_narrative"):
+            return text
+        return _clean_narrative_text(self._apply_narrative_output_rules(text), ctx)
+
     async def _dispatch_unified_tool(self, ctx: dict, name: str, args: dict):
         """Dispatch tool calls for the unified agent."""
+        if name in ("finalize_turn", "delegate_settlement") and args.get("narrative"):
+            args["narrative"] = _clean_narrative_text(args["narrative"], ctx)
+            if args["narrative"] != ctx.get("_finalize_narrative", ""):
+                args["narrative"] = self._prepare_unified_narrative(args["narrative"], ctx)
         # D1: undo_my_last_action — 自我回退
         if name == "undo_my_last_action":
             reason = args.get("reason", "")
@@ -4805,7 +4802,7 @@ class AgenticMixin:
 
         # Narrative tool (dedicated creative writing)
         if name == "write_narrative":
-            text = _clean_narrative_text(args.get("text") or "", ctx)
+            text = self._prepare_unified_narrative(args.get("text") or "", ctx)
             if not text:
                 return json.dumps({"error": "叙事不能为空"}, ensure_ascii=False)
             if self._narrative_quotes_private_script(text):

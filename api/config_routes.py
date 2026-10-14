@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from db.database import get_db
 
@@ -21,6 +21,8 @@ class ProfileCreateRequest(BaseModel):
     api_key: str = ""
     model: str = "gpt-4o"
     max_tokens: int = 8192
+    review_max_tokens: int = Field(default=500, strict=True, ge=1, le=32768)
+    review_retry_max_tokens: int = Field(default=1500, strict=True, ge=1, le=32768)
     base_url: Optional[str] = None
     stage_models: Optional[dict] = None
 
@@ -31,6 +33,8 @@ class ProfileUpdateRequest(BaseModel):
     api_key: Optional[str] = None
     model: Optional[str] = None
     max_tokens: Optional[int] = None
+    review_max_tokens: Optional[int] = Field(default=None, strict=True, ge=1, le=32768)
+    review_retry_max_tokens: Optional[int] = Field(default=None, strict=True, ge=1, le=32768)
     base_url: Optional[str] = None
     stage_models: Optional[dict] = None
 
@@ -49,7 +53,7 @@ async def list_profiles():
     async with get_db() as db:
         # P4: 单次查询拿到 api_key，避免 N+1
         cursor = await db.execute(
-            "SELECT id, name, provider_type, model, max_tokens, base_url, is_active, created_at, api_key, stage_models FROM ai_profiles ORDER BY is_active DESC, id"
+            "SELECT id, name, provider_type, model, max_tokens, review_max_tokens, review_retry_max_tokens, base_url, is_active, created_at, api_key, stage_models FROM ai_profiles ORDER BY is_active DESC, id"
         )
         rows = await cursor.fetchall()
         profiles = []
@@ -80,9 +84,11 @@ async def create_profile(req: ProfileCreateRequest):
     stage_models_json = json.dumps(req.stage_models) if req.stage_models else None
     async with get_db() as db:
         cursor = await db.execute(
-            """INSERT INTO ai_profiles (name, provider_type, api_key, model, max_tokens, base_url, stage_models)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (req.name, req.provider_type, req.api_key, req.model, req.max_tokens, req.base_url, stage_models_json),
+            """INSERT INTO ai_profiles (name, provider_type, api_key, model, max_tokens, base_url, stage_models,
+                                       review_max_tokens, review_retry_max_tokens)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (req.name, req.provider_type, req.api_key, req.model, req.max_tokens, req.base_url, stage_models_json,
+             req.review_max_tokens, req.review_retry_max_tokens),
         )
         await db.commit()
         profile_id = cursor.lastrowid
@@ -109,7 +115,7 @@ async def update_profile(profile_id: int, req: ProfileUpdateRequest):
 
         updates = []
         params = []
-        for field in ("name", "provider_type", "model", "max_tokens", "base_url"):
+        for field in ("name", "provider_type", "model", "max_tokens", "base_url", "review_max_tokens", "review_retry_max_tokens"):
             val = getattr(req, field, None)
             if val is not None:
                 updates.append(f"{field} = ?")
@@ -415,6 +421,8 @@ def _profile_fingerprint(profile: dict) -> tuple:
         profile.get("api_key", ""),
         profile.get("model"),
         profile.get("max_tokens"),
+        profile.get("review_max_tokens"),
+        profile.get("review_retry_max_tokens"),
         profile.get("base_url"),
         profile.get("stage_models"),
     )
@@ -438,16 +446,19 @@ def _create_provider_from_profile(profile: dict):
 
     if ptype == "claude":
         from ai.claude_provider import ClaudeProvider
-        return ClaudeProvider(config)
+        provider = ClaudeProvider(config)
     elif ptype in ("openai", "openai_compatible"):
         from ai.openai_provider import OpenAIProvider
-        return OpenAIProvider(config)
+        provider = OpenAIProvider(config)
     elif ptype == "ollama":
         from ai.ollama_provider import OllamaProvider
-        return OllamaProvider(config)
+        provider = OllamaProvider(config)
     else:
         from ai.openai_provider import OpenAIProvider
-        return OpenAIProvider(config)
+        provider = OpenAIProvider(config)
+    provider.review_max_tokens = profile.get("review_max_tokens", 500)
+    provider.review_retry_max_tokens = profile.get("review_retry_max_tokens", 1500)
+    return provider
 
 
 async def get_ai_provider_instance():

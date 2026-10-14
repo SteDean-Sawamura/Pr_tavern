@@ -609,11 +609,8 @@ class RegenerateMixin:
         else:
             return {"error": f"Unknown stage: {stage}"}
 
-        rules = self.script.get("post_processing_rules", [])
-        if rules and stage == "all":
-            parsed["narrative"] = self._apply_post_processing(
-                parsed.get("narrative", ""), rules
-            )
+        if stage == "all" and not regen_ctx.get("_unified_narrative_output"):
+            parsed["narrative"] = self._apply_narrative_output_rules(parsed.get("narrative", ""))
 
         if stage in ("all", "state"):
             try:

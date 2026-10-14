@@ -3335,6 +3335,8 @@ async function editProfile(profileId) {
         document.getElementById('profile-base-url').value = p.base_url || '';
         document.getElementById('profile-model').value = p.model || '';
         document.getElementById('profile-max-tokens').value = p.max_tokens || 2048;
+        document.getElementById('profile-review-max-tokens').value = p.review_max_tokens ?? 500;
+        document.getElementById('profile-review-retry-max-tokens').value = p.review_retry_max_tokens ?? 1500;
 
         // Fill stage_models overrides
         const sm = p.stage_models || {};
@@ -3364,6 +3366,8 @@ function _resetProfileForm() {
     document.getElementById('profile-base-url').value = '';
     document.getElementById('profile-model').value = 'gpt-4o';
     document.getElementById('profile-max-tokens').value = '2048';
+    document.getElementById('profile-review-max-tokens').value = '500';
+    document.getElementById('profile-review-retry-max-tokens').value = '1500';
     for (const stage of ['narrative', 'choices', 'state', 'review', 'summary', 'knowledge_graph']) {
         const el = document.getElementById('profile-sm-' + stage);
         if (el) el.value = '';
@@ -3381,6 +3385,8 @@ async function saveNewProfile() {
     const baseUrl = document.getElementById('profile-base-url').value.trim();
     const model = document.getElementById('profile-model').value.trim();
     const maxTokens = parseInt(document.getElementById('profile-max-tokens').value) || 2048;
+    const reviewMaxTokens = Number(document.getElementById('profile-review-max-tokens').value);
+    const reviewRetryMaxTokens = Number(document.getElementById('profile-review-retry-max-tokens').value);
 
     const stageModels = {};
     for (const stage of ['narrative', 'choices', 'state', 'review', 'summary', 'knowledge_graph']) {
@@ -3391,6 +3397,10 @@ async function saveNewProfile() {
 
     if (!name) { alert('请填写配置名称'); return; }
     if (!model) { alert('请填写模型名称'); return; }
+    if (![reviewMaxTokens, reviewRetryMaxTokens].every(value => Number.isInteger(value) && value >= 1 && value <= 32768)) {
+        alert('评审输出上限必须为 1 到 32768 的整数');
+        return;
+    }
 
     try {
         if (_editingProfileId) {
@@ -3399,6 +3409,8 @@ async function saveNewProfile() {
                 provider_type: providerType,
                 model,
                 max_tokens: maxTokens,
+                review_max_tokens: reviewMaxTokens,
+                review_retry_max_tokens: reviewRetryMaxTokens,
                 base_url: baseUrl || null,
                 stage_models: stageModels,
             };
@@ -3412,6 +3424,8 @@ async function saveNewProfile() {
                 api_key: apiKey,
                 model,
                 max_tokens: maxTokens,
+                review_max_tokens: reviewMaxTokens,
+                review_retry_max_tokens: reviewRetryMaxTokens,
                 base_url: baseUrl || null,
                 stage_models: Object.keys(stageModels).length ? stageModels : null,
             });

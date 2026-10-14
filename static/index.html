@@ -872,6 +872,9 @@
                         <div class="form-group"><label>选项 (choices):</label><input type="text" id="profile-sm-choices" placeholder="留空=默认"></div>
                         <div class="form-group"><label>状态 (state):</label><input type="text" id="profile-sm-state" placeholder="留空=默认"></div>
                         <div class="form-group"><label for="profile-sm-review">叙事评审 (review):</label><input type="text" id="profile-sm-review" placeholder="留空=全局 review / 状态模型"></div>
+                        <div class="form-group"><label for="profile-review-max-tokens">评审首次输出上限:</label><input type="number" id="profile-review-max-tokens" min="1" max="32768" step="1" value="500"></div>
+                        <div class="form-group"><label for="profile-review-retry-max-tokens">评审重试输出上限:</label><input type="number" id="profile-review-retry-max-tokens" min="1" max="32768" step="1" value="1500"></div>
+                        <p style="font-size:0.78rem;color:var(--text-muted);margin:0.3rem 0">仅影响 review，不改变主推演上限。首次无有效评审结果时才使用重试上限；思考可能占用输出额度，提高上限可能增加耗时和费用。</p>
                         <div class="form-group"><label>总结 (summary):</label><input type="text" id="profile-sm-summary" placeholder="留空=默认"></div>
                         <div class="form-group"><label>知识图谱 (knowledge):</label><input type="text" id="profile-sm-knowledge_graph" placeholder="留空=默认"></div>
                     </details>

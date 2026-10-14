@@ -13,8 +13,8 @@ const stages = ['narrative', 'choices', 'state', 'review', 'summary', 'knowledge
 const overrides = Object.fromEntries(stages.map(stage => [stage, 'synthetic-' + stage]));
 
 function setup(profiles = []) {
-    const elements = new Map([...html.matchAll(/<input\b[^>]*\bid="([^"]+)"/g)]
-        .map(match => [match[1], { value: '', placeholder: '', scrollIntoView() {} }]));
+    const elements = new Map([...html.matchAll(/<input\b[^>]*\bid="([^"]+)"[^>]*>/g)]
+        .map(match => [match[1], { value: match[0].match(/\bvalue="([^"]*)"/)?.[1] || '', placeholder: '', scrollIntoView() {} }]));
     elements.set('profile-provider-type', { value: 'openai_compatible' });
     assert.ok(elements.has('profile-sm-review'), 'The settings form must expose review routing');
     const requests = [];
@@ -113,4 +113,49 @@ test('reset cancels editing and a blank new profile has no overrides', async () 
     await view.context.saveNewProfile();
     assert.equal(view.requests[0].method, 'POST');
     assert.equal(view.requests[0].body.stage_models, null);
+});
+
+test('review output limits are editable, saved, and reset without changing the main limit', async () => {
+    const view = setup([{ ...profile(7), review_max_tokens: 1024, review_retry_max_tokens: 4096 }, profile(8)]);
+    await view.context.editProfile(7);
+    assert.equal(Number(view.elements.get('profile-review-max-tokens').value), 1024);
+    assert.equal(Number(view.elements.get('profile-review-retry-max-tokens').value), 4096);
+    view.elements.get('profile-review-max-tokens').value = '2048';
+    await view.context.saveNewProfile();
+    assert.equal(view.requests[0].body.review_max_tokens, 2048);
+    assert.equal(view.requests[0].body.review_retry_max_tokens, 4096);
+    assert.equal(view.requests[0].body.max_tokens, 8192);
+    assert.equal(Number(view.elements.get('profile-review-max-tokens').value), 500);
+    assert.equal(Number(view.elements.get('profile-review-retry-max-tokens').value), 1500);
+    await view.context.editProfile(7);
+    await view.context.editProfile(8);
+    assert.equal(Number(view.elements.get('profile-review-max-tokens').value), 500);
+    assert.equal(Number(view.elements.get('profile-review-retry-max-tokens').value), 1500);
+});
+
+test('new profiles submit review defaults and explicit custom limits', async () => {
+    for (const custom of [false, true]) {
+        const view = setup();
+        if (custom) {
+            view.elements.get('profile-review-max-tokens').value = '1024';
+            view.elements.get('profile-review-retry-max-tokens').value = '4096';
+        }
+        await view.context.saveNewProfile();
+        assert.equal(view.requests[0].body.review_max_tokens, custom ? 1024 : 500);
+        assert.equal(view.requests[0].body.review_retry_max_tokens, custom ? 4096 : 1500);
+    }
+});
+
+test('invalid review limits do not send profile requests', async () => {
+    for (const field of ['profile-review-max-tokens', 'profile-review-retry-max-tokens']) {
+        for (const value of ['', '0', '-1', '1.5', '32769', '1024oops']) {
+            const view = setup();
+            const alerts = [];
+            view.context.alert = message => alerts.push(message);
+            view.elements.get(field).value = value;
+            await view.context.saveNewProfile();
+            assert.equal(view.requests.length, 0);
+            assert.equal(alerts.length, 1);
+        }
+    }
 });

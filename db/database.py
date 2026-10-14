@@ -125,6 +125,9 @@ async def init_db():
             columns = [row[1] for row in await cursor.fetchall()]
             if "stage_models" not in columns:
                 await db.execute("ALTER TABLE ai_profiles ADD COLUMN stage_models TEXT DEFAULT NULL")
+            for field, default in (("review_max_tokens", 500), ("review_retry_max_tokens", 1500)):
+                if field not in columns:
+                    await db.execute(f"ALTER TABLE ai_profiles ADD COLUMN {field} INTEGER NOT NULL DEFAULT {default}")
         except Exception:
             pass
         await db.commit()
@@ -303,6 +306,8 @@ CREATE TABLE IF NOT EXISTS ai_profiles (
     base_url TEXT,
     is_active INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    stage_models TEXT DEFAULT NULL
+    stage_models TEXT DEFAULT NULL,
+    review_max_tokens INTEGER NOT NULL DEFAULT 500,
+    review_retry_max_tokens INTEGER NOT NULL DEFAULT 1500
 );
 """

@@ -17,12 +17,13 @@ from engine.script_loader import ScriptLoader
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("declared_output", [False, True])
 @pytest.mark.parametrize("review_timing", ["concurrent", "published_first"])
 @pytest.mark.parametrize("review_outcome", [
     "passed", "rejected", "unavailable", "aborted", "aborted_finalize", "aborted_delegate",
     "interjected_finalize", "interjected_delegate",
 ])
-async def test_replaced_review_cannot_publish_current_draft(tmp_path, monkeypatch, review_outcome, review_timing):
+async def test_replaced_review_cannot_publish_current_draft(tmp_path, monkeypatch, review_outcome, review_timing, declared_output):
     script = {
         "script_id": "synthetic-review-race", "name": "Synthetic review race", "settings": {},
         "start_time": "2030-01-01T09:00:00",
@@ -41,6 +42,9 @@ async def test_replaced_review_cannot_publish_current_draft(tmp_path, monkeypatc
         "You examine the empty chair beside the wall. Its legs rest evenly on the floor. "
         "You look at its back without moving anything, then step back to leave the room undisturbed.",
     ]
+    raw_drafts = [text.replace("examine", "SYNTHETIC_INSPECT") if declared_output else text for text in drafts]
+    if declared_output:
+        script["post_processing_rules"] = [{"find": "SYNTHETIC_INSPECT", "replace": "examine"}]
     release_first = asyncio.Event()
     first_started = asyncio.Event()
     first_visible = asyncio.Event()
@@ -99,13 +103,13 @@ async def test_replaced_review_cannot_publish_current_draft(tmp_path, monkeypatc
         requests.append(copy.deepcopy(messages))
         operations = [
             ("submit_plan", {"plan": "Inspect the room without moving anything."}),
-            ("write_narrative", {"text": drafts[0]}),
-            ("write_narrative", {"text": drafts[1]}),
+            ("write_narrative", {"text": raw_drafts[0]}),
+            ("write_narrative", {"text": raw_drafts[1]}),
             (terminal_name, {"summary": "Inspected the room."}),
         ]
         if review_outcome == "rejected" or interjected:
             operations.extend([
-                ("write_narrative", {"text": drafts[2]}),
+                ("write_narrative", {"text": raw_drafts[2]}),
                 ("finalize_turn", {"summary": "Inspected the room."}),
             ])
         index = len(requests) - 1
@@ -156,7 +160,7 @@ async def test_replaced_review_cannot_publish_current_draft(tmp_path, monkeypatc
         if name == terminal_name:
             terminal_dispatched.set()
         result = await original_dispatch(ctx, name, arguments)
-        if name == "write_narrative" and arguments.get("text") == drafts[1]:
+        if name == "write_narrative" and ctx.get("_finalize_narrative") == drafts[1]:
             second_dispatched.set()
             release_first.set()
             await first_finished.wait()
