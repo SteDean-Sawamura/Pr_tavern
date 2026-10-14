@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Callable
 
 from ai.base import strip_think_tags
 from engine.conditions import CONDITION_RULE_SECTIONS, condition_error
+from engine.review_evidence import REVIEW_STATE_FIELDS, execution_snapshot
 from engine.tool_schemas import CONSOLIDATED_SETTLEMENT_TOOLS, FOREGROUND_TOOLS_SCHEMA, _unified_tools
 
 if TYPE_CHECKING:
@@ -44,6 +45,10 @@ _PRE_PLAN_READ_TOOLS = frozenset({
     "traverse_graph", "read_director_notes",
 })
 _PRIVATE_PLAN_SUMMARY = "正在核对资料并推进当前行动"
+_FINALIZE_STATE_FIELDS = (
+    "end_time", "state_changes", "variable_changes", "inventory_changes",
+    "activate_states", "location_change", "reveal_locations",
+)
 _PRIVATE_PRE_PLAN_TOOLS = frozenset({
     "query_lorebook", "get_npc_attitude", "peek_upcoming_events", "traverse_graph", "read_director_notes",
 })
@@ -4048,6 +4053,25 @@ class AgenticMixin:
             parsed["choices"] = self._generate_context_choices()
         return parsed
 
+    def _review_execution_snapshot(self, ctx: dict, pending: dict | None = None) -> dict:
+        fields = ("end_time", "world_property_changes", *self._UPDATE_STATE_RES_KEYS, *self._UPDATE_STATE_SPATIAL_KEYS)
+        updates = [{key: update[key] for key in fields if key in update}
+                   for update in ctx.get("_accepted_state_updates", [])]
+        if pending:
+            updates.append({key: pending[key] for key in _FINALIZE_STATE_FIELDS if key in pending})
+        updates = [update for update in updates if update]
+        candidate = self._project_state_tool_updates(updates)
+        end_time = next((update["end_time"] for update in reversed(updates) if update.get("end_time")), None)
+        snapshot = execution_snapshot(
+            ctx.get("_review_state_before", self.current_state), candidate,
+            start_time=ctx.get("old_time", self.current_state.get("game_time")),
+            end_time=end_time or ctx.get("new_time", self.current_state.get("game_time")),
+            time_source="explicit" if end_time else "estimate",
+            definitions=self.script_variables.definitions,
+        )
+        snapshot["state_updates"] = copy.deepcopy(updates)
+        return snapshot
+
     async def _execute_unified_agent(self, ctx: dict, route: dict, player_action: dict,
                                      *, streaming: bool = False):
         """Unified Agent: single loop handles retrieval + narrative + settlement."""
@@ -4056,6 +4080,9 @@ class AgenticMixin:
         action_text = ctx.get("action_text") or player_action.get("text", "")
         ctx.pop("_review_plan_reply", None)
         ctx["_unified_narrative_output"] = True
+        ctx["_review_state_before"] = copy.deepcopy({
+            key: self.current_state[key] for key in REVIEW_STATE_FIELDS if key in self.current_state
+        })
         ctx["_turn_player_inputs"] = copy.deepcopy(ctx.get("_turn_player_inputs") or [])
         ctx["_map_travel_destination"] = self._map_travel_destination(player_action)
         ctx.setdefault("tool_results", [])
@@ -4082,6 +4109,8 @@ class AgenticMixin:
         plan_submitted = False
         semantic_review_task = None
         reviewed_narrative = ""
+        reviewed_execution_key = None
+        batch_settlements = {}
         semantic_review_calls = 0
         semantic_review_attempts = 0
         semantic_review_timings_ms = []
@@ -4098,12 +4127,51 @@ class AgenticMixin:
                 "reply": reply,
             }
 
-        async def _timed_semantic_review(narrative):
+        def _execution_key(narrative, snapshot):
+            return hashlib.sha256(json.dumps({
+                "narrative": narrative, "action": action_text, "execution": snapshot,
+                "inputs": ctx.get("_turn_player_inputs"), "plan_reply": ctx.get("_review_plan_reply"),
+            }, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+        def _frozen_review_context(snapshot):
+            return {**ctx, "_review_execution": copy.deepcopy(snapshot),
+                    "_semantic_review_model_calls": 0,
+                    "_turn_player_inputs": copy.deepcopy(ctx.get("_turn_player_inputs")),
+                    "_review_plan_reply": copy.deepcopy(ctx.get("_review_plan_reply"))}
+
+        async def _timed_semantic_review(narrative, review_action, review_ctx):
             started = time.monotonic()
             try:
-                return await self._review_narrative(narrative, action_text, ctx)
+                return await self._review_narrative(narrative, review_action, review_ctx)
             finally:
+                ctx["_semantic_review_model_calls"] = (ctx.get("_semantic_review_model_calls", 0)
+                                                       + review_ctx["_semantic_review_model_calls"])
                 semantic_review_timings_ms.append(int((time.monotonic() - started) * 1000))
+
+        async def _ensure_semantic_review(narrative, snapshot):
+            nonlocal semantic_review_task, reviewed_narrative, reviewed_execution_key
+            nonlocal semantic_review_calls, semantic_review_attempts, semantic_review_exhausted
+            nonlocal semantic_revision_required
+            key = _execution_key(narrative, snapshot)
+            if key == reviewed_execution_key:
+                return True
+            new_attempt = not reviewed_narrative or narrative != reviewed_narrative or semantic_revision_required
+            if new_attempt and semantic_review_attempts >= 3:
+                semantic_review_exhausted = True
+                return False
+            if semantic_review_task is not None:
+                semantic_review_task.cancel()
+                await asyncio.gather(semantic_review_task, return_exceptions=True)
+            reviewed_narrative = narrative
+            reviewed_execution_key = key
+            semantic_revision_required = False
+            semantic_review_task = asyncio.create_task(_timed_semantic_review(
+                narrative, action_text, _frozen_review_context(snapshot)))
+            semantic_review_calls += 1
+            if new_attempt:
+                semantic_review_attempts += 1
+            ctx["_semantic_review_status"] = "pending"
+            return True
 
         async def _fix_npc_narrative(narrative):
             revised = await self._maybe_fix_npc_voices(narrative, self.current_state, ctx.get("present_npc_ids"))
@@ -4141,6 +4209,13 @@ class AgenticMixin:
             if name in ("finalize_turn", "delegate_settlement"):
                 if args.get("narrative") and args["narrative"].strip() != ctx.get("_finalize_narrative", "").strip():
                     return json.dumps({"error": "请先调用 write_narrative 提交修订后的叙事，再进行结算。"}, ensure_ascii=False)
+                submitted = ctx.get("_finalize_narrative", "")
+                if submitted != reviewed_narrative:
+                    return json.dumps({"error": "当前叙事未经过语义审查，请调用 write_narrative 确认或修订叙事后重新结算。"}, ensure_ascii=False)
+                if submitted:
+                    snapshot = self._review_execution_snapshot(ctx, args if name == "finalize_turn" else None)
+                    if not await _ensure_semantic_review(submitted, snapshot):
+                        return json.dumps({"error": "候选结算已改变且评审次数已耗尽，本轮不能提交。"}, ensure_ascii=False)
                 if semantic_review_task is not None:
                     try:
                         review = await semantic_review_task
@@ -4148,7 +4223,7 @@ class AgenticMixin:
                         logger.warning("统一Agent叙事语义审查不可用: %s", exc)
                         review = None
                     semantic_review_task = None
-                    if ctx.get("_finalize_narrative", "") == reviewed_narrative:
+                    if _execution_key(ctx.get("_finalize_narrative", ""), snapshot) == reviewed_execution_key:
                         violations = [
                             {"type": str(item.get("type", ""))[:60], "detail": str(item.get("detail", ""))[:300]}
                             for item in (review.get("violations") or []) if isinstance(item, dict)
@@ -4159,10 +4234,10 @@ class AgenticMixin:
                             if semantic_review_attempts >= 3:
                                 semantic_review_exhausted = True
                             return json.dumps({
-                                "error": "叙事语义审查未通过；请调用 write_narrative 修订后重新结算。",
+                                "error": "叙事语义审查未通过；请核对玩家确认、正文与候选结算，修订正文或结算后重试。",
                                 "violations": violations,
                                 "state_update_accepted": False,
-                                "retry_hint": "本次结算参数未接收；修订后须重传仍适用的参数，不要重复此前已接收的 update_state。保留玩家已经明确确认的执行范围，不要为规避审查退回重复确认。",
+                                "retry_hint": "本次结算参数未接收；修订后须重传仍适用的参数，不要重复此前已接收的 update_state。仅修正结算时可保留正文并重新提交。保留玩家已经明确确认的执行范围，不要为规避审查退回重复确认。",
                             }, ensure_ascii=False)
                         semantic_revision_required = False
                         ctx["_semantic_review_status"] = "passed" if review and review.get("pass") else "unavailable"
@@ -4170,10 +4245,13 @@ class AgenticMixin:
                         ctx["_semantic_review_status"] = "stale"
                 if getattr(self, '_inject_queue', None):
                     return json.dumps({"error": "玩家补充了新指令，此调用未执行；请先读取插话，再根据已完成工具结果重新推演"}, ensure_ascii=False)
+                if submitted and _execution_key(submitted, self._review_execution_snapshot(
+                        ctx, args if name == "finalize_turn" else None)) != reviewed_execution_key:
+                    return json.dumps({"error": "候选状态在评审期间改变，请重新核对后提交。", "state_update_accepted": False}, ensure_ascii=False)
                 if ctx.get("_finalize_narrative", "") != reviewed_narrative:
                     return json.dumps({"error": "当前叙事未经过语义审查，请调用 write_narrative 确认或修订叙事后重新结算。"}, ensure_ascii=False)
                 if semantic_revision_required and ctx.get("_finalize_narrative", "") == reviewed_narrative:
-                    return json.dumps({"error": "请先调用 write_narrative 修订审查未通过的叙事。"}, ensure_ascii=False)
+                    return json.dumps({"error": "当前正文与候选结算仍未通过审查，请修订至少一项后重试。"}, ensure_ascii=False)
             is_read_only = name in _PRE_PLAN_READ_TOOLS or name in (
                 "consult_rules", "trace_causality", "preview_choice_outcome", "invoke_character",
             )
@@ -4235,16 +4313,9 @@ class AgenticMixin:
                 submitted = ctx.get("_finalize_narrative", "")
                 if submitted and first_draft_at is None:
                     first_draft_at = time.monotonic()
-                if submitted and submitted != reviewed_narrative and semantic_review_attempts < 3:
-                    if semantic_review_task is not None:
-                        semantic_review_task.cancel()
-                        await asyncio.gather(semantic_review_task, return_exceptions=True)
-                    reviewed_narrative = submitted
-                    semantic_review_task = asyncio.create_task(
-                        _timed_semantic_review(submitted))
-                    semantic_review_calls += 1
-                    semantic_review_attempts += 1
-                    ctx["_semantic_review_status"] = "pending"
+                if submitted and semantic_review_attempts < 3:
+                    await _ensure_semantic_review(submitted, self._review_execution_snapshot(
+                        ctx, batch_settlements.get(id(args))))
                 elif semantic_revision_required:
                     ctx["_semantic_review_status"] = (
                         "revised" if submitted != reviewed_narrative else "revision_required")
@@ -4281,6 +4352,11 @@ class AgenticMixin:
 
         def _capture_tool_batch(calls):
             nonlocal buffer_until_settlement
+            batch_settlements.clear()
+            for current, following in zip(calls, calls[1:]):
+                if (current.get("name") == "write_narrative" and following.get("name") == "finalize_turn"
+                        and isinstance(current.get("arguments"), dict) and isinstance(following.get("arguments"), dict)):
+                    batch_settlements[id(current["arguments"])] = copy.deepcopy(following["arguments"])
             if any(call.get("name") == "delegate_settlement" for call in calls):
                 buffer_until_settlement = True
 
@@ -4307,6 +4383,7 @@ class AgenticMixin:
                                 and review and review.get("pass") is True
                                 and not getattr(self, '_inject_queue', None)
                                 and ctx.get("_finalize_narrative", "") == reviewed_narrative
+                                and _execution_key(reviewed_narrative, self._review_execution_snapshot(ctx)) == reviewed_execution_key
                                 and not self._map_travel_revision_feedback(ctx, reviewed_narrative)):
                             yield {"type": "_early_reviewed_text", "content": reviewed_narrative}
                     if next_event in done:
@@ -4359,6 +4436,7 @@ class AgenticMixin:
                         await asyncio.gather(semantic_review_task, return_exceptions=True)
                     semantic_review_task = None
                     reviewed_narrative = ""
+                    reviewed_execution_key = None
                     semantic_review_attempts = 0
                     semantic_revision_required = False
                     review_ready_for_stream = False
@@ -4507,10 +4585,11 @@ class AgenticMixin:
 
         if not narrative:
             raise IncompleteAgentTurnError("剧本输出处理后叙事为空，无法完成本轮")
-        if narrative != reviewed_narrative:
+        final_snapshot = self._review_execution_snapshot(ctx)
+        if _execution_key(narrative, final_snapshot) != reviewed_execution_key:
             semantic_review_calls += 1
             try:
-                review = await _timed_semantic_review(narrative)
+                review = await _timed_semantic_review(narrative, action_text, _frozen_review_context(final_snapshot))
             except Exception as exc:
                 logger.warning("统一Agent最终叙事语义审查不可用: %s", exc)
                 review = None
@@ -5557,8 +5636,7 @@ class AgenticMixin:
         invalid_choices = self._invalid_choice_references(ctx, args)
         if invalid_choices:
             return json.dumps({"error": f"选项包含玩家尚未知晓的信息: {', '.join(invalid_choices)}；请根据已呈现叙事修正选项后重试。"}, ensure_ascii=False)
-        state_args = {k: args[k] for k in ("end_time", "state_changes", "variable_changes", "inventory_changes",
-                      "activate_states", "location_change", "reveal_locations") if k in args}
+        state_args = {key: args[key] for key in _FINALIZE_STATE_FIELDS if key in args}
         previous_event_keys = ctx.get("_conditioned_event_keys")
         state_result = self._handle_update_state(state_args, ctx, defer_event_instructions=True) if state_args else ""
         if state_result.startswith("错误:"):

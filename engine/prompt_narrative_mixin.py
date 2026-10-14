@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from engine.lorebook import Lorebook
 from engine.prompt_loader import PromptLoader
+from engine.review_evidence import format_execution_snapshot
 
 if TYPE_CHECKING:
     pass
@@ -1359,6 +1360,7 @@ class PromptNarrativeMixin:
         known_context: str = "",
         plan_reply_context: dict | None = None,
         turn_player_inputs: list[dict] | None = None,
+        execution_candidate: dict | None = None,
     ) -> tuple[list[dict], str]:
         """Stage 3.5: 叙事质量评审 prompt。"""
         loader = PromptLoader.get()
@@ -1399,5 +1401,7 @@ class PromptNarrativeMixin:
         if private_script:
             sections.append(_xml("active_script_private", json.dumps(private_script, ensure_ascii=False)))
             sections.append(_xml("recent_player_visible", known_context))
+        if execution_candidate is not None:
+            sections.append(_xml("execution_candidate", format_execution_snapshot(execution_candidate)))
         content = "\n\n".join(s for s in sections if s)
         return [{"role": "user", "content": content}], system

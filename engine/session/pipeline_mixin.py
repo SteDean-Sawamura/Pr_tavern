@@ -190,12 +190,16 @@ class PipelineMixin:
                 "title": ns.get("title") or nd.get("title") or nd.get("role") or nd.get("occupation", ""),
             })
         private_script, known_context = self._narrative_review_evidence(ctx)
+        execution_candidate = ctx.get("_review_execution")
+        if execution_candidate is None and (ctx.get("_unified_narrative_output") or "_accepted_state_updates" in ctx):
+            execution_candidate = self._review_execution_snapshot(ctx)
         msgs, sys_prompt = self.prompt_builder.build_narrative_review_prompt(
             narrative, action_text, present_npcs,
             pc_name=_st.get("player", {}).get("name", ""),
             private_script=private_script, known_context=known_context,
             plan_reply_context=ctx.get("_review_plan_reply"),
             turn_player_inputs=ctx.get("_turn_player_inputs"),
+            execution_candidate=execution_candidate,
         )
         for max_tokens in (getattr(self.ai_provider, "review_max_tokens", 500),
                            getattr(self.ai_provider, "review_retry_max_tokens", 1500)):
