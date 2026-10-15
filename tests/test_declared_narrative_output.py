@@ -108,10 +108,14 @@ async def test_declared_output_matches_review_stream_final_and_swipes(tmp_path, 
     root_id = session.world_tree.add_node(None, script["start_time"], 0,
         ai_response="You enter an empty room.", state_snapshot=copy.deepcopy(session.current_state))
     reviewed = []
+    applied_reviewed = []
     original_review = session._review_narrative
 
     async def observe_review(narrative, *args, **kwargs):
-        reviewed.append(narrative)
+        if len(args) > 1 and args[1].get("_review_execution", {}).get("scope") == "applied_turn":
+            applied_reviewed.append(narrative)
+        else:
+            reviewed.append(narrative)
         return await original_review(narrative, *args, **kwargs)
 
     monkeypatch.setattr(session, "_review_narrative", observe_review)
@@ -150,6 +154,7 @@ async def test_declared_output_matches_review_stream_final_and_swipes(tmp_path, 
                 if attempt:
                     step = 0
                     reviewed.clear()
+                    applied_reviewed.clear()
                     suffix = "/stream" if mode == "regenerate_stream" else ""
                     response = await asyncio.wait_for(client.post(f"/api/game/{session.save_id}/regenerate{suffix}?stage=all"), timeout=15)
                 assert response.status_code == 200, response.text
@@ -173,6 +178,7 @@ async def test_declared_output_matches_review_stream_final_and_swipes(tmp_path, 
                 revised = mode in ("voice", "delegated")
                 final_text = expected.replace("cabinet", "display") if revised else expected
                 assert result["narrative"] == final_text
+                assert all(text == final_text for text in applied_reviewed)
                 assert reviewed == ([expected, final_text] if revised else [expected])
                 if mode == "delegated":
                     assert background_step == 4

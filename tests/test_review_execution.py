@@ -141,7 +141,7 @@ async def test_review_binds_candidate_settlement_and_survives_reload(tmp_path, m
         assert session.current_state["script_variables"]["test_inspected"] == expected_counter
         assert reviews[-1]["time"]["candidate"] == expected_time
         if outcome == "consistent" and mode in {"batched", "preaccepted"}:
-            assert len(reviews) == 1
+            assert len([snapshot for snapshot in reviews if snapshot["scope"] != "applied_turn"]) == 1
         if outcome == "repair":
             assert len(reviews) >= 2
         await session._drain_background_tasks()
@@ -246,14 +246,18 @@ async def test_truncated_candidate_changes_still_invalidate_the_full_review_key(
     async def observe_review(text, action, context, **kwargs):
         payload = next(entry for entry in context["_review_execution"]["values"]
                        if entry["path"] == ["script_variables", "test_payload"])
-        full_values.append(payload["candidate"])
+        if context["_review_execution"]["scope"] == "applied_turn":
+            assert payload["candidate"] == "c" * 13000
+        else:
+            full_values.append(payload["candidate"])
         return await review(text, action, context, **kwargs)
 
     async def generate(messages, **kwargs):
         content = "\n".join(message.get("content") or "" for message in messages)
         match = re.search(r"<execution_candidate>\s*(.*?)\s*</execution_candidate>", content, re.S)
         if match:
-            rendered.append(match.group(1))
+            if json.loads(match.group(1))["scope"] != "applied_turn":
+                rendered.append(match.group(1))
             return '{"pass":true,"violations":[]}'
         return json.dumps({"scene_type": "exploration", "scope": "minor", "systems": [], "focus_npcs": [],
                            "skill_check": {"needed": False}, "expand_story": False, "generate_image": False,

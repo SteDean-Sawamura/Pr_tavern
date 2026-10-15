@@ -206,7 +206,9 @@ class RegenerateMixin:
                              initial_location: str | None = None,
                              default_end_time: str | None = None,
                              is_system_opening: bool = False,
-                             map_travel_destination: str | None = None) -> tuple[dict, list[dict], list[str]]:
+                             map_travel_destination: str | None = None,
+                             run_after_ai: bool = False,
+                             after_ai_notifications: list | None = None) -> tuple[dict, list[dict], list[str]]:
         state = copy.deepcopy(baseline)
         for key in self._SWIPE_STRIP_KEYS:
             if key in self.current_state and key not in state:
@@ -338,6 +340,10 @@ class RegenerateMixin:
             self._refresh_npc_locations()
             self._ensure_rooms_initialized(state)
             self._apply_npc_contact_changes(state, parsed.get("npc_contact_changes", []))
+            if run_after_ai:
+                _, notifications = self._fire_lifecycle_event("after_ai")
+                if after_ai_notifications is not None:
+                    after_ai_notifications.extend(notifications)
             changes.extend(self._settle_actor_goals())
             state = self.current_state
         finally:
@@ -447,6 +453,7 @@ class RegenerateMixin:
         current_choices = node.get("choices_presented", [])
         regen_agent_trace = None
         regen_working_state = None
+        regen_notifications = []
 
         # 计算在场NPC和历史上下文（regenerate也需要）
         parent_id = node.get("parent_id")
@@ -622,6 +629,8 @@ class RegenerateMixin:
                      is_system_opening=is_system_opening,
                      map_travel_destination=(self._map_travel_destination(action, state=regen_baseline)
                                              if isinstance(action, dict) else None),
+                     run_after_ai=stage == "all",
+                     after_ai_notifications=regen_notifications,
                  )
             except ValueError as exc:
                 return {"error": str(exc), "stage": stage}
@@ -665,6 +674,13 @@ class RegenerateMixin:
                 **{key: regen_ctx.get(key) for key in self._REGEN_CONTEXT_KEYS if key != "_generation_baseline"},
             }
         swipe_state.update(self._snapshot_session_models())
+        if stage == "all":
+            if regen_agent_trace is not None:
+                regen_ctx["agent_trace"] = regen_agent_trace
+            try:
+                await self._review_applied_turn(new_narrative, action, regen_ctx, swipe_state)
+            except NarrativeSettlementError as exc:
+                return {"error": str(exc), "stage": stage}
         self._record_regen_swipe(
             node, new_narrative if stage == "all" else parsed.get("narrative", current_narrative),
             parsed.get("choices", []), swipe_state, swipe_state_changes, regen_agent_trace,
@@ -733,6 +749,9 @@ class RegenerateMixin:
             "total_swipes": len(node["swipes"]),
             "stage": stage,
             "scene_image": scene_image,
+            **({"trigger_notifications": regen_notifications} if regen_notifications else {}),
+            **({"warnings": ["实际结算后的叙事评审不可用，不能视为已通过核验。"]}
+               if stage == "all" and regen_ctx.get("_applied_review_status") == "unavailable" else {}),
             **({"agent_trace": regen_agent_trace} if regen_agent_trace else {}),
         }
 

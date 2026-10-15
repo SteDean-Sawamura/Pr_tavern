@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
+import time
 
 from typing import TYPE_CHECKING
 
 from ai.base import stream_split_think, strip_think_tags, _THINK_EXTRACT_RE
 from engine.lorebook import Lorebook
-from engine.session.agentic_mixin import PendingConsequenceDisclosureError
+from engine.session.agentic_mixin import AppliedSettlementReviewError, PendingConsequenceDisclosureError
+from engine.review_evidence import execution_snapshot, review_state
+from engine.turn_publication import current_publication
 from engine.tool_schemas import (
     GAME_TOOLS, GAME_TOOLS_SCHEMA, NARRATIVE_TOOLS_SCHEMA,
     NPC_REACTION_TOOLS, CHOICES_TOOLS,
@@ -224,6 +228,73 @@ class PipelineMixin:
                 logger.warning("叙事质量评审失败: %s", e)
                 break
         return None
+
+    async def _review_applied_turn(self, narrative: str, player_action: dict, ctx: dict, state: dict) -> str:
+        if not ctx.get("_unified_narrative_output") or not self.ai_provider:
+            return "not_applicable"
+        if getattr(self, "_abort_flag", False) or (
+                getattr(self, "_active_agent_stream", False) and getattr(self, "_abort_request_pending", False)):
+            raise AppliedSettlementReviewError(stopped=True)
+        expected = ctx.get("_reviewed_candidate_state")
+        actual = copy.deepcopy(review_state(state))
+        trace = ctx.get("agent_trace")
+        if expected is not None and review_state(expected) == actual:
+            publication = current_publication(self)
+            if publication is not None:
+                publication.remember_review(narrative, actual)
+            ctx["_applied_review_status"] = "candidate_unchanged"
+            if trace is not None:
+                trace["applied_review_status"] = "candidate_unchanged"
+            return "candidate_unchanged"
+        before = review_state(ctx.get("_review_state_before", {}))
+        snapshot = execution_snapshot(
+            before, actual, start_time=ctx.get("old_time"), end_time=state.get("game_time"),
+            time_source="applied", definitions=self.script_variables.definitions,
+            fields=sorted(before.keys() | actual.keys()),
+        )
+        snapshot.update(scope="applied_turn", excludes=["post_commit_background_updates", "internal_bookkeeping"])
+        review_ctx = {**ctx, "_review_execution": snapshot, "_semantic_review_model_calls": 0,
+                      "_turn_player_inputs": copy.deepcopy(ctx.get("_turn_player_inputs")),
+                      "_review_plan_reply": copy.deepcopy(ctx.get("_review_plan_reply"))}
+        started = time.monotonic()
+        task = asyncio.create_task(self._review_narrative(
+            narrative, ctx.get("action_text") or player_action.get("text", ""), review_ctx, state=state,
+        ))
+        stop = getattr(self, "_agent_stop_event", None)
+        stop_task = (asyncio.create_task(stop.wait())
+                     if getattr(self, "_active_agent_stream", False) and stop is not None else None)
+        try:
+            if stop_task is not None:
+                await asyncio.wait({task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+            if getattr(self, "_abort_flag", False) or (
+                    getattr(self, "_active_agent_stream", False) and getattr(self, "_abort_request_pending", False)):
+                raise AppliedSettlementReviewError(stopped=True)
+            result = await task
+            if review_state(state) != actual:
+                raise AppliedSettlementReviewError()
+            status = "passed" if result and result.get("pass") is True else "unavailable"
+            if result and result.get("pass") is False:
+                status = "rejected"
+            if trace is not None:
+                trace["applied_review_status"] = status
+            ctx["_applied_review_status"] = status
+            if status == "rejected":
+                raise AppliedSettlementReviewError()
+            publication = current_publication(self)
+            if publication is not None:
+                publication.remember_review(narrative, actual)
+            return status
+        finally:
+            for pending in (task, stop_task):
+                if pending is not None and not pending.done():
+                    pending.cancel()
+            await asyncio.gather(*(pending for pending in (task, stop_task) if pending is not None), return_exceptions=True)
+            if trace is not None:
+                calls = review_ctx["_semantic_review_model_calls"]
+                trace["applied_review_calls"] = trace.get("applied_review_calls", 0) + 1
+                trace["applied_review_model_calls"] = trace.get("applied_review_model_calls", 0) + calls
+                trace["applied_review_ms"] = int((time.monotonic() - started) * 1000)
+                trace["primary_model_calls"] = trace.get("primary_model_calls", 0) + calls
 
     @staticmethod
     def _trim_plot_sections(plot_decision: str, known_objects: set[str] | None = None) -> str:

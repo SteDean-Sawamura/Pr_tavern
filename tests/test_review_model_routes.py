@@ -169,7 +169,7 @@ async def test_review_routing_through_new_game_stream_and_resume(
     async def generate(messages, **kwargs):
         content = "\n".join(message.get("content") or "" for message in messages)
         if "<narrative>" in content and "<protagonist_name>" in content:
-            review_requests[turn_index].append(kwargs)
+            review_requests[turn_index].append({**kwargs, "applied": '"scope":"applied_turn"' in content})
             return "" if len(review_requests[turn_index]) == 1 else '{"pass": true, "violations": []}'
         return json.dumps({
             "scene_type": "exploration", "scope": "minor", "systems": ["location"], "focus_npcs": [],
@@ -255,8 +255,11 @@ async def test_review_routing_through_new_game_stream_and_resume(
                 assert "synthetic-credential" not in response.text
                 await current._drain_background_tasks(timeout=None)
                 expected_model = "synthetic-review" if turn_index == 0 else "synthetic-review-updated"
-                assert [request["model"] for request in review_requests[turn_index]] == [expected_model] * 2
-                assert [request["max_tokens"] for request in review_requests[turn_index]] == [500, 1500]
+                assert {request["model"] for request in review_requests[turn_index]} == {expected_model}
+                candidate = [request for request in review_requests[turn_index] if not request["applied"]]
+                applied = [request for request in review_requests[turn_index] if request["applied"]]
+                assert [request["max_tokens"] for request in candidate] == [500, 1500]
+                assert all(request["max_tokens"] == 500 for request in applied)
                 assert {request["model"] for request in tool_requests[turn_index]} == {"synthetic-main"}
                 counts = (provider.generate.await_count, provider.generate_with_tools.await_count)
                 replay = await client.post(endpoint, json=action)
@@ -293,8 +296,11 @@ async def test_review_routing_through_new_game_stream_and_resume(
             assert current.world_tree.active_node_id == node_id
             assert current.current_state["script_variables"]["test_inspections"] == 2
             assert current.turn_number == 2
-            assert [request["model"] for request in review_requests[turn_index]] == ["synthetic-review-regenerated"] * 2
-            assert [request["max_tokens"] for request in review_requests[turn_index]] == [500, 1500]
+            assert {request["model"] for request in review_requests[turn_index]} == {"synthetic-review-regenerated"}
+            candidate = [request for request in review_requests[turn_index] if not request["applied"]]
+            applied = [request for request in review_requests[turn_index] if request["applied"]]
+            assert [request["max_tokens"] for request in candidate] == [500, 1500]
+            assert all(request["max_tokens"] == 500 for request in applied)
             async with database.get_db() as connection:
                 cursor = await connection.execute("SELECT COUNT(*) FROM action_requests WHERE save_id = ?", (save_id,))
                 assert (await cursor.fetchone())[0] == 2

@@ -8,7 +8,7 @@ REVIEW_STATE_FIELDS = (
 )
 
 
-def execution_snapshot(before, candidate, *, start_time, end_time, time_source, definitions):
+def execution_snapshot(before, candidate, *, start_time, end_time, time_source, definitions, fields=REVIEW_STATE_FIELDS):
     values = []
 
     def collect(path, original, projected, original_exists=True, projected_exists=True):
@@ -26,7 +26,7 @@ def execution_snapshot(before, candidate, *, start_time, end_time, time_source, 
             entry["definition"] = definitions[path[1]]
         values.append(entry)
 
-    for field in REVIEW_STATE_FIELDS:
+    for field in fields:
         collect([field], before.get(field, {}), candidate.get(field, {}), field in before, field in candidate)
     values.sort(key=lambda entry: (not entry["changed"], entry["path"]))
     return copy.deepcopy({
@@ -35,6 +35,11 @@ def execution_snapshot(before, candidate, *, start_time, end_time, time_source, 
         "time": {"before": start_time, "candidate": end_time, "source": time_source},
         "values": values,
     })
+
+
+def review_state(state):
+    return {key: value for key, value in state.items()
+            if not key.startswith("_") and key not in {"adventure_log", "play_time_seconds", "meta_event_trackers"}}
 
 
 def format_execution_snapshot(snapshot, max_characters=12000):

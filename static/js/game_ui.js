@@ -461,10 +461,15 @@ async function submitActionStream(action, overrideUrl, retryContext) {
                         } else if (parsed.type === 'agent_controls_closed') {
                             canControlStream = false;
                             waitingForPlayer = false;
-                            agentControls.style.display = 'none';
+                            injectInput.disabled = true;
+                            injectBtn.disabled = true;
+                            agentControls.style.display = parsed.stop_available === true ? '' : 'none';
                             closePendingAgentPlan(agentToolsWrap.querySelector('.agent-plan-card'));
                             armTimeout();
-                            if (!wasAborted && typeof setMainMapAgentStatus === 'function') setMainMapAgentStatus(saveId, queryStream ? '询问完成，正在整理回答…' : '推演完成，正在结算回合…');
+                            if (!wasAborted && typeof setMainMapAgentStatus === 'function') {
+                                if (parsed.stop_available === true) setMainMapAgentStatus(saveId, '正在核验实际结算，可请求停止', agentControls);
+                                else setMainMapAgentStatus(saveId, queryStream ? '询问完成，正在整理回答…' : '推演完成，正在结算回合…');
+                            }
                         } else if (parsed.type === 'agent_inject_dropped') {
                             if (!parsed.plan_id && pendingInterjection?.message === parsed.message) pendingInterjection.dropped = true;
                             const body = agentToolsWrap.querySelector('.agent-tools-body');

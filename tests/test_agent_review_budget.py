@@ -72,6 +72,9 @@ async def test_interjection_gets_fresh_review_budget_and_persists(
                       ("finalize_turn", {"summary": "Inspected the requested surface."})])
 
     async def review(narrative, action, *_args, **_kwargs):
+        if _args and _args[0].get("_review_execution", {}).get("scope") == "applied_turn":
+            assert INJECTION in action
+            return {"pass": True, "violations": []}
         reviews.append((narrative, action))
         if len(reviews) == prior_reviews:
             review_started.set()
@@ -228,7 +231,9 @@ async def test_interjection_gets_fresh_review_budget_and_persists(
             final, = [event for event in retry_events if event["type"] == "final"]
             assert final["narrative"] == DRAFTS[-1]
             assert [event["message"] for event in retry_events if event["type"] == "user_inject"] == [INJECTION]
-            assert retry_review.await_count == 1
+            candidate_calls = [call for call in retry_review.await_args_list
+                               if call.args[2].get("_review_execution", {}).get("scope") != "applied_turn"]
+            assert len(candidate_calls) == 1
             assert INJECTION in retry_review.call_args.args[1]
             assert final["agent_trace"]["semantic_review_calls"] == 1
             assert_controls_closed(session)
@@ -393,7 +398,9 @@ async def test_review_budget_without_interjection_remains_three(tmp_path, monkey
             "type": "freeform", "text": "Inspect the room.", "intent_hint": "explicit_action",
         }), 10)
         events = _stream_events(response.text)
-        assert review.await_count == 3
+        candidate_calls = [call for call in review.await_args_list
+                           if call.args[2].get("_review_execution", {}).get("scope") != "applied_turn"]
+        assert len(candidate_calls) == 3
         assert_controls_closed(session)
         if rejected:
             assert [event for event in events if event["type"] == "error"] == [

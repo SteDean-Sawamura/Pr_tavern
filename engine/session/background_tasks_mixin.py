@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 from engine.meta_events import MetaEvent, MetaEventTrigger
 from engine.event_scheduler import parse_time
+from engine.turn_publication import current_publication
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +183,10 @@ class BackgroundTasksMixin:
             if evt.handler in scheduled_handlers:
                 continue
             scheduled_handlers.add(evt.handler)
-            self._schedule_background_task(handler(meta_ctx))
+            coroutine = handler(meta_ctx)
+            publication = current_publication(self)
+            if publication is None or not publication.defer(coroutine, "background"):
+                self._schedule_background_task(coroutine)
 
     def _schedule_background_task(self, coro):
         """Schedule a background task with proper exception logging."""
@@ -208,6 +212,9 @@ class BackgroundTasksMixin:
         return task
 
     def _schedule_index_task(self, coro):
+        publication = current_publication(self)
+        if publication is not None and publication.defer(coro, "index"):
+            return None
         task = self._schedule_background_task(coro)
         if task is not None:
             self._index_tasks.add(task)

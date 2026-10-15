@@ -124,7 +124,10 @@ async def test_action_index_rollback_preserves_retrieval_then_commits_retry(tmp_
         async def observe_choices(messages, **kwargs):
             if kwargs.get("system", "").startswith(prefix):
                 await session._drain_background_tasks(index_only=True)
-                assert "test_notice" not in index.entries
+                assert index.entries.get("test_notice") == notice["content"]
+                active_lore = []
+                await session._enrich_with_rag("SYNTHETIC_SEMANTIC_QUERY", [], active_lore, "")
+                assert all(entry.id != "test_notice" for entry in active_lore)
                 reached.set()
                 if failure == "cancel":
                     await blocked.wait()

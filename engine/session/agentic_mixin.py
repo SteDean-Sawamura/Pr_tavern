@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Callable
 
 from ai.base import strip_think_tags
 from engine.conditions import CONDITION_RULE_SECTIONS, condition_error
-from engine.review_evidence import REVIEW_STATE_FIELDS, execution_snapshot
+from engine.review_evidence import execution_snapshot
 from engine.tool_schemas import CONSOLIDATED_SETTLEMENT_TOOLS, FOREGROUND_TOOLS_SCHEMA, _unified_tools
 
 if TYPE_CHECKING:
@@ -563,6 +563,13 @@ class PendingConsequenceDisclosureError(IncompleteAgentTurnError):
 class SemanticReviewError(IncompleteAgentTurnError):
     def __init__(self):
         super().__init__("叙事语义审查连续未通过，本轮未保存，请重试")
+
+
+class AppliedSettlementReviewError(NarrativeSettlementError):
+    def __init__(self, *, stopped=False):
+        self.stopped = stopped
+        super().__init__("applied_review_stopped" if stopped else "applied_review_failed")
+        self.args = ("已停止结算核验，本轮未保存" if stopped else "实际结算后的叙事核验未通过，本轮未保存，请重试",)
 
 
 class MapTravelSettlementError(IncompleteAgentTurnError):
@@ -4080,9 +4087,7 @@ class AgenticMixin:
         action_text = ctx.get("action_text") or player_action.get("text", "")
         ctx.pop("_review_plan_reply", None)
         ctx["_unified_narrative_output"] = True
-        ctx["_review_state_before"] = copy.deepcopy({
-            key: self.current_state[key] for key in REVIEW_STATE_FIELDS if key in self.current_state
-        })
+        ctx["_review_state_before"] = copy.deepcopy(self.current_state)
         ctx["_turn_player_inputs"] = copy.deepcopy(ctx.get("_turn_player_inputs") or [])
         ctx["_map_travel_destination"] = self._map_travel_destination(player_action)
         ctx.setdefault("tool_results", [])
@@ -4614,6 +4619,9 @@ class AgenticMixin:
                 yield {"type": event_type, "content": narrative}
 
         ctx["tool_results"].extend(holder.records)
+
+        ctx["_reviewed_candidate_state"] = self._project_state_tool_updates(ctx.get("_accepted_state_updates", []))
+        ctx["_reviewed_candidate_state"]["game_time"] = final_snapshot["time"]["candidate"]
 
         # Build parsed result from tool call records
         parsed = self._build_unified_parsed(holder.records, ctx, route)

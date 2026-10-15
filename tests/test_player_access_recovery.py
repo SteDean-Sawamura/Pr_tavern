@@ -145,6 +145,7 @@ async def test_feedback_guides_declared_recovery_through_stream_and_persistence(
             calls_before = provider.generate_with_tools.await_count
             assert (await client.post(endpoint, json=action)).text == response.text
             assert provider.generate_with_tools.await_count == calls_before
+            await game_routes._persist_sessions_on_shutdown()
             final_state = copy.deepcopy(session.current_state)
             game_routes._sessions.clear()
             restored = await game_routes._restore_session(session.save_id)

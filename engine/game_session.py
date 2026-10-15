@@ -168,6 +168,7 @@ class GameSession(
         self.logit_bias: list[dict] = []  # [{"text": "暴力", "bias": -5}, ...]
         self._background_tasks: set[asyncio.Task] = set()
         self._index_tasks: set[asyncio.Task] = set()
+        self._pending_turn_publication = None
         self._deferred_lore_vector_ids: set[str] | None = None
         self._deferred_tasks: set[asyncio.Task] = set()
         self._deferred_story_task: asyncio.Task | None = None
@@ -1961,7 +1962,8 @@ class GameSession(
                     _proactive_hint = item.get("proactive_hint", "")
                     _agent_trace = item.get("agent_trace")
                     if agent_controls_active:
-                        yield {"type": "agent_controls_closed"}
+                        yield {"type": "agent_controls_closed", **(
+                            {"stop_available": True} if ctx.get("_unified_narrative_output") else {})}
                 else:
                     if item["type"] == "agent_plan" and "plan_event_ms" not in ctx:
                         ctx["plan_event_ms"] = int((_time.monotonic() - turn_started) * 1000)
@@ -1995,6 +1997,8 @@ class GameSession(
         result = await self._apply_parsed_response(
             parsed, narrative, player_action, ctx
         )
+        if agent_controls_active and ctx.get("_unified_narrative_output"):
+            yield {"type": "agent_controls_closed"}
         if deferred := ctx.get("_deferred_event_narrative"):
             if "first_text_ms" not in ctx:
                 text_time = _time.monotonic()

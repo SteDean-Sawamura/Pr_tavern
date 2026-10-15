@@ -615,6 +615,30 @@ test('agent_done keeps the map in settlement state until the final event', async
     await generation;
 });
 
+test('applied settlement review keeps stop available while disabling new injections', async () => {
+    const view = setup({ type: 'agent_controls_ready' });
+    const generation = view.context.submitActionStream({ type: 'freeform', text: 'Go' });
+    await flush();
+    view.sendReply({ type: 'agent_controls_closed', stop_available: true });
+    await flush();
+    const controls = view.getAgentControls();
+    assert.notEqual(controls.style.display, 'none');
+    assert.equal(controls.querySelector('.inject-input').disabled, true);
+    assert.equal(controls.querySelector('.inject-btn').disabled, true);
+    assert.equal(view.mapUpdates.at(-1)[1], '正在核验实际结算，可请求停止');
+    const requests = [];
+    view.context.fetch = async (url, options) => {
+        requests.push({ url, body: JSON.parse(options.body) });
+        return { ok: true };
+    };
+    await controls.querySelector('.stop-btn').listeners.click();
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].url, /\/abort$/);
+    assert.ok(requests[0].body.stream_id);
+    view.finishStream();
+    await generation;
+});
+
 test('model waiting offers injection only after agent controls are ready', async () => {
     const view = setup({ type: 'agent_controls_ready' });
     const generation = view.context.submitActionStream({ type: 'freeform', text: 'Go' });
@@ -848,8 +872,11 @@ test('closing controls, stopping, or auto-confirming expires a plan before settl
     }
 });
 
-test('stopping without a final event clears the map interaction and does not show an error', async () => {
-    const view = setup();
+for (const firstEvent of [
+    { type: 'agent_waiting', reason: 'Waiting' },
+    { type: 'agent_controls_closed', stop_available: true },
+]) test(`stopping after ${firstEvent.type} clears the map interaction without an error`, async () => {
+    const view = setup(firstEvent);
     const events = [];
     view.context.recordMainMapStreamEvent = (_saveId, _token, event) => events.push(event.type);
     const generation = view.context.submitActionStream({ type: 'freeform', text: 'Go' });
@@ -860,8 +887,9 @@ test('stopping without a final event clears the map interaction and does not sho
     await generation;
     assert.equal(view.context.isStreaming, false);
     assert.equal(view.mapUpdates.at(-1)[1], '');
-    assert.deepEqual(events, ['begin', 'agent_waiting', 'aborted']);
+    assert.deepEqual(events, ['begin', firstEvent.type, 'aborted']);
     assert.deepEqual(view.toastMessages, []);
+    assert.equal(view.context.document.getElementById('freeform-input').value, 'Go');
 });
 
 test('reconnect replays an action without rendering earlier events twice', async () => {

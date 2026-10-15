@@ -20,11 +20,12 @@ from ai.base import ModelOutputUnavailableError
 from db.database import get_db
 from engine.game_session import GameSession
 from engine.event_scheduler import is_public_event, is_public_story_node
-from engine.session.agentic_mixin import (IncompleteAgentTurnError, MapTravelSettlementError,
+from engine.session.agentic_mixin import (AppliedSettlementReviewError, IncompleteAgentTurnError, MapTravelSettlementError,
                                          NarrativeSettlementError, PendingConsequenceDisclosureError, SemanticReviewError,
                                          _public_agent_trace)
 from engine.script_loader import ScriptLoader
 from engine.class_system import ClassRegistry
+from engine.turn_publication import begin_publication, publish_pending
 
 router = APIRouter()
 logger = logging.getLogger("tavern.game")
@@ -124,7 +125,7 @@ _MISSING = object()
 _RESTORED_MODELS = ("player_model", "npc_autonomy", "narrative_graph", "director_notes")
 
 
-def _capture_generation_state(session):
+def _capture_generation_state(session, *, defer_publication=False):
     fields = []
     for owner_path, names in _ROLLBACK_FIELDS:
         owner = session
@@ -140,7 +141,7 @@ def _capture_generation_state(session):
     tree = session.world_tree
     active = tree.active_node_id
     active_node = tree.get_node(active) if active else None
-    return {
+    snapshot = {
         "state": copy.deepcopy(session.current_state),
         "turn": getattr(session, "turn_number", None),
         "active": active,
@@ -152,9 +153,14 @@ def _capture_generation_state(session):
         "deferred_story_task": getattr(session, "_deferred_story_task", None),
         "deferred_story_source": getattr(session, "_deferred_story_source", None),
     }
+    if defer_publication and isinstance(session, GameSession):
+        snapshot["publication"] = begin_publication(session)
+    return snapshot
 
 
 async def _rollback_generation_state(session, snapshot):
+    if publication := snapshot.get("publication"):
+        publication.discard()
     tasks = set(getattr(session, "_background_tasks", ())) - snapshot["tasks"]
     deferred = getattr(session, "_deferred_story_task", None)
     if deferred is not None and deferred is not snapshot["deferred_story_task"]:
@@ -248,15 +254,24 @@ def _set_agent_stream_active(session: GameSession, active: bool, stream_id: str 
     return dropped
 
 
-def _close_agent_control_events(session: GameSession):
+def _close_agent_control_events(session: GameSession, *, keep_stop=False):
     stop_missed = getattr(session, "_abort_request_pending", False)
     plan_reply_id = getattr(session, "_queued_agent_plan_reply_id", None)
-    for index, message in enumerate(_set_agent_stream_active(session, False)):
+    if keep_stop:
+        session._agent_inject_enabled = False
+        session._active_agent_action_id = None
+        for field in ("_pending_agent_plan_id", "_pending_agent_action_id", "_pending_agent_plan_signature", "_queued_agent_plan_reply_id"):
+            setattr(session, field, None)
+        dropped = list(getattr(session, "_inject_queue", []) or [])
+        session._inject_queue = []
+    else:
+        dropped = _set_agent_stream_active(session, False)
+    for index, message in enumerate(dropped):
         event = {"type": "agent_inject_dropped", "message": message}
         if index == 0 and plan_reply_id:
             event["plan_id"] = plan_reply_id
         yield event
-    if stop_missed:
+    if stop_missed and not keep_stop:
         yield {"type": "agent_stop_missed"}
 
 
@@ -941,7 +956,7 @@ async def game_action(save_id: str, req: ActionRequest):
 
         async def capture_after_background():
             nonlocal snapshot
-            snapshot = _capture_generation_state(session)
+            snapshot = _capture_generation_state(session, defer_publication=True)
             await _refresh_session_ai(session)
 
         try:
@@ -966,6 +981,8 @@ async def game_action(save_id: str, req: ActionRequest):
                 await _persist_query_exchange(session, action["text"], result.get("reply", ""), req.action_id)
             elif not result.get("query"):
                 await _save_node(session, result, req.action_id)
+            if result.get("removed_node_id") or result.get("query"):
+                publish_pending(session)
         except IncompleteAgentTurnError as exc:
             if snapshot is not None:
                 await _rollback_generation_state(session, snapshot)
@@ -1042,7 +1059,7 @@ async def game_action_stream(save_id: str, req: ActionRequest):
 
         async def capture_after_background():
             nonlocal snapshot
-            snapshot = _capture_generation_state(session)
+            snapshot = _capture_generation_state(session, defer_publication=True)
             await _refresh_session_ai(session)
 
         if isinstance(session, GameSession):
@@ -1088,7 +1105,7 @@ async def game_action_stream(save_id: str, req: ActionRequest):
                             session._agent_control_event.set()
                     yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                 elif chunk["type"] == "agent_controls_closed":
-                    for control_event in _close_agent_control_events(session):
+                    for control_event in _close_agent_control_events(session, keep_stop=chunk.get("stop_available") is True):
                         yield f"data: {json.dumps(control_event, ensure_ascii=False)}\n\n"
                     yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                 elif chunk["type"] == "heartbeat":
@@ -1114,6 +1131,8 @@ async def game_action_stream(save_id: str, req: ActionRequest):
                         await _persist_query_exchange(session, action["text"], chunk.get("narrative", ""), req.action_id)
                     elif not chunk.get("is_query"):
                         await _save_node(session, chunk, req.action_id)
+                    if chunk.get("is_undo") or chunk.get("is_query"):
+                        publish_pending(session)
                     persisted = True
                     if plan_recorded:
                         await _clear_action_plan(save_id, req.action_id)
@@ -1142,12 +1161,19 @@ async def game_action_stream(save_id: str, req: ActionRequest):
                 async for data in events:
                     yield data
             except IncompleteAgentTurnError as exc:
-                logger.warning("统一Agent未完成结算 — save=%s: %s", save_id, exc)
+                stopped = isinstance(exc, AppliedSettlementReviewError) and exc.stopped
+                if stopped:
+                    session._abort_request_pending = False
+                    logger.info("统一Agent已停止结算核验 — save=%s", save_id)
+                else:
+                    logger.warning("统一Agent未完成结算 — save=%s: %s", save_id, exc)
                 if getattr(session, "_inject_queue", None):
                     for control_event in _close_agent_control_events(session):
                         yield f"data: {json.dumps(control_event, ensure_ascii=False)}\n\n"
                     yield 'data: {"type": "agent_controls_closed"}\n\n'
-                error = {"type": "error", "message": str(exc)}
+                error = {"type": "aborted" if stopped else "error", "message": str(exc)}
+                if stopped:
+                    error["label"] = "结算核验"
                 if isinstance(exc, (NarrativeSettlementError, PendingConsequenceDisclosureError, SemanticReviewError,
                                     MapTravelSettlementError)):
                     error["discard_partial"] = True
@@ -2141,7 +2167,7 @@ async def regenerate(save_id: str, stage: str = "all", hint: str = ""):
                 raise HTTPException(status_code=404, detail="Game session not found")
         if isinstance(session, GameSession):
             await session._drain_background_tasks()
-        snapshot = _capture_generation_state(session)
+        snapshot = _capture_generation_state(session, defer_publication=True)
         try:
             await _refresh_session_ai(session)
             result = await session.regenerate(stage=stage, hint=hint)
@@ -2270,7 +2296,7 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
                 session._agent_inject_enabled = True
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             elif chunk["type"] == "agent_controls_closed":
-                for control_event in _close_agent_control_events(session):
+                for control_event in _close_agent_control_events(session, keep_stop=chunk.get("stop_available") is True):
                     yield f"data: {json.dumps(control_event, ensure_ascii=False)}\n\n"
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             elif chunk["type"] == "heartbeat":
@@ -2465,7 +2491,7 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
                 yield 'data: {"type": "aborted", "label": "准备阶段"}\n\n'
                 yield 'data: {"type": "agent_controls_closed"}\n\n'
                 return
-            snapshot = _capture_generation_state(session)
+            snapshot = _capture_generation_state(session, defer_publication=True)
             await _refresh_session_ai(session)
             session.current_state.update(session._snapshot_session_models())
             pre_regen_side_effects = copy.deepcopy((
@@ -2508,8 +2534,15 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
             if persisted:
                 raise
             if isinstance(exc, IncompleteAgentTurnError):
-                logger.warning("流式重生成未通过结算校验 — save=%s: %s", save_id, exc)
-                error = {"type": "error", "message": str(exc)}
+                stopped = isinstance(exc, AppliedSettlementReviewError) and exc.stopped
+                if stopped:
+                    session._abort_request_pending = False
+                    logger.info("流式重生成已停止结算核验 — save=%s", save_id)
+                else:
+                    logger.warning("流式重生成未通过结算校验 — save=%s: %s", save_id, exc)
+                error = {"type": "aborted" if stopped else "error", "message": str(exc)}
+                if stopped:
+                    error["label"] = "结算核验"
                 if isinstance(exc, (NarrativeSettlementError, PendingConsequenceDisclosureError, SemanticReviewError,
                                     MapTravelSettlementError)):
                     error["discard_partial"] = True
@@ -2545,6 +2578,8 @@ async def regenerate_stream(save_id: str, stage: str = "all", hint: str = "", st
                         session.script.clear()
                         session.script.update(script)
                 finally:
+                    if not persisted and snapshot is not None and snapshot.get("publication") is not None:
+                        snapshot["publication"].discard()
                     _set_agent_stream_active(session, False)
                     lock.release()
 
@@ -3514,6 +3549,12 @@ async def _persist_query_exchange(session: GameSession, question: str, answer: s
 
 async def _save_node(session: GameSession, result: dict, action_id: Optional[str] = None) -> str | None:
     """Save a game turn node to the database. Returns scene_image_path if generated."""
+    state_to_save = copy.deepcopy(result.get("state", {}))
+    publication = getattr(session, "_pending_turn_publication", None)
+    if publication is not None and not publication.matches_review(result.get("narrative", ""), state_to_save):
+        raise AppliedSettlementReviewError()
+    if "state" in result:
+        result["state"] = state_to_save
     # Persist scene image to disk if present
     scene_image_path = None
     scene_img = result.get("scene_image")
@@ -3621,6 +3662,8 @@ async def _save_node(session: GameSession, result: dict, action_id: Optional[str
         if parent_id:
             session.world_tree.commit_pending_eviction(parent_id)
 
+    if node:
+        publish_pending(session)
     return scene_image_path
 
 
@@ -3898,11 +3941,17 @@ async def _restore_session(save_id: str) -> GameSession | None:
 
 async def _update_node_in_db(session: GameSession, result: dict):
     """Update an existing node in the database (used by regenerate/swipe)."""
+    state_to_save = copy.deepcopy(session.current_state)
+    publication = getattr(session, "_pending_turn_publication", None)
+    if publication is not None and not publication.matches_review(result.get("narrative", ""), state_to_save):
+        raise AppliedSettlementReviewError()
+    if "state" in result:
+        result["state"] = state_to_save
     async with get_db() as db:
         node_id = result.get("node_id", "")
         node = session.world_tree.get_node(node_id)
         if node:
-            snapshot_to_save = session.current_state
+            snapshot_to_save = state_to_save
             node_context = {}
             if node.get("check_result"):
                 node_context["check_result"] = node["check_result"]
@@ -3936,3 +3985,5 @@ async def _update_node_in_db(session: GameSession, result: dict):
                 ),
             )
             await db.commit()
+    if node:
+        publish_pending(session)

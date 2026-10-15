@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from engine.event_engine import EventResult
 from engine.event_scheduler import is_public_event, is_public_story_node, parse_time, public_event_notifications
+from engine.turn_publication import begin_publication, current_publication
 
 if TYPE_CHECKING:
     from engine.game_session import GameSession
@@ -48,6 +49,23 @@ class StateApplyMixin:
         return self.regex_engine.apply(text, "ai_output") if text else text
 
     async def _apply_parsed_response(
+        self: GameSession, parsed: dict, raw_response: str, player_action: dict, ctx: dict,
+    ) -> dict:
+        publication = current_publication(self)
+        local_publication = publication is None or publication.status != "pending"
+        if local_publication:
+            publication = begin_publication(self)
+        try:
+            result = await self._apply_parsed_response_impl(parsed, raw_response, player_action, ctx)
+        except BaseException:
+            if local_publication:
+                publication.discard()
+            raise
+        if local_publication:
+            publication.publish()
+        return result
+
+    async def _apply_parsed_response_impl(
         self: GameSession, parsed: dict, raw_response: str, player_action: dict, ctx: dict,
     ) -> dict:
         """Apply parsed AI response to game state and finalize the turn.
@@ -605,6 +623,9 @@ class StateApplyMixin:
             if node:
                 node["choices_presented"] = copy.deepcopy(result["choices"])
         self._consume_choice_instructions(self.current_state, ctx.get("turn_instructions", []))
+        review_status = await self._review_applied_turn(result["narrative"], player_action, ctx, self.current_state)
+        if review_status == "unavailable":
+            result.setdefault("warnings", []).append("实际结算后的叙事评审不可用，不能视为已通过核验。")
         result["state"] = self.current_state
         if node:
             node["state_changes"] = all_state_changes

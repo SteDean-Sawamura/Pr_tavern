@@ -77,6 +77,9 @@ async def test_replaced_review_cannot_publish_current_draft(tmp_path, monkeypatc
     injection = "Inspect only the chair; leave the table alone."
 
     async def review_narrative(narrative, *_args, **_kwargs):
+        if len(_args) > 1 and _args[1].get("_review_execution", {}).get("scope") == "applied_turn":
+            assert narrative == (drafts[2] if review_outcome == "rejected" or interjected else drafts[1])
+            return {"pass": True, "violations": []}
         review_texts.append(narrative)
         review_actions.append(_args[0])
         review_tasks[narrative] = asyncio.current_task()
